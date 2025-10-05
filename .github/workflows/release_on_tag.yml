@@ -1,0 +1,107 @@
+name: Release on tag
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.created == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Prepare "Better Bots" folder and move sources, then ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+      
+          TAG="${GITHUB_REF_NAME}"
+      
+          SAFE_TAG="${TAG##*/}"
+      
+          ZIP="bb${SAFE_TAG}.zip"
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+      
+          mkdir -p "Better Bots"
+      
+          shopt -s dotglob nullglob
+          for path in *; do
+            case "$path" in
+              "Better Bots"|".git"|".github"|".idea") continue ;;
+            esac
+            mv -- "$path" "Better Bots"/
+          done
+      
+          zip -r "$ZIP" "Better Bots" >/dev/null
+
+      - name: Generate release notes (commits between previous tag and this tag)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+
+          CUR_COMMIT="$(git rev-list -n 1 "$TAG")"
+
+          PREV_TAG=""
+          if PREV=$(git describe --tags --abbrev=0 "${CUR_COMMIT}^" 2>/dev/null); then
+            PREV_TAG="$PREV"
+          else
+            mapfile -t TAGS < <(git for-each-ref --sort=-creatordate --format "%(refname:short)" refs/tags)
+            for i in "${!TAGS[@]}"; do
+              if [[ "${TAGS[$i]}" == "$TAG" ]]; then
+                if (( i+1 < ${#TAGS[@]} )); then
+                  PREV_TAG="${TAGS[$((i+1))]}"
+                fi
+                break
+              fi
+            done
+          fi
+
+          if [[ -n "$PREV_TAG" ]]; then
+            RANGE="${PREV_TAG}..${TAG}"
+          else
+            ROOT="$(git rev-list --max-parents=0 "$CUR_COMMIT")"
+            RANGE="${ROOT}..${TAG}"
+          fi
+
+          NOTES_FILE="$PWD/RELEASE_NOTES.md"
+          git log --no-merges --pretty=format:"- %h %s" $RANGE > "$NOTES_FILE" || true
+          if [[ ! -s "$NOTES_FILE" ]]; then
+            echo "- 无提交变更" > "$NOTES_FILE"
+          fi
+
+          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
+          echo "NOTES_FILE=$NOTES_FILE" >> "$GITHUB_ENV"
+
+      - name: Create/Update GitHub Release and upload asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          TITLE="Better Better Bots Version ${TAG}"
+          ZIP="${ZIP_NAME}"
+          NOTES_FILE="${NOTES_FILE}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE"
+          fi
+
+          gh release upload "$TAG" "$ZIP" --clobber
