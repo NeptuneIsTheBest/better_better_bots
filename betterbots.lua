@@ -1001,11 +1001,10 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 					local reaction = attention_info.reaction or AIAttentionObject.REACT_IDLE
 					if reaction >= REACT_COMBAT then
 						local att_base = att_unit:base()
-						local is_turret = att_base and att_base.sentry_gun
 						local is_special = (att_base and att_base.has_tag and att_base:has_tag("special")) 
 							or (attention_info.char_tweak and attention_info.char_tweak.priority_shout)
 						
-						if is_turret or is_special then
+						if is_special then
 							local dis = attention_info.verified_dis
 							if dis and dis <= CONSTANTS.MARK_DISTANCE then
 								local is_shield = attention_info.is_shield
@@ -1016,7 +1015,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 									if (not best_nmy_wgt) or best_nmy_wgt > dis then
 										local u_contour = att_unit:contour()
 										if u_contour then
-											local c_id = is_turret and "mark_unit_dangerous" or get_contour
+											local c_id = "mark_unit_dangerous" or get_contour
 											if not u_contour._contour_list or not u_contour:has_id(c_id) then
 												best_nmy_wgt = dis
 												best_nmy = att_unit
@@ -1040,10 +1039,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 		local mark_base = to_mark:base()
 		if not mark_base then return end
 		
-		local is_turret = mark_base.sentry_gun
-		
 		if play_sound then
-			local sound_name = is_turret and "f44" or (mark_base:char_tweak() and mark_base:char_tweak().priority_shout)
+			local sound_name = "f44" or (mark_base:char_tweak() and mark_base:char_tweak().priority_shout)
 			if sound_name and criminal:sound() then
 				safe_call(criminal:sound().say, criminal:sound(), sound_name .. "x_any", true, true)
 			end
@@ -1060,7 +1057,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 		
 		local contour = to_mark:contour()
 		if contour then
-			safe_call(contour.add, contour, is_turret and "mark_unit_dangerous" or "mark_enemy", true)
+			safe_call(contour.add, contour, "mark_unit_dangerous" or "mark_enemy", true)
 		end
 	end
 
