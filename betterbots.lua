@@ -9,6 +9,38 @@ end
 
 local BB = _G.BB
 
+local function _get_mask(name, fallback_slots)
+	if managers and managers.slot and managers.slot.get_mask then
+		local ok, m = pcall(managers.slot.get_mask, managers.slot, name)
+		if ok and m then
+			return m
+		end
+	end
+
+	if fallback_slots == nil then
+		return World:make_slot_mask()
+	end
+	if type(fallback_slots) == "table" then
+		return World:make_slot_mask(unpack(fallback_slots))
+	elseif type(fallback_slots) == "number" then
+		return World:make_slot_mask(fallback_slots)
+	else
+		return World:make_slot_mask()
+	end
+end
+
+local MASK = {
+	AI_visibility = _get_mask("AI_visibility", {1, 11, 38, 39}),
+	enemy_shield_check = _get_mask("enemy_shield_check", 8),
+	hostages = _get_mask("hostages", 22),
+	players = _get_mask("players", {2, 3, 4, 5}),
+	criminals_no_deployables = _get_mask("criminals_no_deployables", {2, 3, 16})
+}
+
+local SLOTS = {
+	HOSTAGES = 22
+}
+
 local CONSTANTS = {
 	GRACE_PERIOD = 10,
 	INTIMIDATE_DISTANCE = 1200,
@@ -268,11 +300,15 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 		end
 	end
 
-	if BB:get("chat", false) then
-		function GroupAIStateBase:chk_say_teamAI_combat_chatter()
-			return
-		end
-	end
+    if BB:get("chat", false) then
+        local old_chatter = GroupAIStateBase.chk_say_teamAI_combat_chatter
+        function GroupAIStateBase:chk_say_teamAI_combat_chatter(...)
+            if BB:get("chat", false) then
+                return
+            end
+            return old_chatter(self, ...)
+        end
+    end
 
 	local old_tase = GroupAIStateBase.on_tase_start
 	function GroupAIStateBase:on_tase_start(cop_key, criminal_key, ...)
@@ -369,7 +405,7 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
 		end
 
 		local old_regen = TeamAIDamage._regenerated
-		function TeamAIDamage:_regenerated(...)
+		function TeamAIDamage:_regenerated()
 			if self._unit then
 				local brain = self._unit:brain()
 				if brain and brain._logic_data then
@@ -379,13 +415,14 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
 					end
 				end
 			end
-			return old_regen(self, ...)
+			return old_regen(self)
 		end
 	end
 
-	function TeamAIDamage:friendly_fire_hit()
-		return
-	end
+    local old_ff_hit = TeamAIDamage.friendly_fire_hit
+    function TeamAIDamage:friendly_fire_hit()
+        return
+    end
 end
 
 if RequiredScript == "lib/units/interactions/interactionext" then
@@ -575,23 +612,19 @@ if RequiredScript == "lib/managers/criminalsmanager" then
 end
 
 if RequiredScript == "lib/tweak_data/playertweakdata" then
-	function PlayerTweakData:_set_singleplayer()
-		return
-	end
+    local old_set_sp = PlayerTweakData._set_singleplayer
+    function PlayerTweakData:_set_singleplayer(...)
+        return
+    end
 end
 
 local function remove_ai_from_bullet_mask(self, setup_data)
 	if not World then return end
-	
-	local success, ai_mask = pcall(World.make_slot_mask, World, 16, 22)
-	if not success then
-		bb_log("Failed to create slot mask", "ERROR")
-		return
-	end
-	
+
 	local user_unit = setup_data and setup_data.user_unit
 	if alive(user_unit) and is_team_ai(user_unit) and self._bullet_slotmask then
-		self._bullet_slotmask = self._bullet_slotmask - ai_mask
+		local ai_friends_mask = (MASK.criminals_no_deployables - MASK.players) + MASK.hostages
+		self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
 	end
 end
 
@@ -824,7 +857,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 										elseif attention_data.is_very_dangerous then
 											priority_mod = 7 * threat_level
 										elseif attention_data.is_shield then
-											local is_shielded = World:raycast("ray", head_pos, attention_data.m_head_pos, "ignore_unit", {unit}, "slot_mask", 8)
+											local is_shielded = World:raycast("ray", head_pos, attention_data.m_head_pos, "ignore_unit", {unit}, "slot_mask", MASK.enemy_shield_check)
 											local melee_range = is_team_ai and target_priority <= CONSTANTS.MELEE_DISTANCE
 											if has_ap or melee_range or not is_shielded then
 												priority_mod = 6 * threat_level
@@ -975,7 +1008,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 							local dis = attention_info.verified_dis
 							if dis and dis <= CONSTANTS.MARK_DISTANCE then
 								local is_shield = attention_info.is_shield
-								local shielded = World:raycast("ray", head_pos, attention_info.m_head_pos, "ignore_unit", {my_unit}, "slot_mask", 8)
+								local shielded = World:raycast("ray", head_pos, attention_info.m_head_pos, "ignore_unit", {my_unit}, "slot_mask", MASK.enemy_shield_check)
 								local can_hit = has_ap or dis <= CONSTANTS.MELEE_DISTANCE or not shielded
 								
 								if not is_shield or can_hit then
@@ -1475,7 +1508,6 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
 	if BB:get("combat", false) then
 		local math_lerp = math.lerp
 		local old_shoot = CopActionShoot._get_shoot_falloff
-		
 		function CopActionShoot:_get_shoot_falloff(target_dis, falloff, ...)
 			if self and self._unit and alive(self._unit) and is_team_ai(self._unit) then
 				local i = #falloff
@@ -1672,9 +1704,9 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
 			local unit = data.unit
 			if alive(unit) then
 				BB:add_cop_to_intimidation_list(unit:key())
-				if surrender and unit:base() and unit:base().set_slot then
-					unit:base():set_slot(unit, 22)
-				end
+                if surrender and unit:base() and unit:base().set_slot then
+                    unit:base():set_slot(unit, SLOTS.HOSTAGES)
+                end
 			end
 			return surrender
 		end
