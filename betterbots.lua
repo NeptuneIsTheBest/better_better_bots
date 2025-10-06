@@ -429,26 +429,23 @@ if RequiredScript == "lib/units/interactions/interactionext" then
 	if Network:is_server() then
 		local function cancel_other_rescue_objectives(revive_unit, rescuer)
 			if not alive(revive_unit) or not alive(rescuer) then return end
-			
+
 			local gstate = managers.groupai and managers.groupai:state()
-			if not gstate then return end
-			
+			if not gstate or not gstate.all_AI_criminals then return end
+
 			local revive_key = revive_unit:key()
 			local rescuer_key = rescuer:key()
-			
+
 			for u_key, u_data in pairs(gstate:all_AI_criminals() or {}) do
-				if u_key ~= rescuer_key then
-					local unit = u_data.unit
-					if alive(unit) then
-						local brain = unit:brain()
-						if brain and brain._logic_data then
-							local obj = brain._logic_data.objective
-							if obj and obj.type == "revive" then
-								local follow_unit = obj.follow_unit
-								if alive(follow_unit) and follow_unit:key() == revive_key then
-									brain:set_objective()
-								end
-							end
+				if u_key ~= rescuer_key and u_data.unit and alive(u_data.unit) then
+					local brain = u_data.unit:brain()
+					if brain and brain._logic_data then
+						local obj = brain._logic_data.objective
+						if obj and obj.type == "revive"
+						   and obj.follow_unit
+						   and alive(obj.follow_unit)
+						   and obj.follow_unit:key() == revive_key then
+							brain:set_objective(nil)
 						end
 					end
 				end
@@ -789,6 +786,8 @@ end
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 	local mvec3_norm = mvector3.normalize
 	local mvec3_angle = mvector3.angle
+	local mvec3_dot = mvector3.dot
+	local mvec3_set_length = mvector3.set_length
 	local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
 	function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
@@ -900,63 +899,121 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 		return best_target, best_priority, best_reaction
 	end
 
-	function TeamAILogicIdle._find_intimidateable_civilians(criminal, use_default_shout_shape, max_angle, max_dis)
-		if not alive(criminal) or not managers.enemy then
-			return nil, 1, {}
-		end
-		
-		max_angle = use_default_shout_shape and CONSTANTS.INTIMIDATE_ANGLE or (max_angle or CONSTANTS.INTIMIDATE_ANGLE)
-		max_dis = use_default_shout_shape and CONSTANTS.INTIMIDATE_DISTANCE or (max_dis or CONSTANTS.INTIMIDATE_DISTANCE)
-		
-		local crim_mov = criminal:movement()
-		if not crim_mov then return nil, 1, {} end
-		
-		local head_pos = crim_mov:m_head_pos()
-		local look_vec = crim_mov:m_rot():y()
-		local my_tracker = crim_mov:nav_tracker()
-		if not my_tracker then return nil, 1, {} end
-		
-		local best_civ
-		local intimidateable_civilians = {}
-		local chk_vis_func = my_tracker.check_visibility
-		local slotmask = managers.slot:get_mask("AI_visibility")
-		
-		for u_key, u_char in pairs(managers.enemy:all_civilians() or {}) do
-			if u_char.tracker and chk_vis_func(my_tracker, u_char.tracker) then
-				local unit = u_char.unit
-				if alive(unit) then
-					local unit_mov = unit:movement()
-					if unit_mov then
-						local u_head_pos = unit_mov:m_head_pos()
-						local vec = u_head_pos - head_pos
-						
-						if mvec3_norm(vec) <= max_dis and mvec3_angle(vec, look_vec) <= max_angle then
-							local ray = World:raycast("ray", head_pos, u_head_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
-							
-							if not ray and u_char.char_tweak and u_char.char_tweak.intimidateable then
-								local unit_base = unit:base()
-								if not (unit_base and unit_base.unintimidateable) then
-									local anim_data = unit:anim_data()
-									local unit_data = unit:unit_data()
-									local unit_brain = unit:brain()
-									
-									if anim_data and not anim_data.unintimidateable and unit_brain and not unit_brain:is_tied() 
-										and not (unit_data and unit_data.disable_shout) then
-										if not unit_mov:cool() and not anim_data.drop then
-											table.insert(intimidateable_civilians, {unit = unit, key = u_key, inv_wgt = 1})
-											best_civ = best_civ or unit
-										end
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-		
-		return best_civ, 1, intimidateable_civilians
-	end
+    function TeamAILogicIdle._find_intimidateable_civilians(criminal, use_default_shout_shape, max_angle, max_dis)
+        if not alive(criminal) or not managers.enemy then
+            return nil, 1, {}
+        end
+
+        local crim_mov = criminal:movement()
+        if not crim_mov then
+            return nil, 1, {}
+        end
+
+        local my_tracker = crim_mov:nav_tracker()
+        if not my_tracker then
+            return nil, 1, {}
+        end
+
+        if use_default_shout_shape then
+            max_angle = CONSTANTS.INTIMIDATE_ANGLE or 90
+            max_dis = CONSTANTS.INTIMIDATE_DISTANCE or 1200
+        else
+            max_angle = max_angle or CONSTANTS.INTIMIDATE_ANGLE or 90
+            max_dis = max_dis or CONSTANTS.INTIMIDATE_DISTANCE or 1200
+        end
+
+        local head_pos = crim_mov:m_head_pos()
+        local look_vec = crim_mov:m_rot():y()
+        local chk_vis_func = my_tracker.check_visibility
+        local slotmask = managers.slot:get_mask("AI_visibility")
+        local all_civs = managers.enemy:all_civilians()
+
+        if not all_civs then
+            return nil, 1, {}
+        end
+
+        local best_civ = nil
+        local intimidateable_civilians = {}
+        local max_dis_sq = max_dis * max_dis
+
+        for u_key, u_char in pairs(all_civs) do
+            local u_tracker = u_char.tracker
+            if not u_tracker or not chk_vis_func(my_tracker, u_tracker) then
+                goto continue
+            end
+
+            local char_tweak = u_char.char_tweak
+            if not char_tweak or not char_tweak.intimidateable then
+                goto continue
+            end
+
+            local unit = u_char.unit
+            if not alive(unit) then
+                goto continue
+            end
+
+            local unit_mov = unit:movement()
+            if not unit_mov then
+                goto continue
+            end
+
+            local u_head_pos = unit_mov:m_head_pos()
+            local vec = u_head_pos - head_pos
+            local dist_sq = mvec3_dot(vec, vec)
+
+            if dist_sq > max_dis_sq then
+                goto continue
+            end
+
+            local dist = math.sqrt(dist_sq)
+            if dist > 0 then
+                mvec3_set_length(vec, 1)
+                if mvec3_angle(vec, look_vec) > max_angle then
+                    goto continue
+                end
+            end
+
+            local ray = World:raycast("ray", head_pos, u_head_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
+            if ray then
+                goto continue
+            end
+
+            local unit_base = unit:base()
+            if unit_base and unit_base.unintimidateable then
+                goto continue
+            end
+
+            local anim_data = unit:anim_data()
+            if not anim_data or anim_data.unintimidateable or anim_data.drop then
+                goto continue
+            end
+
+            local unit_brain = unit:brain()
+            if not unit_brain or unit_brain:is_tied() then
+                goto continue
+            end
+
+            local unit_data = unit:unit_data()
+            if unit_data and unit_data.disable_shout then
+                goto continue
+            end
+
+            if unit_mov:cool() then
+                goto continue
+            end
+
+            intimidateable_civilians[#intimidateable_civilians + 1] = {
+                unit = unit,
+                key = u_key,
+                inv_wgt = 1
+            }
+            best_civ = best_civ or unit
+
+            ::continue::
+        end
+
+        return best_civ, 1, intimidateable_civilians
+    end
 
 	if BB:get("maskup", false) then
 		local old_onalert = TeamAILogicIdle.on_alert
@@ -982,84 +1039,141 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 	local math_ceil = math.ceil
 	local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
-	function TeamAILogicAssault.find_enemy_to_mark(enemies, my_unit)
-		if not alive(my_unit) or not managers.player then return nil end
-		
-		local player_manager = managers.player
-		local get_contour = player_manager:get_contour_for_marked_enemy()
-		local has_ap = player_manager:has_category_upgrade("team", "crew_ai_ap_ammo")
-		local unit_movement = my_unit:movement()
-		if not unit_movement then return nil end
-		
-		local head_pos = unit_movement:m_head_pos()
-		local best_nmy, best_nmy_wgt
-		
-		for _, attention_info in pairs(enemies or {}) do
-			if attention_info.identified and (attention_info.verified or attention_info.nearly_visible) then
-				local att_unit = attention_info.unit
-				if alive(att_unit) then
-					local reaction = attention_info.reaction or AIAttentionObject.REACT_IDLE
-					if reaction >= REACT_COMBAT then
-						local att_base = att_unit:base()
-						local is_special = (att_base and att_base.has_tag and att_base:has_tag("special")) 
-							or (attention_info.char_tweak and attention_info.char_tweak.priority_shout)
-						
-						if is_special then
-							local dis = attention_info.verified_dis
-							if dis and dis <= CONSTANTS.MARK_DISTANCE then
-								local is_shield = attention_info.is_shield
-								local shielded = World:raycast("ray", head_pos, attention_info.m_head_pos, "ignore_unit", {my_unit}, "slot_mask", MASK.enemy_shield_check)
-								local can_hit = has_ap or dis <= CONSTANTS.MELEE_DISTANCE or not shielded
-								
-								if not is_shield or can_hit then
-									if (not best_nmy_wgt) or best_nmy_wgt > dis then
-										local u_contour = att_unit:contour()
-										if u_contour then
-											local c_id = "mark_unit_dangerous" or get_contour
-											if not u_contour._contour_list or not u_contour:has_id(c_id) then
-												best_nmy_wgt = dis
-												best_nmy = att_unit
-											end
-										end
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-		
-		return best_nmy
-	end
+    function TeamAILogicAssault.find_enemy_to_mark(enemies, my_unit)
+        if not alive(my_unit) or not managers.player then
+            return nil
+        end
 
-	function TeamAILogicAssault.mark_enemy(data, criminal, to_mark, play_sound, play_action)
-		if not alive(criminal) or not alive(to_mark) then return end
-		
-		local mark_base = to_mark:base()
-		if not mark_base then return end
-		
-		if play_sound then
-			local sound_name = "f44" or (mark_base:char_tweak() and mark_base:char_tweak().priority_shout)
-			if sound_name and criminal:sound() then
-				safe_call(criminal:sound().say, criminal:sound(), sound_name .. "x_any", true, true)
-			end
-		end
-		
-		if play_action and criminal:movement() and not criminal:movement():chk_action_forbidden("action") then
-			local new_action = {type = "act", variant = "arrest", body_part = 3, align_sync = true}
-			if criminal:brain() and criminal:brain():action_request(new_action) then
-				if data.internal_data then
-					data.internal_data.gesture_arrest = true
-				end
-			end
-		end
-		
-		local contour = to_mark:contour()
-		if contour then
-			safe_call(contour.add, contour, "mark_unit_dangerous" or "mark_enemy", true)
-		end
-	end
+        local unit_movement = my_unit:movement()
+        if not unit_movement then
+            return nil
+        end
+
+        local player_manager = managers.player
+        local contour_id = player_manager:get_contour_for_marked_enemy() or "mark_enemy"
+        local has_ap = player_manager:has_category_upgrade("team", "crew_ai_ap_ammo") or false
+
+        local my_head = unit_movement:m_head_pos()
+        local best_unit, best_score
+
+        for _, attention_info in pairs(enemies or {}) do
+            if attention_info.identified and (attention_info.verified or attention_info.nearly_visible) then
+                local att_unit = attention_info.unit
+                if alive(att_unit) then
+                    local reaction = attention_info.reaction or AIAttentionObject.REACT_IDLE
+                    if reaction >= REACT_COMBAT then
+                        local att_base = att_unit:base()
+
+                        local is_special =
+                            (att_base and att_base.has_tag and att_base:has_tag("special"))
+                            or (attention_info.char_tweak and attention_info.char_tweak.priority_shout)
+                            or attention_info.is_shield
+
+                        if is_special then
+                            local target_head = attention_info.m_head_pos
+                            if not target_head and att_unit.movement and att_unit:movement() then
+                                target_head = att_unit:movement():m_head_pos()
+                            end
+
+                            local dis = attention_info.verified_dis
+                            if not dis and target_head then
+                                dis = mvector3.distance(my_head, target_head)
+                            end
+
+                            if dis and dis <= (CONSTANTS and CONSTANTS.MARK_DISTANCE or 4000) then
+                                local u_contour = att_unit:contour()
+                                if u_contour and not (u_contour:has_id(contour_id)
+                                    or u_contour:has_id("mark_unit_dangerous")
+                                    or u_contour:has_id("mark_enemy")) then
+
+                                    local shield_blocked = false
+                                    if target_head then
+                                        local ray = World:raycast(
+                                            "ray",
+                                            my_head,
+                                            target_head,
+                                            "ignore_unit", { my_unit },
+                                            "slot_mask", MASK and MASK.enemy_shield_check or 0
+                                        )
+                                        shield_blocked = ray and true or false
+                                    end
+
+                                    local can_hit = has_ap or (CONSTANTS and dis <= CONSTANTS.MELEE_DISTANCE) or not shield_blocked
+                                    if (not attention_info.is_shield) or can_hit then
+                                        local score = dis
+                                        if attention_info.verified then score = score - 150 end
+                                        if attention_info.is_shield then score = score - 200 end
+
+                                        if (not best_score) or score < best_score then
+                                            best_score = score
+                                            best_unit = att_unit
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        return best_unit
+    end
+
+    function TeamAILogicAssault.mark_enemy(data, criminal, to_mark, play_sound, play_action)
+        if not alive(criminal) or not alive(to_mark) then
+            return
+        end
+
+        local t = TimerManager:game():time()
+        data._ai_mark_cd = data._ai_mark_cd or 2.0
+        data._ai_last_mark_t = data._ai_last_mark_t or 0
+        if t - data._ai_last_mark_t < data._ai_mark_cd then
+            return
+        end
+
+        local mark_base = to_mark:base()
+        if not mark_base then
+            return
+        end
+
+        local char_tweak = mark_base.char_tweak and mark_base:char_tweak()
+        local is_special = (mark_base.has_tag and mark_base:has_tag("special")) or (char_tweak and char_tweak.priority_shout)
+        if not is_special then
+            return
+        end
+
+        if play_sound and criminal.sound and criminal:sound() then
+            local sound_name = (char_tweak and char_tweak.priority_shout) or "f44"
+            local snd = criminal:sound()
+            if snd and snd.say then
+                safe_call(snd.say, snd, tostring(sound_name) .. "x_any", true, true)
+            end
+        end
+
+        if play_action and criminal.movement and criminal:movement() and not criminal:movement():chk_action_forbidden("action") then
+            local new_action = { type = "act", variant = "arrest", body_part = 3, align_sync = true }
+            if criminal.brain and criminal:brain() and criminal:brain():action_request(new_action) then
+                if data.internal_data then
+                    data.internal_data.gesture_arrest = true
+                end
+            end
+        end
+
+        local contour = to_mark:contour()
+        if contour then
+            local player_manager = managers.player
+            local prefer_id = player_manager and player_manager.get_contour_for_marked_enemy and player_manager:get_contour_for_marked_enemy() or nil
+
+            local c_id = prefer_id or "mark_unit_dangerous"
+
+            if not contour:has_id(c_id) then
+                safe_call(contour.add, contour, c_id, true)
+            end
+        end
+
+        data._ai_last_mark_t = t
+    end
 
 	function TeamAILogicAssault.check_smart_reload(data)
 		local unit = data.unit
