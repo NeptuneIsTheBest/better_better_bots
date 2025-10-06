@@ -978,6 +978,7 @@ end
 if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 	local mvec3_angle = mvector3.angle
 	local mvec3_norm = mvector3.normalize
+	local mvec3_distance = mvector3.distance
 	local math_ceil = math.ceil
 	local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
@@ -1260,7 +1261,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 			
 			for j, u_char2 in ipairs(enemy_cluster) do
 				if i ~= j and u_char2.m_head_pos then
-					local dist = mvector3.distance(u_char1.m_head_pos, u_char2.m_head_pos)
+					local dist = mvec3_distance(u_char1.m_head_pos, u_char2.m_head_pos)
 					if dist <= CONSTANTS.CLUSTER_DISTANCE then
 						cluster_count = cluster_count + 1
 					end
