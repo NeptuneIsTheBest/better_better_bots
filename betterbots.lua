@@ -937,79 +937,79 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
         local max_dis_sq = max_dis * max_dis
 
         for u_key, u_char in pairs(all_civs) do
-            local u_tracker = u_char.tracker
-            if not u_tracker or not chk_vis_func(my_tracker, u_tracker) then
-                goto continue
-            end
-
-            local char_tweak = u_char.char_tweak
-            if not char_tweak or not char_tweak.intimidateable then
-                goto continue
-            end
-
-            local unit = u_char.unit
-            if not alive(unit) then
-                goto continue
-            end
-
-            local unit_mov = unit:movement()
-            if not unit_mov then
-                goto continue
-            end
-
-            local u_head_pos = unit_mov:m_head_pos()
-            local vec = u_head_pos - head_pos
-            local dist_sq = mvec3_dot(vec, vec)
-
-            if dist_sq > max_dis_sq then
-                goto continue
-            end
-
-            local dist = math.sqrt(dist_sq)
-            if dist > 0 then
-                mvec3_set_length(vec, 1)
-                if mvec3_angle(vec, look_vec) > max_angle then
-                    goto continue
+            repeat
+                local u_tracker = u_char.tracker
+                if not u_tracker or not chk_vis_func(my_tracker, u_tracker) then
+                    break
                 end
-            end
 
-            local ray = World:raycast("ray", head_pos, u_head_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
-            if ray then
-                goto continue
-            end
+                local char_tweak = u_char.char_tweak
+                if not char_tweak or not char_tweak.intimidateable then
+                    break
+                end
 
-            local unit_base = unit:base()
-            if unit_base and unit_base.unintimidateable then
-                goto continue
-            end
+                local unit = u_char.unit
+                if not alive(unit) then
+                    break
+                end
 
-            local anim_data = unit:anim_data()
-            if not anim_data or anim_data.unintimidateable or anim_data.drop then
-                goto continue
-            end
+                local unit_mov = unit:movement()
+                if not unit_mov then
+                    break
+                end
 
-            local unit_brain = unit:brain()
-            if not unit_brain or unit_brain:is_tied() then
-                goto continue
-            end
+                local u_head_pos = unit_mov:m_head_pos()
+                local vec = u_head_pos - head_pos
+                local dist_sq = mvec3_dot(vec, vec)
 
-            local unit_data = unit:unit_data()
-            if unit_data and unit_data.disable_shout then
-                goto continue
-            end
+                if dist_sq > max_dis_sq then
+                    break
+                end
 
-            if unit_mov:cool() then
-                goto continue
-            end
+                local dist = math.sqrt(dist_sq)
+                if dist > 0 then
+                    mvec3_set_length(vec, 1)
+                    if mvec3_angle(vec, look_vec) > max_angle then
+                        break
+                    end
+                end
 
-            intimidateable_civilians[#intimidateable_civilians + 1] = {
-                unit = unit,
-                key = u_key,
-                inv_wgt = 1
-            }
-            best_civ = best_civ or unit
+                local ray = World:raycast("ray", head_pos, u_head_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
+                if ray then
+                    break
+                end
 
-            ::continue::
+                local unit_base = unit:base()
+                if unit_base and unit_base.unintimidateable then
+                    break
+                end
+
+                local anim_data = unit:anim_data()
+                if not anim_data or anim_data.unintimidateable or anim_data.drop then
+                    break
+                end
+
+                local unit_brain = unit:brain()
+                if not unit_brain or unit_brain:is_tied() then
+                    break
+                end
+
+                local unit_data = unit:unit_data()
+                if unit_data and unit_data.disable_shout then
+                    break
+                end
+
+                if unit_mov:cool() then
+                    break
+                end
+
+                intimidateable_civilians[#intimidateable_civilians + 1] = {
+                    unit = unit,
+                    key = u_key,
+                    inv_wgt = 1
+                }
+                best_civ = best_civ or unit
+            until true
         end
 
         return best_civ, 1, intimidateable_civilians
