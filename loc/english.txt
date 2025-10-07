@@ -48,5 +48,7 @@
   "ammo_toggle_title": "Bot Kills Do Not Drop Ammo",
   "ammo_toggle_desc": "If checked, whenever a bot kills an enemy, that enemy will not drop an ammo pickup.",
   "conc_toggle_title": "Bots Throw Concussion Grenades",
-  "conc_toggle_desc": "If checked, bots will throw concussion grenades when encountering groups of nearby enemies."
+  "conc_toggle_desc": "If checked, bots will throw concussion grenades when encountering groups of nearby enemies.",
+  "coop_toggle_title": "Robots cooperate to kill enemies",
+  "coop_toggle_desc": "If selected, bots will attempt to coordinate their attacks and protect each other."
 }

@@ -171,6 +171,15 @@
 			"callback" : "callback_conc_toggle",
 			"value" : "conc",
 			"default_value" : false
-		}
+		},
+        {
+            "type" : "toggle",
+            "id" : "coop_toggle",
+            "title" : "coop_toggle_title",
+            "description" : "coop_toggle_desc",
+            "callback" : "callback_coop_toggle",
+            "value" : "coop",
+            "default_value" : false
+        }
 	]
 }

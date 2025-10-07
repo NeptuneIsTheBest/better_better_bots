@@ -1,45 +1,14 @@
 _G.BB = _G.BB or {}
 
 do
-	if ((getmetatable(_G) or {}).__index or {}).managers == nil then
+	local mt = getmetatable(_G) or {}
+	if not (mt.__index or {}).managers then
 		local t = { managers = managers, __index = { managers = managers } }
-		setmetatable(_G, setmetatable(t, getmetatable(_G)))
+		setmetatable(_G, setmetatable(t, mt))
 	end
 end
 
 local BB = _G.BB
-
-local function _get_mask(name, fallback_slots)
-	if name and managers and managers.slot and managers.slot.get_mask then
-		local ok, m = pcall(managers.slot.get_mask, managers.slot, name)
-		if ok and m then
-			return m
-		end
-	end
-
-	if fallback_slots == nil then
-		return World:make_slot_mask()
-	end
-	if type(fallback_slots) == "table" then
-		return World:make_slot_mask(unpack(fallback_slots))
-	elseif type(fallback_slots) == "number" then
-		return World:make_slot_mask(fallback_slots)
-	else
-		return World:make_slot_mask()
-	end
-end
-
-local MASK = {
-	AI_visibility = _get_mask("AI_visibility", {1, 11, 38, 39}),
-	enemy_shield_check = _get_mask("enemy_shield_check", 8),
-	hostages = _get_mask("hostages", 22),
-	players = _get_mask("players", {2, 3, 4, 5}),
-	criminals_no_deployables = _get_mask("criminals_no_deployables", {2, 3, 16})
-}
-
-local SLOTS = {
-	HOSTAGES = 22
-}
 
 local CONSTANTS = {
 	GRACE_PERIOD = 10,
@@ -57,13 +26,40 @@ local CONSTANTS = {
 	INTIMIDATE_COOLDOWN = 2,
 	MARK_COOLDOWN = 2,
 	INTIMIDATE_MAX_ATTEMPTS = 3,
+	COOP_TARGET_DURATION = 5,
+	COOP_TEAMMATE_DANGER_RANGE = 1500,
 }
 
-BB._path = ModPath
-BB._data_path = SavePath .. "bb_data.txt"
-BB._data = BB._data or {}
-BB.cops_to_intimidate = BB.cops_to_intimidate or {}
-BB.grace_period = BB.grace_period or CONSTANTS.GRACE_PERIOD
+local SLOTS = {
+	HOSTAGES = 22
+}
+
+local function _get_mask(name, fallback_slots)
+	if name and managers and managers.slot and managers.slot.get_mask then
+		local ok, m = pcall(managers.slot.get_mask, managers.slot, name)
+		if ok and m then
+			return m
+		end
+	end
+
+	if fallback_slots == nil then
+		return World:make_slot_mask()
+	elseif type(fallback_slots) == "table" then
+		return World:make_slot_mask(unpack(fallback_slots))
+	elseif type(fallback_slots) == "number" then
+		return World:make_slot_mask(fallback_slots)
+	else
+		return World:make_slot_mask()
+	end
+end
+
+local MASK = {
+	AI_visibility = _get_mask("AI_visibility", {1, 11, 38, 39}),
+	enemy_shield_check = _get_mask("enemy_shield_check", 8),
+	hostages = _get_mask("hostages", 22),
+	players = _get_mask("players", {2, 3, 4, 5}),
+	criminals_no_deployables = _get_mask("criminals_no_deployables", {2, 3, 16})
+}
 
 local function bb_log(msg, level)
 	log(string.format("[Better Bots][%s] %s", level or "INFO", tostring(msg)))
@@ -122,6 +118,21 @@ local function get_unit_health_ratio(unit)
 	return damage.health_ratio and damage:health_ratio() or 0
 end
 
+BB._path = ModPath
+BB._data_path = SavePath .. "bb_data.txt"
+BB._data = BB._data or {}
+BB.cops_to_intimidate = BB.cops_to_intimidate or {}
+BB.grace_period = BB.grace_period or CONSTANTS.GRACE_PERIOD
+BB.dom_failures = BB.dom_failures or {}
+BB.dom_blacklist = BB.dom_blacklist or {}
+BB.dom_pending = BB.dom_pending or {}
+BB.coop_data = BB.coop_data or {
+	shared_target = nil,
+	shared_target_time = 0,
+	shared_target_priority = 0,
+	teammates_status = {}
+}
+
 function BB:Save()
 	local ok, encoded = pcall(json.encode, self._data)
 	if not ok then
@@ -169,6 +180,178 @@ function BB:get(key, default)
 end
 
 BB:Load()
+
+function BB:is_blacklisted_cop(u_key)
+	return self.dom_blacklist and self.dom_blacklist[u_key] == true
+end
+
+function BB:clear_cop_state(u_key)
+	if not u_key then return end
+	self.cops_to_intimidate[u_key] = nil
+	self.dom_failures[u_key] = nil
+	self.dom_blacklist[u_key] = nil
+	self.dom_pending[u_key] = nil
+end
+
+function BB:on_intimidation_attempt(u_key)
+	if not u_key or self:is_blacklisted_cop(u_key) then return end
+	local timer_mgr = TimerManager
+	if not (timer_mgr and timer_mgr:game()) then return end
+	self.dom_pending[u_key] = timer_mgr:game():time()
+end
+
+function BB:on_intimidation_result(u_key, success)
+	if not u_key then return end
+	self.dom_pending[u_key] = nil
+
+	if success then
+		self.dom_failures[u_key] = nil
+		self.dom_blacklist[u_key] = nil
+		return
+	end
+
+	local rec = self.dom_failures[u_key] or { attempts = 0 }
+	rec.attempts = (rec.attempts or 0) + 1
+
+	local timer_mgr = TimerManager
+	rec.last_t = (timer_mgr and timer_mgr:game() and timer_mgr:game():time()) or 0
+	self.dom_failures[u_key] = rec
+
+	if rec.attempts >= CONSTANTS.INTIMIDATE_MAX_ATTEMPTS then
+		self.dom_blacklist[u_key] = true
+		self.cops_to_intimidate[u_key] = nil
+		bb_log(("Cop %s blacklisted after %d failed intimidation attempts"):format(tostring(u_key), rec.attempts))
+	end
+end
+
+function BB:add_cop_to_intimidation_list(unit_key)
+	if not unit_key then return end
+
+	local timer_mgr = TimerManager
+	if not (timer_mgr and timer_mgr:game()) then return end
+
+	if self:is_blacklisted_cop(unit_key) then return end
+
+	local t = timer_mgr:game():time()
+	local prev_t = self.cops_to_intimidate[unit_key]
+	self.cops_to_intimidate[unit_key] = t
+
+	if not Network:is_server() then return end
+
+	local is_new = not prev_t or (t - prev_t) > self.grace_period
+	if not is_new then return end
+
+	local function clear_attention_for_unit(unit)
+		if not alive(unit) then return end
+		local brain = unit:brain()
+		if not (brain and brain._logic_data) then return end
+
+		local att_obj = brain._logic_data.attention_obj
+		if att_obj and att_obj.u_key == unit_key then
+			if CopLogicBase and CopLogicBase._set_attention_obj then
+				CopLogicBase._set_attention_obj(brain._logic_data)
+			end
+		end
+	end
+
+	local gstate = managers.groupai and managers.groupai:state()
+	if not gstate then return end
+
+	if gstate._ai_criminals then
+		for _, sighting in pairs(gstate._ai_criminals) do
+			if sighting and sighting.unit then
+				clear_attention_for_unit(sighting.unit)
+			end
+		end
+	end
+
+	if gstate._converted_police then
+		for _, unit in pairs(gstate._converted_police) do
+			clear_attention_for_unit(unit)
+		end
+	end
+end
+
+function BB:update_teammate_status(unit)
+	if not alive(unit) then return end
+	if not self:get("coop", false) then return end
+
+	local u_key = unit:key()
+	local health_ratio = get_unit_health_ratio(unit)
+	local unit_movement = unit:movement()
+	local pos = unit_movement and unit_movement:m_head_pos()
+
+	local timer_mgr = TimerManager
+	if not (timer_mgr and timer_mgr:game()) then return end
+
+	self.coop_data.teammates_status[u_key] = {
+		unit = unit,
+		health_ratio = health_ratio,
+		position = pos,
+		in_danger = health_ratio < 0.4,
+		needs_cover = health_ratio < 0.25,
+		last_update = timer_mgr:game():time()
+	}
+end
+
+function BB:set_shared_target(unit, priority)
+	if not alive(unit) then return end
+	if not self:get("coop", false) then return end
+
+	local timer_mgr = TimerManager
+	if not (timer_mgr and timer_mgr:game()) then return end
+	local t = timer_mgr:game():time()
+
+	if not self.coop_data.shared_target or
+	   priority > self.coop_data.shared_target_priority or
+	   (t - self.coop_data.shared_target_time) > CONSTANTS.COOP_TARGET_DURATION then
+
+		self.coop_data.shared_target = unit
+		self.coop_data.shared_target_time = t
+		self.coop_data.shared_target_priority = priority
+	end
+end
+
+function BB:get_shared_target()
+	if not self:get("coop", false) then return nil, 0 end
+	if not self.coop_data.shared_target then return nil, 0 end
+
+	local timer_mgr = TimerManager
+	if not (timer_mgr and timer_mgr:game()) then return nil, 0 end
+	local t = timer_mgr:game():time()
+
+	if (t - self.coop_data.shared_target_time) > CONSTANTS.COOP_TARGET_DURATION then
+		self.coop_data.shared_target = nil
+		return nil, 0
+	end
+
+	if not alive(self.coop_data.shared_target) then
+		self.coop_data.shared_target = nil
+		return nil, 0
+	end
+
+	return self.coop_data.shared_target, self.coop_data.shared_target_priority
+end
+
+function BB:get_teammates_in_danger()
+	if not self:get("coop", false) then return {} end
+
+	local timer_mgr = TimerManager
+	if not (timer_mgr and timer_mgr:game()) then return {} end
+	local t = timer_mgr:game():time()
+
+	local in_danger = {}
+
+	for u_key, status in pairs(self.coop_data.teammates_status) do
+		if (t - status.last_update) > 2 then
+			self.coop_data.teammates_status[u_key] = nil
+		elseif status.in_danger and alive(status.unit) then
+			table.insert(in_danger, status)
+		end
+	end
+
+	return in_danger
+end
 
 Hooks:Add("LocalizationManagerPostInit", "LocalizationManagerPostInit_BB", function(loc)
 	if not loc then
@@ -231,6 +414,7 @@ Hooks:Add("MenuManagerInitialize", "MenuManagerInitialize_BB", function(menu_man
 	register_toggle("callback_combat_toggle", "combat")
 	register_toggle("callback_ammo_toggle", "ammo")
 	register_toggle("callback_conc_toggle", "conc")
+	register_toggle("callback_coop_toggle", "coop")
 
 	if MenuHelper and MenuHelper.LoadFromJsonFile then
 		MenuHelper:LoadFromJsonFile(BB._path .. "menu.txt", BB, BB._data)
@@ -238,101 +422,6 @@ Hooks:Add("MenuManagerInitialize", "MenuManagerInitialize_BB", function(menu_man
 		bb_log("MenuHelper not found", "WARN")
 	end
 end)
-
-BB.dom_failures = BB.dom_failures or {}
-BB.dom_blacklist = BB.dom_blacklist or {}
-BB.dom_pending = BB.dom_pending or {}
-
-function BB:is_blacklisted_cop(u_key)
-	return self.dom_blacklist and self.dom_blacklist[u_key] == true
-end
-
-function BB:clear_cop_state(u_key)
-	if not u_key then return end
-	self.cops_to_intimidate[u_key] = nil
-	self.dom_failures[u_key] = nil
-	self.dom_blacklist[u_key] = nil
-	self.dom_pending[u_key] = nil
-end
-
-function BB:on_intimidation_attempt(u_key)
-	if not u_key or self:is_blacklisted_cop(u_key) then return end
-	local timer_mgr = TimerManager
-	if not (timer_mgr and timer_mgr:game()) then return end
-	self.dom_pending[u_key] = timer_mgr:game():time()
-end
-
-function BB:on_intimidation_result(u_key, success)
-	if not u_key then return end
-	self.dom_pending[u_key] = nil
-
-	if success then
-		self.dom_failures[u_key] = nil
-		self.dom_blacklist[u_key] = nil
-		return
-	end
-
-	local rec = self.dom_failures[u_key] or { attempts = 0 }
-	rec.attempts = (rec.attempts or 0) + 1
-
-	local timer_mgr = TimerManager
-	rec.last_t = (timer_mgr and timer_mgr:game() and timer_mgr:game():time()) or 0
-	self.dom_failures[u_key] = rec
-
-	if rec.attempts >= (CONSTANTS.INTIMIDATE_MAX_ATTEMPTS or 3) then
-		self.dom_blacklist[u_key] = true
-		self.cops_to_intimidate[u_key] = nil
-		bb_log(("Cop %s blacklisted after %d failed intimidation attempts"):format(tostring(u_key), rec.attempts))
-	end
-end
-
-function BB:add_cop_to_intimidation_list(unit_key)
-	if not unit_key then return end
-
-	local timer_mgr = TimerManager
-	if not (timer_mgr and timer_mgr:game()) then return end
-
-	if self:is_blacklisted_cop(unit_key) then return end
-
-	local t = timer_mgr:game():time()
-	local prev_t = self.cops_to_intimidate[unit_key]
-	self.cops_to_intimidate[unit_key] = t
-
-	if not Network:is_server() then return end
-
-	local is_new = not prev_t or (t - prev_t) > self.grace_period
-	if not is_new then return end
-
-	local function clear_attention_for_unit(unit)
-		if not alive(unit) then return end
-		local brain = unit:brain()
-		if not (brain and brain._logic_data) then return end
-
-		local att_obj = brain._logic_data.attention_obj
-		if att_obj and att_obj.u_key == unit_key then
-			if CopLogicBase and CopLogicBase._set_attention_obj then
-				CopLogicBase._set_attention_obj(brain._logic_data)
-			end
-		end
-	end
-
-	local gstate = managers.groupai and managers.groupai:state()
-	if not gstate then return end
-
-	if gstate._ai_criminals then
-		for _, sighting in pairs(gstate._ai_criminals) do
-			if sighting and sighting.unit then
-				clear_attention_for_unit(sighting.unit)
-			end
-		end
-	end
-
-	if gstate._converted_police then
-		for _, unit in pairs(gstate._converted_police) do
-			clear_attention_for_unit(unit)
-		end
-	end
-end
 
 if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 	local is_server = Network:is_server()
@@ -473,10 +562,10 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
 		end
 	end
 
-    local old_ff_hit = TeamAIDamage.friendly_fire_hit
-    function TeamAIDamage:friendly_fire_hit()
-        return
-    end
+	local old_ff_hit = TeamAIDamage.friendly_fire_hit
+	function TeamAIDamage:friendly_fire_hit()
+		return
+	end
 end
 
 if RequiredScript == "lib/units/interactions/interactionext" then
@@ -663,10 +752,10 @@ if RequiredScript == "lib/managers/criminalsmanager" then
 end
 
 if RequiredScript == "lib/tweak_data/playertweakdata" then
-    local old_set_sp = PlayerTweakData._set_singleplayer
-    function PlayerTweakData:_set_singleplayer(...)
-        return
-    end
+	local old_set_sp = PlayerTweakData._set_singleplayer
+	function PlayerTweakData:_set_singleplayer(...)
+		return
+	end
 end
 
 local function remove_ai_from_bullet_mask(self, setup_data)
@@ -842,201 +931,241 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 	local mvec3_norm = mvector3.normalize
 	local mvec3_angle = mvector3.angle
 	local mvec3_dot = mvector3.dot
-	local mvec3_set_length = mvector3.set_length
 	local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
-    function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
-        local best_target, best_priority, best_reaction
-        local unit = data.unit
+	function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
+		local best_target, best_priority, best_reaction
+		local unit = data.unit
 
-        if not (alive(unit) and unit:movement()) then
-            return nil, nil, nil
-        end
+		if not (alive(unit) and unit:movement()) then
+			return nil, nil, nil
+		end
 
-        local t = data.t or (TimerManager and TimerManager:game():time()) or 0
-        local head_pos = unit:movement():m_head_pos()
-        local head_rot = unit:movement():m_head_rot()
-        local fwd = head_rot and head_rot:y()
+		local t = data.t or (TimerManager and TimerManager:game():time()) or 0
+		local head_pos = unit:movement():m_head_pos()
+		local head_rot = unit:movement():m_head_rot()
+		local fwd = head_rot and head_rot:y()
 
-        local is_team_ai_unit = managers.groupai and managers.groupai:state():is_unit_team_AI(unit)
-        local has_ap = is_team_ai_unit and managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
+		local is_team_ai_unit = managers.groupai and managers.groupai:state():is_unit_team_AI(unit)
+		local has_ap = is_team_ai_unit and managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
 
-        local ammo_ratio = 1
-        do
-            local current_wep = unit:inventory() and unit:inventory():equipped_unit()
-            if current_wep and current_wep:base() and current_wep:base().ammo_info then
-                local ammo_max, ammo = current_wep:base():ammo_info()
-                if ammo_max and ammo_max > 0 then
-                    ammo_ratio = ammo / ammo_max
-                end
-            end
-        end
+		if BB:get("coop", false) and is_team_ai_unit then
+			BB:update_teammate_status(unit)
+		end
 
-        local current_att = data.attention_obj
-        local current_u_key = current_att and current_att.u_key
+		local ammo_ratio = 1
+		local current_wep = unit:inventory() and unit:inventory():equipped_unit()
+		if current_wep and current_wep:base() and current_wep:base().ammo_info then
+			local ammo_max, ammo = current_wep:base():ammo_info()
+			if ammo_max and ammo_max > 0 then
+				ammo_ratio = ammo / ammo_max
+			end
+		end
 
-        local last_target_u_key = data._last_target_u_key
-        local last_target_t = data._last_target_t or 0
+		local current_att = data.attention_obj
+		local current_u_key = current_att and current_att.u_key
 
-        local function clamp(x, a, b)
-            if x < a then return a end
-            if x > b then return b end
-            return x
-        end
+		local last_target_u_key = data._last_target_u_key
+		local last_target_t = data._last_target_t or 0
 
-        local function has_tag(u, tag)
-            return u and u:base() and u:base().has_tag and u:base():has_tag(tag)
-        end
+		local shared_target_unit, shared_target_priority = nil, 0
+		if BB:get("coop", false) then
+			shared_target_unit, shared_target_priority = BB:get_shared_target()
+		end
 
-        local function aim_align_mult(to_pos)
-            if not (fwd and to_pos and head_pos) then
-                return 1
-            end
-            local dir = to_pos - head_pos
-            local len = mvector3.length(dir)
-            if len < 1e-3 then
-                return 1
-            end
-            mvector3.divide(dir, len)
-            local dot = mvector3.dot(dir, fwd)
-            if dot >= 0.9 then
-                return 1.2
-            elseif dot >= 0.5 then
-                return 1.0
-            elseif dot >= 0.0 then
-                return 0.9
-            else
-                return 0.8
-            end
-        end
+		local teammates_in_danger = {}
+		if BB:get("coop", false) then
+			teammates_in_danger = BB:get_teammates_in_danger()
+		end
 
-        for u_key, attention_data in pairs(attention_objects or {}) do
-            if attention_data.identified then
-                local att_unit = attention_data.unit
-                if alive(att_unit) then
-                    local reaction = attention_data.reaction or AIAttentionObject.REACT_IDLE
-                    if reaction >= REACT_COMBAT then
-                        local dist = attention_data.verified_dis
-                        if dist and dist > 0 then
-                            local priority_mult = 1
-                            local threat_mult = 1
-                            local verified = attention_data.verified
+		local function has_tag(u, tag)
+			return u and u:base() and u:base().has_tag and u:base():has_tag(tag)
+		end
 
-                            if verified then
-                                local enemy_brain = att_unit.brain and att_unit:brain()
-                                local enemy_data = enemy_brain and enemy_brain._logic_data
-                                if enemy_data then
-                                    local enemy_att = enemy_data.attention_obj
-                                    if enemy_att and enemy_att.u_key == data.key then
-                                        threat_mult = threat_mult * 1.6
-                                    end
-                                end
+		local function aim_align_mult(to_pos)
+			if not (fwd and to_pos and head_pos) then
+				return 1
+			end
+			local dir = to_pos - head_pos
+			local len = mvector3.length(dir)
+			if len < 1e-3 then
+				return 1
+			end
+			mvector3.divide(dir, len)
+			local dot = mvector3.dot(dir, fwd)
+			if dot >= 0.9 then
+				return 1.2
+			elseif dot >= 0.5 then
+				return 1.0
+			elseif dot >= 0.0 then
+				return 0.9
+			else
+				return 0.8
+			end
+		end
 
-                                local health_ratio = get_unit_health_ratio and get_unit_health_ratio(att_unit) or 1
-                                if health_ratio <= 0.3 then
-                                    if dist <= 1200 then
-                                        threat_mult = threat_mult * 1.15
-                                    else
-                                        threat_mult = threat_mult * 0.85
-                                        if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
-                                            threat_mult = threat_mult * 1.3
-                                        end
-                                    end
-                                end
+		local function is_threatening_teammate(att_unit, att_pos)
+			if not BB:get("coop", false) then return false, 1 end
+			if #teammates_in_danger == 0 then return false, 1 end
+			if not (alive(att_unit) and att_pos) then return false, 1 end
 
-                                if current_u_key == u_key then
-                                    local align_bonus = aim_align_mult(attention_data.m_head_pos)
-                                    priority_mult = priority_mult * (6.5 * align_bonus) * threat_mult
-                                end
+			for _, teammate_status in ipairs(teammates_in_danger) do
+				if teammate_status.position then
+					local dist_to_teammate = mvector3.distance(att_pos, teammate_status.position)
+					if dist_to_teammate <= CONSTANTS.COOP_TEAMMATE_DANGER_RANGE then
+						local enemy_brain = att_unit and att_unit:brain()
+						local enemy_data = enemy_brain and enemy_brain._logic_data
+						if enemy_data and enemy_data.attention_obj then
+							local target_key = enemy_data.attention_obj.u_key
+							if target_key == teammate_status.unit:key() then
+								return true, teammate_status.needs_cover and 2.5 or 1.8
+							end
+						end
+						return true, teammate_status.needs_cover and 1.5 or 1.3
+					end
+				end
+			end
+			return false, 1
+		end
 
-                                do
-                                    local ct = attention_data.char_tweak
-                                    local is_dozer   = has_tag(att_unit, "tank")  or (ct and ct.priority_shout == "f34")
-                                    local is_taser   = has_tag(att_unit, "taser")
-                                    local is_cloaker = has_tag(att_unit, "spooc")
-                                    local is_sniper  = has_tag(att_unit, "sniper")
-                                    local is_medic   = has_tag(att_unit, "medic")
-                                    local is_shield  = attention_data.is_shield or has_tag(att_unit, "shield")
+		local highest_priority_seen = 0
 
-                                    if is_taser or is_cloaker then
-                                        priority_mult = priority_mult * (9.0 * threat_mult)
-                                        if dist <= 1200 then
-                                            priority_mult = priority_mult * 1.25
-                                        else
-                                            priority_mult = priority_mult * 0.9
-                                        end
-                                    elseif is_sniper then
-                                        priority_mult = priority_mult * (9.5 * threat_mult)
-                                        if dist > 1500 then
-                                            priority_mult = priority_mult * 1.15
-                                        end
-                                    elseif is_dozer then
-                                        priority_mult = priority_mult * (8.0 * threat_mult)
-                                    elseif is_medic then
-                                        priority_mult = priority_mult * (7.5 * threat_mult)
-                                    elseif attention_data.is_very_dangerous then
-                                        priority_mult = priority_mult * (7.0 * threat_mult)
-                                    elseif is_shield then
-                                        local is_shielded = false
-                                        if head_pos and attention_data.m_head_pos and MASK and MASK.enemy_shield_check then
-                                            local ray = World:raycast("ray", head_pos, attention_data.m_head_pos, "ignore_unit", { unit }, "slot_mask", MASK.enemy_shield_check)
-                                            is_shielded = ray and true or false
-                                        end
-                                        local melee_range = is_team_ai_unit and dist <= ((CONSTANTS and CONSTANTS.MELEE_DISTANCE) or 240)
-                                        if has_ap or melee_range or not is_shielded then
-                                            priority_mult = priority_mult * (6.0 * threat_mult)
-                                        else
-                                            priority_mult = priority_mult * 2.0
-                                        end
-                                    else
-                                        priority_mult = priority_mult * (5.0 * threat_mult)
-                                    end
-                                end
+		for u_key, attention_data in pairs(attention_objects or {}) do
+			if attention_data.identified then
+				local att_unit = attention_data.unit
+				if alive(att_unit) then
+					local reaction = attention_data.reaction or AIAttentionObject.REACT_IDLE
+					if reaction >= REACT_COMBAT then
+						local dist = attention_data.verified_dis
+						if dist and dist > 0 then
+							local priority_mult = 1
+							local threat_mult = 1
+							local verified = attention_data.verified
 
-                                priority_mult = priority_mult * aim_align_mult(attention_data.m_head_pos)
-                            else
-                                local since_verified = t - (attention_data.verified_t or (t - 10))
-                                if since_verified > 0 then
-                                    local fade = clamp(1.0 - since_verified * 0.2, 0.2, 1.0)
-                                    priority_mult = priority_mult * (0.6 * fade)
-                                else
-                                    priority_mult = priority_mult * 0.6
-                                end
-                            end
+							if verified then
+								if shared_target_unit and shared_target_unit:key() == u_key then
+									priority_mult = priority_mult * 2.0
+								end
 
-                            if ammo_ratio < 0.3 and dist > 1200 then
-                                priority_mult = priority_mult * 0.6
-                            end
+								local is_threatening, threat_bonus = is_threatening_teammate(att_unit, attention_data.m_head_pos)
+								if is_threatening then
+									priority_mult = priority_mult * threat_bonus
+								end
 
-                            if last_target_u_key and last_target_u_key == u_key and (t - last_target_t) <= 0.6 then
-                                priority_mult = priority_mult * 1.25
-                            end
+								local enemy_brain = att_unit.brain and att_unit:brain()
+								local enemy_data = enemy_brain and enemy_brain._logic_data
+								if enemy_data then
+									local enemy_att = enemy_data.attention_obj
+									if enemy_att and enemy_att.u_key == data.key then
+										threat_mult = threat_mult * 1.6
+									end
+								end
 
-                            local target_priority = dist / math.max(0.01, priority_mult)
+								local health_ratio = get_unit_health_ratio(att_unit)
+								if health_ratio <= 0.3 then
+									if dist <= 1200 then
+										threat_mult = threat_mult * 1.15
+									else
+										threat_mult = threat_mult * 0.85
+										if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
+											threat_mult = threat_mult * 1.3
+										end
+									end
+								end
 
-                            local cop_key_time = BB and BB.cops_to_intimidate and BB.cops_to_intimidate[u_key]
-                            local intimidation_in_progress = cop_key_time and t - cop_key_time < (BB.grace_period or 1.0)
+								if current_u_key == u_key then
+									local align_bonus = aim_align_mult(attention_data.m_head_pos)
+									priority_mult = priority_mult * (6.5 * align_bonus) * threat_mult
+								end
 
-                            if not intimidation_in_progress then
-                                if not best_priority or best_priority > target_priority then
-                                    best_target = attention_data
-                                    best_priority = target_priority
-                                    best_reaction = reaction
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
+								local ct = attention_data.char_tweak
+								local is_dozer   = has_tag(att_unit, "tank")  or (ct and ct.priority_shout == "f34")
+								local is_taser   = has_tag(att_unit, "taser")
+								local is_cloaker = has_tag(att_unit, "spooc")
+								local is_sniper  = has_tag(att_unit, "sniper")
+								local is_medic   = has_tag(att_unit, "medic")
+								local is_shield  = attention_data.is_shield or has_tag(att_unit, "shield")
 
-        if best_target then
-            data._last_target_u_key = best_target.u_key
-            data._last_target_t = t
-        end
+								local base_priority = 5.0
 
-        return best_target, best_priority, best_reaction
-    end
+								if is_taser or is_cloaker then
+									base_priority = 9.0
+									priority_mult = priority_mult * (dist <= 1200 and 1.25 or 0.9)
+								elseif is_sniper then
+									base_priority = 9.5
+									if dist > 1500 then
+										priority_mult = priority_mult * 1.15
+									end
+								elseif is_dozer then
+									base_priority = 8.0
+								elseif is_medic then
+									base_priority = 7.5
+								elseif attention_data.is_very_dangerous then
+									base_priority = 7.0
+								elseif is_shield then
+									local is_shielded = false
+									if head_pos and attention_data.m_head_pos and MASK and MASK.enemy_shield_check then
+										local ray = World:raycast("ray", head_pos, attention_data.m_head_pos, "ignore_unit", { unit }, "slot_mask", MASK.enemy_shield_check)
+										is_shielded = ray and true or false
+									end
+									local melee_range = is_team_ai_unit and dist <= CONSTANTS.MELEE_DISTANCE
+									if has_ap or melee_range or not is_shielded then
+										base_priority = 6.0
+									else
+										base_priority = 2.0
+									end
+								end
+
+								priority_mult = priority_mult * (base_priority * threat_mult)
+
+								if base_priority > highest_priority_seen then
+									highest_priority_seen = base_priority
+								end
+
+								priority_mult = priority_mult * aim_align_mult(attention_data.m_head_pos)
+							else
+								local since_verified = t - (attention_data.verified_t or (t - 10))
+								local fade = clamp(1.0 - since_verified * 0.2, 0.2, 1.0)
+								priority_mult = priority_mult * (0.6 * (since_verified > 0 and fade or 1))
+							end
+
+							if ammo_ratio < 0.3 and dist > 1200 then
+								priority_mult = priority_mult * 0.6
+							end
+
+							if last_target_u_key and last_target_u_key == u_key and (t - last_target_t) <= 0.6 then
+								priority_mult = priority_mult * 1.25
+							end
+
+							local target_priority = dist / math.max(0.01, priority_mult)
+
+							local cop_key_time = BB and BB.cops_to_intimidate and BB.cops_to_intimidate[u_key]
+							local intimidation_in_progress = cop_key_time and t - cop_key_time < (BB.grace_period or 1.0)
+
+							if not intimidation_in_progress then
+								if not best_priority or best_priority > target_priority then
+									best_target = attention_data
+									best_priority = target_priority
+									best_reaction = reaction
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+
+		if BB:get("coop", false) and best_target and alive(best_target.unit) and highest_priority_seen >= 7.0 then
+			BB:set_shared_target(best_target.unit, highest_priority_seen)
+		end
+
+		if best_target then
+			data._last_target_u_key = best_target.u_key
+			data._last_target_t = t
+		end
+
+		return best_target, best_priority, best_reaction
+	end
 
 	if BB:get("maskup", false) then
 		local old_onalert = TeamAILogicIdle.on_alert
@@ -1062,142 +1191,140 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 	local math_ceil = math.ceil
 	local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
-    function TeamAILogicAssault.find_enemy_to_mark(enemies, my_unit)
-        if not (alive(my_unit) and managers.player) then
-            return nil
-        end
+	function TeamAILogicAssault.find_enemy_to_mark(enemies, my_unit)
+		if not (alive(my_unit) and managers.player) then
+			return nil
+		end
 
-        local unit_movement = my_unit:movement()
-        if not unit_movement then
-            return nil
-        end
+		local unit_movement = my_unit:movement()
+		if not unit_movement then
+			return nil
+		end
 
-        local player_manager = managers.player
-        local contour_id = player_manager.get_contour_for_marked_enemy and player_manager:get_contour_for_marked_enemy() or "mark_enemy"
-        constour_id = contour_id or "mark_enemy"
-        local has_ap = player_manager:has_category_upgrade("team", "crew_ai_ap_ammo") or false
+		local player_manager = managers.player
+		local contour_id = player_manager.get_contour_for_marked_enemy and player_manager:get_contour_for_marked_enemy() or "mark_enemy"
+		local has_ap = player_manager:has_category_upgrade("team", "crew_ai_ap_ammo") or false
 
-        local my_head = unit_movement:m_head_pos()
-        local best_unit, best_score
+		local my_head = unit_movement:m_head_pos()
+		local best_unit, best_score
 
-        for _, attention_info in pairs(enemies or {}) do
-            if attention_info.identified and (attention_info.verified or attention_info.nearly_visible) then
-                local att_unit = attention_info.unit
-                if alive(att_unit) then
-                    local reaction = attention_info.reaction or AIAttentionObject.REACT_IDLE
-                    if reaction >= REACT_COMBAT then
-                        local att_base = att_unit:base()
+		for _, attention_info in pairs(enemies or {}) do
+			if attention_info.identified and (attention_info.verified or attention_info.nearly_visible) then
+				local att_unit = attention_info.unit
+				if alive(att_unit) then
+					local reaction = attention_info.reaction or AIAttentionObject.REACT_IDLE
+					if reaction >= REACT_COMBAT then
+						local att_base = att_unit:base()
 
-                        local is_special =
-                            (att_base and att_base.has_tag and att_base:has_tag("special"))
-                            or (attention_info.char_tweak and attention_info.char_tweak.priority_shout)
-                            or attention_info.is_shield
+						local is_special =
+							(att_base and att_base.has_tag and att_base:has_tag("special"))
+							or (attention_info.char_tweak and attention_info.char_tweak.priority_shout)
+							or attention_info.is_shield
 
-                        if is_special then
-                            local target_head = attention_info.m_head_pos
-                            if not target_head and att_unit.movement and att_unit:movement() then
-                                target_head = att_unit:movement():m_head_pos()
-                            end
+						if is_special then
+							local target_head = attention_info.m_head_pos
+							if not target_head and att_unit.movement and att_unit:movement() then
+								target_head = att_unit:movement():m_head_pos()
+							end
 
-                            local dis = attention_info.verified_dis
-                            if not dis and target_head then
-                                dis = mvector3.distance(my_head, target_head)
-                            end
+							local dis = attention_info.verified_dis
+							if not dis and target_head then
+								dis = mvector3.distance(my_head, target_head)
+							end
 
-                            if dis and dis <= (CONSTANTS and CONSTANTS.MARK_DISTANCE or 4000) then
-                                local u_contour = att_unit:contour()
-                                if u_contour and not (u_contour:has_id(contour_id)
-                                    or u_contour:has_id("mark_unit_dangerous")
-                                    or u_contour:has_id("mark_enemy")) then
+							if dis and dis <= CONSTANTS.MARK_DISTANCE then
+								local u_contour = att_unit:contour()
+								if u_contour and not (u_contour:has_id(contour_id)
+									or u_contour:has_id("mark_unit_dangerous")
+									or u_contour:has_id("mark_enemy")) then
 
-                                    local shield_blocked = false
-                                    if target_head then
-                                        local ray = World:raycast(
-                                            "ray",
-                                            my_head,
-                                            target_head,
-                                            "ignore_unit", { my_unit },
-                                            "slot_mask", MASK and MASK.enemy_shield_check or 0
-                                        )
-                                        shield_blocked = ray and true or false
-                                    end
+									local shield_blocked = false
+									if target_head then
+										local ray = World:raycast(
+											"ray",
+											my_head,
+											target_head,
+											"ignore_unit", { my_unit },
+											"slot_mask", MASK.enemy_shield_check
+										)
+										shield_blocked = ray and true or false
+									end
 
-                                    local can_hit = has_ap or (CONSTANTS and dis <= CONSTANTS.MELEE_DISTANCE) or not shield_blocked
-                                    if (not attention_info.is_shield) or can_hit then
-                                        local score = dis
-                                        if attention_info.verified then score = score - 150 end
-                                        if attention_info.is_shield then score = score - 200 end
+									local can_hit = has_ap or dis <= CONSTANTS.MELEE_DISTANCE or not shield_blocked
+									if (not attention_info.is_shield) or can_hit then
+										local score = dis
+										if attention_info.verified then score = score - 150 end
+										if attention_info.is_shield then score = score - 200 end
 
-                                        if (not best_score) or score < best_score then
-                                            best_score = score
-                                            best_unit = att_unit
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
+										if (not best_score) or score < best_score then
+											best_score = score
+											best_unit = att_unit
+										end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
 
-        return best_unit
-    end
+		return best_unit
+	end
 
-    function TeamAILogicAssault.mark_enemy(data, criminal, to_mark, play_sound, play_action)
-        if not (alive(criminal) and alive(to_mark)) then
-            return
-        end
+	function TeamAILogicAssault.mark_enemy(data, criminal, to_mark, play_sound, play_action)
+		if not (alive(criminal) and alive(to_mark)) then
+			return
+		end
 
-        local t = TimerManager:game():time()
-        data._ai_last_mark_t = data._ai_last_mark_t or 0
-        local cd = CONSTANTS.MARK_COOLDOWN or 2
-        if t - data._ai_last_mark_t < cd then
-            return
-        end
+		local t = TimerManager:game():time()
+		data._ai_last_mark_t = data._ai_last_mark_t or 0
+		if t - data._ai_last_mark_t < CONSTANTS.MARK_COOLDOWN then
+			return
+		end
 
-        local mark_base = to_mark:base()
-        if not mark_base then
-            return
-        end
+		local mark_base = to_mark:base()
+		if not mark_base then
+			return
+		end
 
-        local char_tweak = mark_base.char_tweak and mark_base:char_tweak()
-        local is_special = (mark_base.has_tag and mark_base:has_tag("special")) or (char_tweak and char_tweak.priority_shout)
-        if not is_special then
-            return
-        end
+		local char_tweak = mark_base.char_tweak and mark_base:char_tweak()
+		local is_special = (mark_base.has_tag and mark_base:has_tag("special")) or (char_tweak and char_tweak.priority_shout)
+		if not is_special then
+			return
+		end
 
-        if play_sound and criminal.sound and criminal:sound() then
-            local sound_name = (char_tweak and char_tweak.priority_shout) or "f44"
-            local snd = criminal:sound()
-            if snd and snd.say then
-                safe_call(snd.say, snd, tostring(sound_name) .. "x_any", true, true)
-            end
-        end
+		if play_sound and criminal.sound and criminal:sound() then
+			local sound_name = (char_tweak and char_tweak.priority_shout) or "f44"
+			local snd = criminal:sound()
+			if snd and snd.say then
+				safe_call(snd.say, snd, tostring(sound_name) .. "x_any", true, true)
+			end
+		end
 
-        if play_action and criminal.movement and criminal:movement() and not criminal:movement():chk_action_forbidden("action") then
-            local new_action = { type = "act", variant = "arrest", body_part = 3, align_sync = true }
-            if criminal.brain and criminal:brain() and criminal:brain():action_request(new_action) then
-                if data.internal_data then
-                    data.internal_data.gesture_arrest = true
-                end
-            end
-        end
+		if play_action and criminal.movement and criminal:movement() and not criminal:movement():chk_action_forbidden("action") then
+			local new_action = { type = "act", variant = "arrest", body_part = 3, align_sync = true }
+			if criminal.brain and criminal:brain() and criminal:brain():action_request(new_action) then
+				if data.internal_data then
+					data.internal_data.gesture_arrest = true
+				end
+			end
+		end
 
-        local contour = to_mark:contour()
-        if contour then
-            local player_manager = managers.player
-            local prefer_id = player_manager and player_manager.get_contour_for_marked_enemy and player_manager:get_contour_for_marked_enemy() or nil
+		local contour = to_mark:contour()
+		if contour then
+			local player_manager = managers.player
+			local prefer_id = player_manager and player_manager.get_contour_for_marked_enemy and player_manager:get_contour_for_marked_enemy() or nil
 
-            local c_id = prefer_id or "mark_unit_dangerous"
+			local c_id = prefer_id or "mark_unit_dangerous"
 
-            if not contour:has_id(c_id) then
-                safe_call(contour.add, contour, c_id, true)
-            end
-        end
+			if not contour:has_id(c_id) then
+				safe_call(contour.add, contour, c_id, true)
+			end
+		end
 
-        data._ai_last_mark_t = t
-    end
+		data._ai_last_mark_t = t
+	end
 
 	function TeamAILogicAssault.check_smart_reload(data)
 		local unit = data.unit
@@ -1482,118 +1609,118 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 	local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 	local mvec3_angle = mvector3.angle
 
-    local function find_enemy_to_intimidate(data)
-        if not (alive(data.unit) and data.unit:movement()) then
-            return nil
-        end
+	local function find_enemy_to_intimidate(data)
+		if not (alive(data.unit) and data.unit:movement()) then
+			return nil
+		end
 
-        local look_vec = data.unit:movement():m_rot():y()
-        local has_room = managers.groupai and managers.groupai:state() and managers.groupai:state():has_room_for_police_hostage()
-        local consider_all = BB:get("dom", false)
+		local look_vec = data.unit:movement():m_rot():y()
+		local has_room = managers.groupai and managers.groupai:state() and managers.groupai:state():has_room_for_police_hostage()
+		local consider_all = BB:get("dom", false)
 
-        local targets = {}
-        if consider_all then
-            targets = data.detected_attention_objects or {}
-        else
-            for u_key, t in pairs(BB.cops_to_intimidate or {}) do
-                if data.t - t < BB.grace_period then
-                    local att_obj = data.detected_attention_objects and data.detected_attention_objects[u_key]
-                    if att_obj then
-                        targets[u_key] = att_obj
-                    end
-                end
-            end
-        end
+		local targets = {}
+		if consider_all then
+			targets = data.detected_attention_objects or {}
+		else
+			for u_key, t in pairs(BB.cops_to_intimidate or {}) do
+				if data.t - t < BB.grace_period then
+					local att_obj = data.detected_attention_objects and data.detected_attention_objects[u_key]
+					if att_obj then
+						targets[u_key] = att_obj
+					end
+				end
+			end
+		end
 
-        local best_nmy, best_dis
+		local best_nmy, best_dis
 
-        for _, u_char in pairs(targets) do
-            if u_char and u_char.identified and u_char.verified then
-                local unit = u_char.unit
-                if alive(unit) then
-                    if not BB:is_blacklisted_cop(unit:key()) then
-                        local anim_data = unit:anim_data()
-                        local is_surrender_state = anim_data and (anim_data.hands_back or anim_data.surrender)
+		for _, u_char in pairs(targets) do
+			if u_char and u_char.identified and u_char.verified then
+				local unit = u_char.unit
+				if alive(unit) then
+					if not BB:is_blacklisted_cop(unit:key()) then
+						local anim_data = unit:anim_data()
+						local is_surrender_state = anim_data and (anim_data.hands_back or anim_data.surrender)
 
-                        if are_units_foes(data.unit, unit) or is_surrender_state then
-                            local intim_dis = u_char.verified_dis
-                            if intim_dis and intim_dis <= CONSTANTS.INTIMIDATE_DISTANCE and u_char.m_pos then
-                                local vec = u_char.m_pos - data.m_pos
-                                if mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
-                                    local char_tweak = u_char.char_tweak
-                                    if char_tweak and char_tweak.surrender and not char_tweak.priority_shout then
-                                        local unit_inventory = unit:inventory()
-                                        if unit_inventory and unit_inventory:get_weapon() and anim_data then
-                                            if has_room or is_surrender_state then
-                                                local health_ratio = get_unit_health_ratio(unit)
-                                                local is_hurt = health_ratio < 1
+						if are_units_foes(data.unit, unit) or is_surrender_state then
+							local intim_dis = u_char.verified_dis
+							if intim_dis and intim_dis <= CONSTANTS.INTIMIDATE_DISTANCE and u_char.m_pos then
+								local vec = u_char.m_pos - data.m_pos
+								if mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
+									local char_tweak = u_char.char_tweak
+									if char_tweak and char_tweak.surrender and not char_tweak.priority_shout then
+										local unit_inventory = unit:inventory()
+										if unit_inventory and unit_inventory:get_weapon() and anim_data then
+											if has_room or is_surrender_state then
+												local health_ratio = get_unit_health_ratio(unit)
+												local is_hurt = health_ratio < 1
 
-                                                local intim_priority = anim_data.hands_back and 3
-                                                    or anim_data.surrender and 2
-                                                    or (is_hurt and 1)
+												local intim_priority = anim_data.hands_back and 3
+													or anim_data.surrender and 2
+													or (is_hurt and 1)
 
-                                                if intim_priority then
-                                                    intim_dis = intim_dis / intim_priority
-                                                    if (not best_dis) or best_dis > intim_dis then
-                                                        best_nmy = unit
-                                                        best_dis = intim_dis
-                                                    end
-                                                end
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
+												if intim_priority then
+													intim_dis = intim_dis / intim_priority
+													if (not best_dis) or best_dis > intim_dis then
+														best_nmy = unit
+														best_dis = intim_dis
+													end
+												end
+											end
+										end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
 
-        return best_nmy
-    end
+		return best_nmy
+	end
 
-    local function intimidate_law_enforcement(data, intim_unit, play_action)
-        if not alive(intim_unit) then return end
+	local function intimidate_law_enforcement(data, intim_unit, play_action)
+		if not alive(intim_unit) then return end
 
-        if BB:is_blacklisted_cop(intim_unit:key()) then
-            return
-        end
+		if BB:is_blacklisted_cop(intim_unit:key()) then
+			return
+		end
 
-        local anim_data = intim_unit:anim_data()
-        if not anim_data then return end
+		local anim_data = intim_unit:anim_data()
+		if not anim_data then return end
 
-        local act_name, sound_name
-        if anim_data.hands_back then
-            act_name, sound_name = "arrest", "l03x_sin"
-        elseif anim_data.surrender then
-            act_name, sound_name = "arrest", "l02x_sin"
-        else
-            act_name, sound_name = "gesture_stop", "l01x_sin"
-        end
+		local act_name, sound_name
+		if anim_data.hands_back then
+			act_name, sound_name = "arrest", "l03x_sin"
+		elseif anim_data.surrender then
+			act_name, sound_name = "arrest", "l02x_sin"
+		else
+			act_name, sound_name = "gesture_stop", "l01x_sin"
+		end
 
-        local unit = data.unit
-        if not alive(unit) then return end
+		local unit = data.unit
+		if not alive(unit) then return end
 
-        if unit:sound() then
-            safe_call(unit:sound().say, unit:sound(), sound_name, true, true)
-        end
+		if unit:sound() then
+			safe_call(unit:sound().say, unit:sound(), sound_name, true, true)
+		end
 
-        if play_action and unit:movement() and not unit:movement():chk_action_forbidden("action") then
-            if unit:brain() and unit:brain():action_request({type = "act", variant = act_name, body_part = 3, align_sync = true}) then
-                if data.internal_data then
-                    data.internal_data.gesture_arrest = true
-                end
-            end
-        end
+		if play_action and unit:movement() and not unit:movement():chk_action_forbidden("action") then
+			if unit:brain() and unit:brain():action_request({type = "act", variant = act_name, body_part = 3, align_sync = true}) then
+				if data.internal_data then
+					data.internal_data.gesture_arrest = true
+				end
+			end
+		end
 
-        BB:on_intimidation_attempt(intim_unit:key())
+		BB:on_intimidation_attempt(intim_unit:key())
 
-        local intim_brain = intim_unit:brain()
-        if intim_brain and intim_brain.on_intimidated then
-            intim_brain:on_intimidated(1, unit)
-        end
-    end
+		local intim_brain = intim_unit:brain()
+		if intim_brain and intim_brain.on_intimidated then
+			intim_brain:on_intimidated(1, unit)
+		end
+	end
 
 	local function perform_interaction_check(data)
 		local unit = data.unit
@@ -1743,7 +1870,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 		return old_stun(self, ...)
 	end
 
-	local __bb_old_die = CopDamage.die
+	local old_die = CopDamage.die
 	function CopDamage:die(attack_data, ...)
 		local unit = self._unit
 		local u_key = alive(unit) and unit:key()
@@ -1755,7 +1882,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 			end
 		end
 
-		local res = __bb_old_die(self, attack_data, ...)
+		local res = old_die(self, attack_data, ...)
 
 		if u_key then
 			BB:clear_cop_state(u_key)
