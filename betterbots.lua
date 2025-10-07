@@ -10,7 +10,7 @@ end
 local BB = _G.BB
 
 local function _get_mask(name, fallback_slots)
-	if managers and managers.slot and managers.slot.get_mask then
+	if name and managers and managers.slot and managers.slot.get_mask then
 		local ok, m = pcall(managers.slot.get_mask, managers.slot, name)
 		if ok and m then
 			return m
@@ -845,236 +845,198 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 	local mvec3_set_length = mvector3.set_length
 	local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
-	function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
-		local best_target, best_priority, best_reaction
-		local att_obj = data.attention_obj
-		local unit = data.unit
+    function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
+        local best_target, best_priority, best_reaction
+        local unit = data.unit
 
-		if not (alive(unit) and unit:movement()) then
-			return nil, nil, nil
-		end
-
-		local head_pos = unit:movement():m_head_pos()
-		local is_team_ai_unit = managers.groupai and managers.groupai:state():is_unit_team_AI(unit)
-		local has_ap = is_team_ai_unit and managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-
-		local ammo_ratio = 1
-		local current_wep = unit:inventory() and unit:inventory():equipped_unit()
-		if current_wep and current_wep:base() then
-			local ammo_max, ammo = current_wep:base():ammo_info()
-			if ammo_max and ammo_max > 0 then
-				ammo_ratio = ammo / ammo_max
-			end
-		end
-
-		for u_key, attention_data in pairs(attention_objects or {}) do
-			if attention_data.identified then
-				local att_unit = attention_data.unit
-				if alive(att_unit) then
-					local reaction = attention_data.reaction or AIAttentionObject.REACT_IDLE
-					if reaction >= REACT_COMBAT then
-						local target_priority = attention_data.verified_dis
-						if target_priority then
-							local priority_mod = 1
-							local threat_level = 1
-
-							if attention_data.verified then
-								local enemy_brain = att_unit:brain()
-								local enemy_data = enemy_brain and enemy_brain._logic_data
-								if enemy_data then
-									local enemy_att = enemy_data.attention_obj
-									if enemy_att and enemy_att.u_key == data.key then
-										threat_level = threat_level * 1.5
-									end
-								end
-
-								local health_ratio = get_unit_health_ratio(att_unit)
-								if health_ratio <= 0.3 then
-									threat_level = threat_level * 0.7
-									if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
-										threat_level = threat_level * 1.5
-									end
-								end
-
-								if att_obj and att_obj.u_key == u_key then
-									priority_mod = 10 * threat_level
-								elseif attention_data.char_tweak then
-									local special_shout = attention_data.char_tweak.priority_shout
-									if special_shout then
-										local can_heal = att_unit:base() and att_unit:base():has_tag("medic")
-										if special_shout == "f34" then
-											priority_mod = 9 * threat_level
-										elseif can_heal then
-											priority_mod = 8 * threat_level
-										elseif attention_data.is_very_dangerous then
-											priority_mod = 7 * threat_level
-										elseif attention_data.is_shield then
-											local is_shielded = World:raycast("ray", head_pos, attention_data.m_head_pos, "ignore_unit", {unit}, "slot_mask", MASK.enemy_shield_check)
-											local melee_range = is_team_ai_unit and target_priority <= CONSTANTS.MELEE_DISTANCE
-											if has_ap or melee_range or not is_shielded then
-												priority_mod = 6 * threat_level
-											else
-												priority_mod = 2
-											end
-										else
-											priority_mod = 5 * threat_level
-										end
-									else
-										priority_mod = 4 * threat_level
-									end
-								else
-									priority_mod = 3 * threat_level
-								end
-							end
-
-							if ammo_ratio < 0.3 and target_priority > 1000 then
-								priority_mod = priority_mod * 0.5
-							end
-
-							target_priority = target_priority / priority_mod
-
-							if not best_priority or best_priority > target_priority then
-								local cop_key_time = BB.cops_to_intimidate[u_key]
-								local intimidation_in_progress = cop_key_time and data.t - cop_key_time < BB.grace_period
-
-								if not intimidation_in_progress then
-									best_target = attention_data
-									best_priority = target_priority
-									best_reaction = reaction
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-
-		return best_target, best_priority, best_reaction
-	end
-
-    function TeamAILogicIdle._find_intimidateable_civilians(criminal, use_default_shout_shape, max_angle, max_dis)
-        if not (alive(criminal) and managers.enemy) then
-            return nil, 1, {}
+        if not (alive(unit) and unit:movement()) then
+            return nil, nil, nil
         end
 
-        local crim_mov = criminal:movement()
-        if not crim_mov then
-            return nil, 1, {}
+        local t = data.t or (TimerManager and TimerManager:game():time()) or 0
+        local head_pos = unit:movement():m_head_pos()
+        local head_rot = unit:movement():m_head_rot()
+        local fwd = head_rot and head_rot:y()
+
+        local is_team_ai_unit = managers.groupai and managers.groupai:state():is_unit_team_AI(unit)
+        local has_ap = is_team_ai_unit and managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
+
+        local ammo_ratio = 1
+        do
+            local current_wep = unit:inventory() and unit:inventory():equipped_unit()
+            if current_wep and current_wep:base() and current_wep:base().ammo_info then
+                local ammo_max, ammo = current_wep:base():ammo_info()
+                if ammo_max and ammo_max > 0 then
+                    ammo_ratio = ammo / ammo_max
+                end
+            end
         end
 
-        local my_tracker = crim_mov:nav_tracker()
-        if not my_tracker then
-            return nil, 1, {}
+        local current_att = data.attention_obj
+        local current_u_key = current_att and current_att.u_key
+
+        local last_target_u_key = data._last_target_u_key
+        local last_target_t = data._last_target_t or 0
+
+        local function clamp(x, a, b)
+            if x < a then return a end
+            if x > b then return b end
+            return x
         end
 
-        if use_default_shout_shape then
-            max_angle = CONSTANTS.INTIMIDATE_ANGLE or 90
-            max_dis = CONSTANTS.INTIMIDATE_DISTANCE or 1200
-        else
-            max_angle = max_angle or CONSTANTS.INTIMIDATE_ANGLE or 90
-            max_dis = max_dis or CONSTANTS.INTIMIDATE_DISTANCE or 1200
+        local function has_tag(u, tag)
+            return u and u:base() and u:base().has_tag and u:base():has_tag(tag)
         end
 
-        local head_pos = crim_mov:m_head_pos()
-        local look_vec = crim_mov:m_rot():y()
-        local chk_vis_func = my_tracker.check_visibility
-        local slotmask = MASK.AI_visibility
-        local all_civs = managers.enemy:all_civilians()
-
-        if not all_civs then
-            return nil, 1, {}
+        local function aim_align_mult(to_pos)
+            if not (fwd and to_pos and head_pos) then
+                return 1
+            end
+            local dir = to_pos - head_pos
+            local len = mvector3.length(dir)
+            if len < 1e-3 then
+                return 1
+            end
+            mvector3.divide(dir, len)
+            local dot = mvector3.dot(dir, fwd)
+            if dot >= 0.9 then
+                return 1.2
+            elseif dot >= 0.5 then
+                return 1.0
+            elseif dot >= 0.0 then
+                return 0.9
+            else
+                return 0.8
+            end
         end
 
-        local best_civ = nil
-        local intimidateable_civilians = {}
-        local max_dis_sq = max_dis * max_dis
+        for u_key, attention_data in pairs(attention_objects or {}) do
+            if attention_data.identified then
+                local att_unit = attention_data.unit
+                if alive(att_unit) then
+                    local reaction = attention_data.reaction or AIAttentionObject.REACT_IDLE
+                    if reaction >= REACT_COMBAT then
+                        local dist = attention_data.verified_dis
+                        if dist and dist > 0 then
+                            local priority_mult = 1
+                            local threat_mult = 1
+                            local verified = attention_data.verified
 
-        for u_key, u_char in pairs(all_civs) do
-            repeat
-                local u_tracker = u_char.tracker
-                if not (u_tracker and chk_vis_func(my_tracker, u_tracker)) then
-                    break
-                end
+                            if verified then
+                                local enemy_brain = att_unit.brain and att_unit:brain()
+                                local enemy_data = enemy_brain and enemy_brain._logic_data
+                                if enemy_data then
+                                    local enemy_att = enemy_data.attention_obj
+                                    if enemy_att and enemy_att.u_key == data.key then
+                                        threat_mult = threat_mult * 1.6
+                                    end
+                                end
 
-                local char_tweak = u_char.char_tweak
-                if not (char_tweak and char_tweak.intimidateable) then
-                    break
-                end
+                                local health_ratio = get_unit_health_ratio and get_unit_health_ratio(att_unit) or 1
+                                if health_ratio <= 0.3 then
+                                    if dist <= 1200 then
+                                        threat_mult = threat_mult * 1.15
+                                    else
+                                        threat_mult = threat_mult * 0.85
+                                        if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
+                                            threat_mult = threat_mult * 1.3
+                                        end
+                                    end
+                                end
 
-                local unit = u_char.unit
-                if not alive(unit) then
-                    break
-                end
+                                if current_u_key == u_key then
+                                    local align_bonus = aim_align_mult(attention_data.m_head_pos)
+                                    priority_mult = priority_mult * (6.5 * align_bonus) * threat_mult
+                                end
 
-                local unit_mov = unit:movement()
-                if not unit_mov then
-                    break
-                end
+                                do
+                                    local ct = attention_data.char_tweak
+                                    local is_dozer   = has_tag(att_unit, "tank")  or (ct and ct.priority_shout == "f34")
+                                    local is_taser   = has_tag(att_unit, "taser")
+                                    local is_cloaker = has_tag(att_unit, "spooc")
+                                    local is_sniper  = has_tag(att_unit, "sniper")
+                                    local is_medic   = has_tag(att_unit, "medic")
+                                    local is_shield  = attention_data.is_shield or has_tag(att_unit, "shield")
 
-                local u_head_pos = unit_mov:m_head_pos()
-                local vec = u_head_pos - head_pos
-                local dist_sq = mvec3_dot(vec, vec)
+                                    if is_taser or is_cloaker then
+                                        priority_mult = priority_mult * (9.0 * threat_mult)
+                                        if dist <= 1200 then
+                                            priority_mult = priority_mult * 1.25
+                                        else
+                                            priority_mult = priority_mult * 0.9
+                                        end
+                                    elseif is_sniper then
+                                        priority_mult = priority_mult * (9.5 * threat_mult)
+                                        if dist > 1500 then
+                                            priority_mult = priority_mult * 1.15
+                                        end
+                                    elseif is_dozer then
+                                        priority_mult = priority_mult * (8.0 * threat_mult)
+                                    elseif is_medic then
+                                        priority_mult = priority_mult * (7.5 * threat_mult)
+                                    elseif attention_data.is_very_dangerous then
+                                        priority_mult = priority_mult * (7.0 * threat_mult)
+                                    elseif is_shield then
+                                        local is_shielded = false
+                                        if head_pos and attention_data.m_head_pos and MASK and MASK.enemy_shield_check then
+                                            local ray = World:raycast("ray", head_pos, attention_data.m_head_pos, "ignore_unit", { unit }, "slot_mask", MASK.enemy_shield_check)
+                                            is_shielded = ray and true or false
+                                        end
+                                        local melee_range = is_team_ai_unit and dist <= ((CONSTANTS and CONSTANTS.MELEE_DISTANCE) or 240)
+                                        if has_ap or melee_range or not is_shielded then
+                                            priority_mult = priority_mult * (6.0 * threat_mult)
+                                        else
+                                            priority_mult = priority_mult * 2.0
+                                        end
+                                    else
+                                        priority_mult = priority_mult * (5.0 * threat_mult)
+                                    end
+                                end
 
-                if dist_sq > max_dis_sq then
-                    break
-                end
+                                priority_mult = priority_mult * aim_align_mult(attention_data.m_head_pos)
+                            else
+                                local since_verified = t - (attention_data.verified_t or (t - 10))
+                                if since_verified > 0 then
+                                    local fade = clamp(1.0 - since_verified * 0.2, 0.2, 1.0)
+                                    priority_mult = priority_mult * (0.6 * fade)
+                                else
+                                    priority_mult = priority_mult * 0.6
+                                end
+                            end
 
-                local dist = math.sqrt(dist_sq)
-                if dist > 0 then
-                    mvec3_set_length(vec, 1)
-                    if mvec3_angle(vec, look_vec) > max_angle then
-                        break
+                            if ammo_ratio < 0.3 and dist > 1200 then
+                                priority_mult = priority_mult * 0.6
+                            end
+
+                            if last_target_u_key and last_target_u_key == u_key and (t - last_target_t) <= 0.6 then
+                                priority_mult = priority_mult * 1.25
+                            end
+
+                            local target_priority = dist / math.max(0.01, priority_mult)
+
+                            local cop_key_time = BB and BB.cops_to_intimidate and BB.cops_to_intimidate[u_key]
+                            local intimidation_in_progress = cop_key_time and t - cop_key_time < (BB.grace_period or 1.0)
+
+                            if not intimidation_in_progress then
+                                if not best_priority or best_priority > target_priority then
+                                    best_target = attention_data
+                                    best_priority = target_priority
+                                    best_reaction = reaction
+                                end
+                            end
+                        end
                     end
                 end
-
-                local ray = World:raycast("ray", head_pos, u_head_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
-                if ray then
-                    break
-                end
-
-                local unit_base = unit:base()
-                if unit_base and unit_base.unintimidateable then
-                    break
-                end
-
-                local anim_data = unit:anim_data()
-                if not anim_data or anim_data.unintimidateable or anim_data.drop then
-                    break
-                end
-
-                local unit_brain = unit:brain()
-                if not unit_brain or unit_brain:is_tied() then
-                    break
-                end
-
-                local unit_data = unit:unit_data()
-                if unit_data and unit_data.disable_shout then
-                    break
-                end
-
-                if unit_mov:cool() then
-                    break
-                end
-
-                intimidateable_civilians[#intimidateable_civilians + 1] = {
-                    unit = unit,
-                    key = u_key,
-                    inv_wgt = 1
-                }
-                best_civ = best_civ or unit
-            until true
+            end
         end
 
-        return best_civ, 1, intimidateable_civilians
-    end
+        if best_target then
+            data._last_target_u_key = best_target.u_key
+            data._last_target_t = t
+        end
 
-	function TeamAILogicIdle.find_civilian_to_intimidate(criminal, max_angle, max_dis)
-		local civ = nil
-		if TeamAILogicIdle._find_intimidateable_civilians then
-			civ = (TeamAILogicIdle._find_intimidateable_civilians(criminal, false, max_angle, max_dis))
-		end
-		return civ
-	end
+        return best_target, best_priority, best_reaction
+    end
 
 	if BB:get("maskup", false) then
 		local old_onalert = TeamAILogicIdle.on_alert
