@@ -1529,31 +1529,34 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 			local close_enemies, shield_count, special_count = 0, 0, 0
 			local enemy_cluster = {}
 
-			for _, u_char in pairs(data.detected_attention_objects or {}) do
-				if u_char.identified and u_char.verified and u_char.verified_dis and u_char.verified_dis <= CONSTANTS.CONC_DISTANCE then
-					local unit = u_char.unit
-					if alive(unit) and are_units_foes(criminal, unit) then
-						local vec = u_char.m_head_pos - from_pos
-						if vec and mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
-							local unit_base = unit:base()
-							local tweak_table = unit_base and unit_base._tweak_table
+            for _, u_char in pairs(data.detected_attention_objects or {}) do
+                if u_char.identified and u_char.verified and u_char.verified_dis and u_char.verified_dis <= CONSTANTS.CONC_DISTANCE then
+                    local unit = u_char.unit
+                    if alive(unit) and are_units_foes(criminal, unit) then
+                        local unit_brain = unit:brain()
+                        if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
+                            local vec = u_char.m_head_pos - from_pos
+                            if vec and mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
+                                local unit_base = unit:base()
+                                local tweak_table = unit_base and unit_base._tweak_table
 
-							if tweak_table and tweak_table ~= "tank" then
-								close_enemies = close_enemies + 1
+                                if tweak_table and tweak_table ~= "tank" then
+                                    close_enemies = close_enemies + 1
 
-								if u_char.is_shield then
-									shield_count = shield_count + 1
-								end
-								if u_char.char_tweak and u_char.char_tweak.priority_shout then
-									special_count = special_count + 1
-								end
+                                    if u_char.is_shield then
+                                        shield_count = shield_count + 1
+                                    end
+                                    if u_char.char_tweak and u_char.char_tweak.priority_shout then
+                                        special_count = special_count + 1
+                                    end
 
-								table.insert(enemy_cluster, u_char)
-							end
-						end
-					end
-				end
-			end
+                                    table.insert(enemy_cluster, u_char)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
 
 			local should_throw = (close_enemies >= 5) or (shield_count >= 2) or (special_count >= 2 and close_enemies >= 3)
 			if not should_throw then return false end
