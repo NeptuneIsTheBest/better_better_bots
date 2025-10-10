@@ -631,6 +631,19 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
 			end
 		end
 
+        if TeamAIDamage.die then
+            local old_teamai_die = TeamAIDamage.die
+            function TeamAIDamage:die(attack_data, ...)
+                if BB:get("instadwn", false) then
+                    if attack_data and attack_data.variant == "fatal" then
+                        attack_data.variant = "bullet"
+                    end
+                end
+
+                return old_teamai_die(self, attack_data, ...)
+            end
+        end
+
 		function TeamAIDamage:friendly_fire_hit()
 			return
 		end
