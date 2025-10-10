@@ -629,20 +629,32 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
 					return old_regen(self)
 				end
 			end
-		end
 
-        if TeamAIDamage.die then
-            local old_teamai_die = TeamAIDamage.die
-            function TeamAIDamage:die(attack_data, ...)
-                if BB:get("instadwn", false) then
-                    if attack_data and attack_data.variant == "fatal" then
-                        attack_data.variant = "bullet"
+            if TeamAIDamage._check_bleed_out then
+                local old_checkbleedout = TeamAIDamage._check_bleed_out
+                function TeamAIDamage:_check_bleed_out()
+                    if self._health <= 0 and BB:get("instadwn", false) then
+                        managers.groupai:state():on_criminal_disabled(self._unit)
+                        if Network:is_server() then
+                            managers.groupai:state():report_criminal_downed(self._unit)
+                        end
+
+                        self:_die()
+
+                        local dmg_info = {
+                            variant = "bleeding",
+                            result = {
+                                type = "death"
+                            }
+                        }
+                        self:_call_listeners(dmg_info)
+                        return
                     end
-                end
 
-                return old_teamai_die(self, attack_data, ...)
+                    return old_checkbleedout(self)
+                end
             end
-        end
+		end
 
 		function TeamAIDamage:friendly_fire_hit()
 			return
@@ -749,9 +761,6 @@ if RequiredScript == "lib/managers/criminalsmanager" then
 				local health_idx = BB:get("health", 1)
 				if health_options[health_idx] then
 					char_preset.gang_member_damage.HEALTH_INIT = health_options[health_idx]
-				end
-				if BB:get("instadwn", false) then
-					char_preset.gang_member_damage.DOWNED_TIME = 0
 				end
 			end
 
