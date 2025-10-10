@@ -851,11 +851,9 @@ if RequiredScript == "lib/tweak_data/playertweakdata" then
 end
 
 local function remove_ai_from_bullet_mask(self, setup_data)
-	if not World then return end
-
 	local user_unit = setup_data and setup_data.user_unit
 	if alive(user_unit) and is_team_ai(user_unit) and self._bullet_slotmask then
-		local ai_friends_mask = (MASK.criminals_no_deployables - MASK.players) + MASK.hostages
+		local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
 		self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
 	end
 end
@@ -1279,12 +1277,13 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 						if reaction >= REACT_COMBAT then
 							local att_base = att_unit:base()
 
+							local is_turret = attention_info.is_deployable
 							local is_special =
 								(att_base and att_base.has_tag and att_base:has_tag("special"))
 								or (attention_info.char_tweak and attention_info.char_tweak.priority_shout)
 								or attention_info.is_shield
 
-							if is_special then
+							if is_special or is_turret then
 								local target_head = attention_info.m_head_pos
 								if not target_head and att_unit.movement and att_unit:movement() then
 									target_head = att_unit:movement():m_head_pos()
@@ -1328,51 +1327,55 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 			return best_unit
 		end
 
-		function TeamAILogicAssault.mark_enemy(data, criminal, to_mark, play_sound, play_action)
-			if not (alive(criminal) and alive(to_mark)) then
-				return
-			end
+        function TeamAILogicAssault.mark_enemy(data, criminal, to_mark, play_sound, play_action)
+            if not (alive(criminal) and alive(to_mark)) then
+                return
+            end
 
-			local t = TimerManager:game():time()
-			data._ai_last_mark_t = data._ai_last_mark_t or 0
-			if t - data._ai_last_mark_t < CONSTANTS.MARK_COOLDOWN then
-				return
-			end
+            local t = TimerManager:game():time()
+            data._ai_last_mark_t = data._ai_last_mark_t or 0
+            if t - data._ai_last_mark_t < CONSTANTS.MARK_COOLDOWN then
+                return
+            end
 
-			local mark_base = to_mark:base()
-			if not mark_base then
-				return
-			end
+            local mark_base = to_mark:base()
+            if not mark_base then
+                return
+            end
 
-			local char_tweak = mark_base.char_tweak and mark_base:char_tweak()
-			local is_special = (mark_base.has_tag and mark_base:has_tag("special")) or (char_tweak and char_tweak.priority_shout)
-			if not is_special then
-				return
-			end
+            local char_tweak = mark_base.char_tweak and mark_base:char_tweak()
+            local is_turret = mark_base.sentry_gun
+            local is_special_enemy = (mark_base.has_tag and mark_base:has_tag("special")) or (char_tweak and char_tweak.priority_shout)
 
-			if play_sound and criminal.sound and criminal:sound() then
-				local sound_name = (char_tweak and char_tweak.priority_shout) or "f44"
-				safe_say(criminal, tostring(sound_name) .. "x_any", true, true)
-			end
+            if not is_special_enemy and not is_turret then
+                return
+            end
 
-			if play_action then
-				request_act(criminal, "arrest", data)
-			end
+            if play_sound and criminal.sound and criminal:sound() then
+                local sound_name = is_turret and "f44" or (char_tweak and char_tweak.priority_shout)
+                if sound_name then
+                    safe_say(criminal, tostring(sound_name) .. "x_any", true, true)
+                end
+            end
 
-			local contour = to_mark:contour()
-			if contour then
-				local player_manager = managers.player
-				local prefer_id = player_manager and player_manager.get_contour_for_marked_enemy and player_manager:get_contour_for_marked_enemy() or nil
+            if play_action then
+                request_act(criminal, "arrest", data)
+            end
 
-				local c_id = prefer_id or "mark_unit_dangerous"
+            local contour = to_mark:contour()
+            if contour then
+                local player_manager = managers.player
+                local prefer_id = player_manager and player_manager.get_contour_for_marked_enemy and player_manager:get_contour_for_marked_enemy() or "mark_enemy"
 
-				if not contour:has_id(c_id) then
-					safe_call(contour.add, contour, c_id, true)
-				end
-			end
+                local c_id = is_turret and "mark_unit_dangerous" or prefer_id
 
-			data._ai_last_mark_t = t
-		end
+                if not contour:has_id(c_id) then
+                    safe_call(contour.add, contour, c_id, true)
+                end
+            end
+
+            data._ai_last_mark_t = t
+        end
 
 		function TeamAILogicAssault.check_smart_reload(data)
 			local unit = data.unit
