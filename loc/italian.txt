@@ -1,51 +1,54 @@
 {
-	"bb_menu_title" : "Better Bots"
-	"bb_menu_desc" : "Modifica le opzioni di BB"
-	"health_choice_title" : "Salute Bot"
-	"health_choice_desc" : "Seleziona la quantita di salute dei bot."
-	"health_choice_default" : "Predefinito"
-	"health_choice_no_scale" : "No Scaling (750)"
-	"health_choice_zeal" : "Zeal (1440)"
-	"speed_choice_title" : "Velocita Bot"
-	"speed_choice_desc" : "Seleziona la velocita di movimento dei Bot."
-	"speed_choice_very_slow" : "Molto lento"
-	"speed_choice_slow" : "Lento"
-	"speed_choice_normal" : "Normale"
-	"speed_choice_fast" : "Veloce"
-	"speed_choice_very_fast" : "Molto Veloce"
-	"speed_choice_lightning" : "Fulmine"
-	"move_choice_title" : "Movimenti dei Bot"
-	"move_choice_desc" : "Seleziona che movimenti possono fare i Bot."
-	"move_choice_default" : "Predefinito"
-	"move_choice_dodge" : "Schivata"
-	"move_choice_no_crouching" : "Non si accucciano"
-	"dodge_choice_title" : "Tipo di schivate"
-	"dodge_choice_desc" : "Seleziona la qualità delle schivate dei Bot. Il movimento dei Bot deve essere settato su Schivata per funzionare."
-	"dodge_choice_poor" : "Povero"
-	"dodge_choice_average" : "Nella media"
-	"dodge_choice_heavy" : "Pesante"
-	"dodge_choice_athletic" : "Atletico"
-	"dodge_choice_ninja" : "Ninja"
-	"dwn_toggle_title" : "Bot Realistici"
-	"dwn_toggle_desc" : "Se selezionato, i bot andranno direttamente in prigione se atterrati dai proiettili."
-	"clk_toggle_title" : "Bot arrestati dai Cloaker"
-	"clk_toggle_desc" : "Se selezionato, i bot verranno arrestati invece che atterrati. Questa opzione non funziona nelle Lobby pubbliche."
-	"chat_toggle_title" : "Disabilita Urli di Battaglia"
-	"chat_toggle_desc" : "Se selezionato, gli urli di battaglia dei bot verranno disattivati."
-	"doc_toggle_title" : "Bot avvisano in caso di salute bassa"
-	"doc_toggle_desc" : "Se selezionato, i bot con la salute bassa avviseranno il giocatore chiedendo un kit medico."
-	"dom_toggle_title" : "Bot dominano i poliziotti"
-	"dom_toggle_desc" : "Se selezionato, i bot domineranno i poliziotti, indipendentemente dal fatto che il giocatore lo stia facendo o no."
-	"biglob_toggle_title" : "Big Lobby"
-	"biglob_toggle_desc" : "Se selezionato, il resto degli slot giocatore sara riempito dai bot se non ci sono giocatori."
-	"reflex_toggle_title" : "Super Riflessi"
-	"reflex_toggle_desc" : "Se selezionato, i bot cercheranno nemici da colpire molto piu velocemente, rendendo il loro tempo d'attacco praticamente istantaneo.\nNota: Questa opzione potrebbe avere un' impatto sul framerate, usare con cautela."
-	"maskup_toggle_title" : "Bot mascherati subito dopo rumori forti"
-	"maskup_toggle_desc" : "Se selezionato, i bot si maschereranno appena sentono colpi di arma da fuoco o esplosioni invece di aspettare che l'allarme scatti."
-	"equip_toggle_title" : "Disabilita Equipaggiamento Bot"
-	"equip_toggle_desc" : "Se selezionato, i bot non indosseranno nessun tipo di equipaggiamento (es: armature, kit medici e munizioni)."
-	"combat_toggle_title" : "Miglioramento nel combattimento"
-	"combat_toggle_desc" : "Se selezionato, i bot avranno una maggiore precisione, danno aumentato, ecc che li rendera simili a dei giocatori reali.\nNota: Se si sta utilizzando la mod Bot Weapons and Equipment, è meglio lasciare questa opzione disabilitata."
-	"ammo_toggle_title" : "Le uccisioni dei bot non lasciano munizioni"
-	"ammo_toggle_desc" : "Se selezionato, i nemici uccisi dai bot non lascieranno munizioni a terra." 
+  "bb_menu_title": "Bot Migliori",
+  "bb_menu_desc": "Modifica le opzioni dei Bot Migliori",
+  "health_choice_title": "Salute dei Bot",
+  "health_choice_desc": "Scegli la quantità di salute dei bot.",
+  "health_choice_default": "Predefinito",
+  "health_choice_no_scale": "Nessuna Scalatura (750)",
+  "health_choice_zeal": "Zeal (1440)",
+  "move_choice_title": "Movimento dei Bot",
+  "move_choice_desc": "Scegli come i bot possono muoversi.",
+  "move_choice_default": "Predefinito",
+  "move_choice_dodge": "Schivata",
+  "move_choice_no_crouching": "Nessun accovacciamento",
+  "dodge_choice_title": "Tipo di Schivata",
+  "dodge_choice_desc": "Scegli il livello di schivata usato dai bot. Il Movimento dei Bot deve essere impostato su Schivata per funzionare.",
+  "dodge_choice_poor": "Scarsa",
+  "dodge_choice_average": "Media",
+  "dodge_choice_heavy": "Pesante",
+  "dodge_choice_athletic": "Atletica",
+  "dodge_choice_ninja": "Ninja",
+  "dmgmul_choice_title": "Moltiplicatore Danno",
+  "dmgmul_choice_desc": "Scegli il moltiplicatore di danno base dei bot. Richiede l'attivazione di Miglioramenti in Combattimento.",
+  "dmgmul_choice_1": "Nessuno",
+  "dmgmul_choice_2": "2",
+  "dmgmul_choice_3": "3",
+  "dmgmul_choice_4": "4",
+  "dmgmul_choice_5": "5",
+  "dwn_toggle_title": "Bot con un solo atterramento",
+  "dwn_toggle_desc": "Se selezionato, i bot andranno immediatamente in custodia se atterrati da danni alla salute.",
+  "clk_toggle_title": "Bot arrestati dai Cloaker",
+  "clk_toggle_desc": "Se selezionato, i bot verranno arrestati dai Cloaker invece di essere atterrati come in PD:TH. Non funziona nelle lobby pubbliche.",
+  "chat_toggle_title": "Disabilita urla di guerra",
+  "chat_toggle_desc": "Se selezionato, le urla di guerra dei bot saranno disabilitate.",
+  "doc_toggle_title": "I bot annunciano salute bassa",
+  "doc_toggle_desc": "Se selezionato, i bot annunceranno quando la loro salute è bassa chiedendo una borsa medica.",
+  "dom_toggle_title": "I bot dominano i poliziotti autonomamente",
+  "dom_toggle_desc": "Se selezionato, i bot domineranno i poliziotti da soli, indipendentemente dal fatto che il giocatore ne stia dominando qualcuno.",
+  "biglob_toggle_title": "Lobby Grande",
+  "biglob_toggle_desc": "Se selezionato, gli slot rimanenti verranno riempiti con dei bot se il giocatore sta usando la mod Big Lobby.",
+  "reflex_toggle_title": "Iper-riflessi",
+  "reflex_toggle_desc": "Se selezionato, i bot cercheranno aggressivamente i nemici, rendendo i loro tempi di reazione quasi istantanei.\nNota: Questo potrebbe avere un impatto sul framerate, usare con cautela.",
+  "maskup_toggle_title": "Maschera all'allerta",
+  "maskup_toggle_desc": "Se selezionato, i bot indosseranno la maschera dopo aver rilevato un'allerta aggressiva (spari, esplosioni, ecc.) invece di attendere che scatti l'allarme.",
+  "equip_toggle_title": "Disabilita equipaggiamento bot",
+  "equip_toggle_desc": "Se selezionato, i bot non indosseranno equipaggiamento cosmetico (corazze e borse mediche/munizioni).",
+  "combat_toggle_title": "Miglioramenti in Combattimento",
+  "combat_toggle_desc": "Se selezionato, i bot avranno precisione/danno/ecc. migliorati per essere più simili ai giocatori umani.\nNota: Se si utilizza la mod per armi ed equipaggiamento dei bot, è meglio lasciare questa opzione disabilitata.",
+  "ammo_toggle_title": "Le uccisioni dei bot non rilasciano munizioni",
+  "ammo_toggle_desc": "Se selezionato, quando un bot uccide un nemico, quel nemico non rilascerà munizioni.",
+  "conc_toggle_title": "I bot lanciano granate stordenti",
+  "conc_toggle_desc": "Se selezionato, i bot lanceranno granate stordenti quando incontrano gruppi di nemici vicini.",
+  "coop_toggle_title": "I bot cooperano per uccidere i nemici",
+  "coop_toggle_desc": "Se selezionato, i bot tenteranno di coordinare i loro attacchi e di proteggersi a vicenda."
 }

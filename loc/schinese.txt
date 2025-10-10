@@ -48,5 +48,7 @@
   "ammo_toggle_title": "机器人击杀不掉落弹药",
   "ammo_toggle_desc": "勾选后，机器人击杀的敌人将不会掉落弹药拾取物。",
   "conc_toggle_title": "机器人投掷震荡手雷",
-  "conc_toggle_desc": "勾选后，当附近出现成群敌人时，机器人会投掷震荡手雷。"
+  "conc_toggle_desc": "勾选后，当附近出现成群敌人时，机器人会投掷震荡手雷。",
+  "coop_toggle_title": "机器人协同作战",
+  "coop_toggle_desc": "勾选后，机器人会尝试协同攻击并相互保护。"
 }
