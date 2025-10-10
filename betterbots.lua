@@ -245,9 +245,7 @@ end
 
 function BB:on_intimidation_attempt(u_key)
 	if not u_key or self:is_blacklisted_cop(u_key) then return end
-	local timer_mgr = TimerManager
-	if not (timer_mgr and timer_mgr:game()) then return end
-	self.dom_pending[u_key] = timer_mgr:game():time()
+	self.dom_pending[u_key] = game_time()
 end
 
 function BB:on_intimidation_result(u_key, success)
@@ -263,8 +261,7 @@ function BB:on_intimidation_result(u_key, success)
 	local rec = self.dom_failures[u_key] or { attempts = 0 }
 	rec.attempts = (rec.attempts or 0) + 1
 
-	local timer_mgr = TimerManager
-	rec.last_t = (timer_mgr and timer_mgr:game() and timer_mgr:game():time()) or 0
+	rec.last_t = game_time()
 	self.dom_failures[u_key] = rec
 
 	if rec.attempts >= CONSTANTS.INTIMIDATE_MAX_ATTEMPTS then
@@ -277,12 +274,9 @@ end
 function BB:add_cop_to_intimidation_list(unit_key)
 	if not unit_key then return end
 
-	local timer_mgr = TimerManager
-	if not (timer_mgr and timer_mgr:game()) then return end
-
 	if self:is_blacklisted_cop(unit_key) then return end
 
-	local t = timer_mgr:game():time()
+	local t = game_time()
 	local prev_t = self.cops_to_intimidate[unit_key]
 	self.cops_to_intimidate[unit_key] = t
 
@@ -394,9 +388,7 @@ end
 function BB:get_teammates_in_danger()
 	if not self:get("coop", false) then return {} end
 
-	local timer_mgr = TimerManager
-	if not (timer_mgr and timer_mgr:game()) then return {} end
-	local t = timer_mgr:game():time()
+	local t = game_time()
 
 	local in_danger = {}
 
@@ -1341,7 +1333,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 return
             end
 
-            local t = TimerManager:game():time()
+            local t = game_time()
             data._ai_last_mark_t = data._ai_last_mark_t or 0
             if t - data._ai_last_mark_t < CONSTANTS.MARK_COOLDOWN then
                 return
@@ -1628,11 +1620,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 			if TeamAILogicAssault.update then
 				local old_update = TeamAILogicAssault.update
 				function TeamAILogicAssault.update(data, ...)
-					if not (TimerManager and TimerManager:game()) then
-						return old_update(data, ...)
-					end
-
-					local t = TimerManager:game():time()
+                    local t = game_time()
 					local my_data = data.internal_data or {}
 					local unit = data.unit
 
