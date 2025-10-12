@@ -267,7 +267,6 @@ function BB:on_intimidation_result(u_key, success)
 	if rec.attempts >= CONSTANTS.INTIMIDATE_MAX_ATTEMPTS then
 		self.dom_blacklist[u_key] = true
 		self.cops_to_intimidate[u_key] = nil
-		bb_log(("Cop %s blacklisted after %d failed intimidation attempts"):format(tostring(u_key), rec.attempts))
 	end
 end
 
@@ -525,6 +524,19 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 						end
 					end
 				end
+
+				if BB:get("coop", false) then
+					local cop_data = self._police and self._police[cop_key]
+					local taser_unit = cop_data and cop_data.unit
+
+					if alive(taser_unit) then
+						local criminal_data = self:all_char_criminals() and self:all_char_criminals()[criminal_key]
+						if criminal_data and criminal_data.unit then
+							BB:update_priority_target(taser_unit, 15.0)
+						end
+					end
+				end
+
 				return old_tase(self, cop_key, criminal_key, ...)
 			end
 		end
@@ -1138,8 +1150,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 									local is_shield  = attention_data.is_shield or has_tag(att_unit, "shield")
 									local is_special = false
 
-									if is_taser or is_cloaker then base_priority = 9.0; is_special = true
-									elseif is_sniper then base_priority = 9.5; is_special = true
+									if is_taser or is_cloaker then base_priority = 9.5; is_special = true
+									elseif is_sniper then base_priority = 9.0; is_special = true
 									elseif is_dozer then base_priority = 8.0; is_special = true
 									elseif is_medic then base_priority = 7.5; is_special = true
 									elseif attention_data.is_very_dangerous then base_priority = 7.0; is_special = true
