@@ -1037,6 +1037,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 		local mvec3_norm = mvector3.normalize
 		local mvec3_angle = mvector3.angle
 		local mvec3_dot = mvector3.dot
+		local mvec3_distance = mvector3.distance
 		local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
 		function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
@@ -1069,7 +1070,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 			local last_target_t = data._last_target_t or 0
 
 			local teammates_in_danger = BB:get("coop", false) and BB:get_teammates_in_danger() or {}
-			local potential_targets = {}
+			local potential_targets_map = {}
 
 			local function has_tag(u, tag)
 				return u and u:base() and u:base().has_tag and u:base():has_tag(tag)
@@ -1081,7 +1082,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
 				for _, teammate_status in ipairs(teammates_in_danger) do
 					if teammate_status.position then
-						if mvector3.distance(att_pos, teammate_status.position) <= CONSTANTS.COOP_TEAMMATE_DANGER_RANGE then
+						if mvec3_distance(att_pos, teammate_status.position) <= CONSTANTS.COOP_TEAMMATE_DANGER_RANGE then
 							local enemy_brain, enemy_data = att_unit:brain(), nil
 							if enemy_brain then enemy_data = enemy_brain._logic_data end
 							if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == teammate_status.unit:key() then
@@ -1104,6 +1105,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 							if dist and dist > 0 then
 								local priority_mult = 1
 								local threat_mult = 1
+								local base_priority = 5.0
 
 								if attention_data.verified then
 									local is_threatening, threat_bonus = is_threatening_teammate(att_unit, attention_data.m_head_pos)
@@ -1134,8 +1136,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 									local is_sniper  = has_tag(att_unit, "sniper")
 									local is_medic   = has_tag(att_unit, "medic")
 									local is_shield  = attention_data.is_shield or has_tag(att_unit, "shield")
-
-									local base_priority = 5.0
 									local is_special = false
 
 									if is_taser or is_cloaker then base_priority = 9.0; is_special = true
@@ -1166,7 +1166,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 								local target_score = dist / math.max(0.01, priority_mult)
 
 								if not (BB.cops_to_intimidate[u_key] and t - BB.cops_to_intimidate[u_key] < BB.grace_period) then
-									table.insert(potential_targets, { data = attention_data, score = target_score, reaction = reaction, priority_val = base_priority })
+									potential_targets_map[u_key] = { data = attention_data, score = target_score, reaction = reaction, priority_val = base_priority }
 								end
 							end
 						end
@@ -1174,49 +1174,61 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 				end
 			end
 
-			if #potential_targets == 0 then return nil, nil, nil end
+			if not next(potential_targets_map) then return nil, nil, nil end
 
 			if BB:get("coop", false) then
-				local priority_targets_map = BB:get_priority_targets()
-				local unassigned_targets = {}
+				local global_priority_targets = BB:get_priority_targets()
+				local coop_candidates = {}
 
-				for u_key, p_target in pairs(priority_targets_map) do
-					if not p_target.targeted_by then
-						table.insert(unassigned_targets, p_target)
-					end
-				end
-
-				if #unassigned_targets > 0 then
-					table.sort(unassigned_targets, function(a, b)
-						if a.priority ~= b.priority then return a.priority > b.priority end
-						local dist_a = mvector3.distance(head_pos_var, head_pos(a.unit))
-						local dist_b = mvector3.distance(head_pos_var, head_pos(b.unit))
-						return dist_a < dist_b
-					end)
-
-					local chosen_p_target = unassigned_targets[1]
-					chosen_p_target.targeted_by = data.key
-
-					for _, p_target in ipairs(potential_targets) do
-						if p_target.data.u_key == chosen_p_target.u_key then
-							data._last_target_u_key = p_target.data.u_key
-							data._last_target_t = t
-							return p_target.data, p_target.score, p_target.reaction
+				for u_key, global_target in pairs(global_priority_targets) do
+					if not global_target.targeted_by then
+						local local_target_data = potential_targets_map[u_key]
+						if local_target_data then
+							table.insert(coop_candidates, {
+								global_data = global_target,
+								local_data = local_target_data
+							})
 						end
 					end
 				end
+
+				if #coop_candidates > 0 then
+					table.sort(coop_candidates, function(a, b)
+						if a.global_data.priority ~= b.global_data.priority then
+							return a.global_data.priority > b.global_data.priority
+						end
+						return a.local_data.score < b.local_data.score
+					end)
+
+					local chosen_coop_target = coop_candidates[1]
+					chosen_coop_target.global_data.targeted_by = data.key
+
+					data._last_target_u_key = chosen_coop_target.global_data.u_key
+					data._last_target_t = t
+
+					return chosen_coop_target.local_data.data, chosen_coop_target.local_data.score, chosen_coop_target.local_data.reaction
+				end
 			end
 
-			table.sort(potential_targets, function(a, b) return a.score < b.score end)
-			local best_target = potential_targets[1]
+			local best_target = nil
+			local min_score = math.huge
+
+			for _, target in pairs(potential_targets_map) do
+				if target.score < min_score then
+					min_score = target.score
+					best_target = target
+				end
+			end
 
 			if best_target then
 				data._last_target_u_key = best_target.data.u_key
 				data._last_target_t = t
 
-				local p_target_entry = BB.coop_data.priority_targets[best_target.data.u_key]
-				if p_target_entry and not p_target_entry.targeted_by then
-					p_target_entry.targeted_by = data.key
+				if BB:get("coop", false) then
+					local p_target_entry = BB.coop_data.priority_targets[best_target.data.u_key]
+					if p_target_entry and not p_target_entry.targeted_by then
+						p_target_entry.targeted_by = data.key
+					end
 				end
 
 				return best_target.data, best_target.score, best_target.reaction
@@ -1292,7 +1304,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
 								local dis = attention_info.verified_dis
 								if not dis and target_head then
-									dis = mvector3.distance(my_head, target_head)
+									dis = mvec3_distance(my_head, target_head)
 								end
 
 								if dis and dis <= CONSTANTS.MARK_DISTANCE then
@@ -1809,10 +1821,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 			elseif alive(dom) then
 				intimidate_law_enforcement(data, dom, allow_actions)
 			elseif alive(nmy) and TeamAILogicAssault and TeamAILogicAssault.mark_enemy then
-				if (not TeamAILogicBase._mark_t) or TeamAILogicBase._mark_t + CONSTANTS.MARK_COOLDOWN < t then
-					safe_call(TeamAILogicAssault.mark_enemy, data, unit, nmy, true, allow_actions)
-					TeamAILogicBase._mark_t = t
-				end
+                data._last_mark_t = data._last_mark_t or 0
+                if data._last_mark_t + CONSTANTS.MARK_COOLDOWN < t then
+                    safe_call(TeamAILogicAssault.mark_enemy, data, unit, nmy, true, allow_actions)
+                    data._last_mark_t = t
+                end
 			end
 		end
 
