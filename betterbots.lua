@@ -391,24 +391,6 @@ function BB:get_priority_targets()
     return active_targets
 end
 
-function BB:get_teammates_in_danger()
-	if not self:get("coop", false) then return {} end
-
-	local t = game_time()
-
-	local in_danger = {}
-
-	for u_key, status in pairs(self.coop_data.teammates_status) do
-		if (t - status.last_update) > 2 then
-			self.coop_data.teammates_status[u_key] = nil
-		elseif status.in_danger and alive(status.unit) then
-			table.insert(in_danger, status)
-		end
-	end
-
-	return in_danger
-end
-
 Hooks:Add("LocalizationManagerPostInit", "LocalizationManagerPostInit_BB", function(loc)
 	if not loc then
 		bb_log("LocalizationManager is nil", "WARN")
@@ -1141,7 +1123,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                         if attention_data.is_very_dangerous or (attention_data.char_tweak and attention_data.char_tweak.priority_shout) then
                             threat = threat * 2.0
                         end
-                        if attention_data.unit:base() and attention_data.unit:base():has_tag("tank") then -- Dozer
+                        if attention_data.unit:base() and attention_data.unit:base():has_tag("tank") then
                             threat = threat * 2.5
                         end
 
