@@ -376,8 +376,16 @@ function BB:get_priority_targets()
     for u_key, target_data in pairs(self.coop_data.priority_targets) do
         if alive(target_data.unit) and (t - target_data.last_seen) < CONSTANTS.PRIORITY_TARGET_DURATION then
             if target_data.targeted_by then
-                local targeting_bot_status = self.coop_data.teammates_status[target_data.targeted_by]
-                if not (targeting_bot_status and alive(targeting_bot_status.unit)) or (t - target_data.claimed_at > CONSTANTS.PRIORITY_TARGET_CLAIM_TIMEOUT) then
+                local targeting = self.coop_data.teammates_status[target_data.targeted_by]
+
+                local claim_timed_out = (t - (target_data.claimed_at or 0)) > CONSTANTS.PRIORITY_TARGET_CLAIM_TIMEOUT
+                local claim_stale = true
+                if targeting and alive(targeting.unit) then
+                    local lu = targeting.last_update or 0
+                    claim_stale = (t - lu) > CONSTANTS.PRIORITY_TARGET_CLAIM_TIMEOUT
+                end
+
+                if claim_timed_out or claim_stale then
                     target_data.targeted_by = nil
                     target_data.claimed_at = 0
                 end
@@ -1096,28 +1104,25 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             return score
         end
 
-		function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
-			local unit = data.unit
-			if not (alive(unit) and unit:movement()) then return end
+        function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
+            local unit = data.unit
+            if not (alive(unit) and unit:movement()) then return end
 
-			local t = data.t or game_time()
+            local t = data.t or game_time()
             local is_team_ai_unit = is_team_ai(unit)
 
-			if BB:get("coop", false) and is_team_ai_unit then
-				BB:update_teammate_status(unit)
-			end
+            if BB:get("coop", false) and is_team_ai_unit then
+                BB:update_teammate_status(unit)
+            end
 
-			local my_head_pos = unit:movement():m_head_pos()
-			local my_fwd = unit:movement():m_head_rot():y()
+            local last_target_u_key = data._last_target_u_key
+            local last_target_t = data._last_target_t or 0
 
-			local last_target_u_key = data._last_target_u_key
-			local last_target_t = data._last_target_t or 0
-
-			local potential_targets_map = {}
-			for u_key, attention_data in pairs(attention_objects or {}) do
-				if attention_data.identified and alive(attention_data.unit) and attention_data.reaction >= REACT_COMBAT then
-					local dist = attention_data.verified_dis
-					if dist and dist > 0 and not (BB.cops_to_intimidate[u_key] and t - BB.cops_to_intimidate[u_key] < BB.grace_period) then
+            local potential_targets_map = {}
+            for u_key, attention_data in pairs(attention_objects or {}) do
+                if attention_data.identified and alive(attention_data.unit) and attention_data.reaction >= AIAttentionObject.REACT_COMBAT then
+                    local dist = attention_data.verified_dis
+                    if dist and dist > 0 and not (BB.cops_to_intimidate[u_key] and t - BB.cops_to_intimidate[u_key] < BB.grace_period) then
                         local threat = 10000 / dist
 
                         if attention_data.is_very_dangerous or (attention_data.char_tweak and attention_data.char_tweak.priority_shout) then
@@ -1127,8 +1132,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                             threat = threat * 2.5
                         end
 
-                        local enemy_brain, enemy_data = attention_data.unit:brain(), nil
-                        if enemy_brain then enemy_data = enemy_brain._logic_data end
+                        local enemy_brain = attention_data.unit:brain()
+                        local enemy_data = enemy_brain and enemy_brain._logic_data
                         if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
                             threat = threat * 1.6
                         end
@@ -1137,10 +1142,10 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                             threat = threat * 1.25
                         end
 
-						potential_targets_map[u_key] = { data = attention_data, score = threat, reaction = attention_data.reaction }
-					end
-				end
-			end
+                        potential_targets_map[u_key] = { data = attention_data, score = threat, reaction = attention_data.reaction }
+                    end
+                end
+            end
 
             if not BB:get("coop", false) then
                 local best_local_target, max_score = nil, -1
@@ -1163,24 +1168,18 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local best_coop_target, best_coop_score = nil, -1
 
             for u_key, global_target in pairs(global_priority_targets) do
-                if potential_targets_map[u_key] then
-                    local local_target_info = potential_targets_map[u_key]
-
+                local local_target_info = potential_targets_map[u_key]
+                if local_target_info then
                     local dynamic_prio = global_target.priority
                     if global_target.state == "tasing_teammate" then
                         dynamic_prio = dynamic_prio * 3
                     end
 
                     local is_dozer = global_target.unit:base() and global_target.unit:base():has_tag("tank")
-                    if is_dozer and global_target.targeted_by then
-                        dynamic_prio = dynamic_prio * 1.5
-                    end
-
-                    local suitability = calculate_suitability(unit, local_target_info.data)
-                    local final_score = dynamic_prio * suitability
-
-                    if final_score > best_coop_score then
-                        if not global_target.targeted_by or is_dozer then
+                    if (not global_target.targeted_by) or is_dozer then
+                        local suitability = calculate_suitability(unit, local_target_info.data)
+                        local final_score = dynamic_prio * suitability
+                        if final_score > best_coop_score then
                             best_coop_target = global_target
                             best_coop_score = final_score
                         end
@@ -1191,7 +1190,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             if best_coop_target then
                 best_coop_target.targeted_by = data.key
                 best_coop_target.claimed_at = t
-
                 local local_data = potential_targets_map[best_coop_target.u_key]
                 data._last_target_u_key = best_coop_target.u_key
                 data._last_target_t = t
@@ -1199,16 +1197,21 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
 
             local best_local_target, max_score = nil, -1
-			for u_key, target in pairs(potential_targets_map) do
-                local global_target = global_priority_targets[target.data.u_key]
-				local is_dozer = target.data.unit:base() and target.data.unit:base():has_tag("tank")
-                if not (global_target and global_target.targeted_by and not is_dozer) then
-                    if target.score > max_score then
-                        max_score = target.score
-                        best_local_target = target
-                    end
+            for u_key, target in pairs(potential_targets_map) do
+                local g = global_priority_targets[u_key]
+                local is_dozer = target.data.unit:base() and target.data.unit:base():has_tag("tank")
+
+                local penalty = 1
+                if g and g.targeted_by and not is_dozer then
+                    penalty = 0.35
                 end
-			end
+
+                local effective = target.score * penalty
+                if effective > max_score then
+                    max_score = effective
+                    best_local_target = target
+                end
+            end
 
             if best_local_target then
                 data._last_target_u_key = best_local_target.data.u_key
@@ -1216,8 +1219,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 return best_local_target.data, best_local_target.score, best_local_target.reaction
             end
 
-			return nil, nil, nil
-		end
+            return nil, nil, nil
+        end
 
 		if BB:get("maskup", false) then
 			if TeamAILogicIdle.on_alert then
@@ -1610,39 +1613,43 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 			return false
 		end
 
-		if Network:is_server() then
-			if TeamAILogicAssault.update then
-				local old_update = TeamAILogicAssault.update
-				function TeamAILogicAssault.update(data, ...)
+        if Network:is_server() then
+            if TeamAILogicAssault.update then
+                local old_update = TeamAILogicAssault.update
+                function TeamAILogicAssault.update(data, ...)
                     local t = game_time()
-					local my_data = data.internal_data or {}
-					local unit = data.unit
+                    local my_data = data.internal_data or {}
+                    local unit = data.unit
 
-					my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
-					if t >= my_data._next_conc_eval_t then
-						my_data._next_conc_eval_t = t + 1
-						if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
-							local thrown = safe_call(throw_concussion_grenade, data, unit)
-							if thrown then
-								my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
-							end
-						end
-					end
+                    if BB:get("coop", false) and is_team_ai(unit) then
+                        BB:update_teammate_status(unit)
+                    end
 
-					if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
-						my_data.melee_t = t
-						safe_call(execute_melee_attack, data, unit)
-					end
+                    my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
+                    if t >= my_data._next_conc_eval_t then
+                        my_data._next_conc_eval_t = t + 1
+                        if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
+                            local thrown = safe_call(throw_concussion_grenade, data, unit)
+                            if thrown then
+                                my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
+                            end
+                        end
+                    end
 
-					if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
-						my_data.reload_t = t
-						safe_call(TeamAILogicAssault.check_smart_reload, data)
-					end
+                    if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
+                        my_data.melee_t = t
+                        safe_call(execute_melee_attack, data, unit)
+                    end
 
-					return old_update(data, ...)
-				end
-			end
-		end
+                    if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
+                        my_data.reload_t = t
+                        safe_call(TeamAILogicAssault.check_smart_reload, data)
+                    end
+
+                    return old_update(data, ...)
+                end
+            end
+        end
 
 		if TeamAILogicAssault.exit then
 			local old_exit = TeamAILogicAssault.exit
