@@ -22,6 +22,24 @@ local CONSTANTS = {
 	COOP_TEAMMATE_DANGER_RANGE = 1500,
 	MAX_RELOADING_TEAMMATES = 1,
 	PRIORITY_TARGET_CLAIM_TIMEOUT = 3,
+	DOZER_FOCUS_REFRESH = 2,
+	TARGET_SWITCH_DELAY = 1.5,
+}
+
+local THREAT_WEIGHTS = {
+	DISTANCE_BASE = 1000,
+	CLOAKER = 100,
+	TASER = 90,
+	TASER_ACTIVE = 200,
+	SHIELD = 60,
+	DOZER = 80,
+	MEDIC = 70,
+	SNIPER = 75,
+	SPECIAL = 65,
+	LOW_HEALTH_BONUS = 50,
+	TARGETING_ME_BONUS = 60,
+	SAME_TARGET_PENALTY = 0.35,
+	DIRECTION_BONUS = 30,
 }
 
 local SLOTS = {
@@ -181,7 +199,9 @@ BB.dom_blacklist = BB.dom_blacklist or {}
 BB.dom_pending = BB.dom_pending or {}
 BB.coop_data = BB.coop_data or {
 	priority_targets = {},
-	teammates_status = {}
+	teammates_status = {},
+	dozer_attackers = {},
+	target_directions = {}
 }
 
 function BB:Save()
@@ -329,15 +349,105 @@ function BB:update_teammate_status(unit)
 	local anim_data = unit:anim_data()
 	local is_reloading = anim_data and anim_data.reload
 
+	local facing_dir = unit_movement and unit_movement:m_head_rot() and unit_movement:m_head_rot():y()
+
 	self.coop_data.teammates_status[u_key] = {
 		unit = unit,
 		health_ratio = health_ratio,
 		position = pos,
+		facing_direction = facing_dir,
 		in_danger = health_ratio < 0.4,
 		needs_cover = health_ratio < 0.25,
 		is_reloading = is_reloading,
 		last_update = t
 	}
+end
+
+function BB:count_active_teammates()
+	if not self:get("coop", false) then return 0 end
+
+	local count = 0
+	local t = game_time()
+	for u_key, status in pairs(self.coop_data.teammates_status) do
+		if alive(status.unit) and (t - status.last_update) < 2 then
+			count = count + 1
+		end
+	end
+	return count
+end
+
+function BB:get_dozer_attacker_limit(dozer_unit, dozer_distance)
+	if not alive(dozer_unit) then return 1 end
+
+	local team_size = self:count_active_teammates()
+	local health_ratio = get_unit_health_ratio(dozer_unit)
+
+	local base_limit = 1
+	if team_size >= 4 then
+		base_limit = 2
+	elseif team_size >= 3 then
+		base_limit = 1
+	end
+
+	if health_ratio < 0.3 then
+		base_limit = math.max(1, base_limit - 1)
+	elseif health_ratio > 0.7 and team_size >= 3 then
+		base_limit = base_limit + 1
+	end
+
+	if dozer_distance and dozer_distance < 800 then
+		base_limit = base_limit + 1
+	elseif dozer_distance and dozer_distance > 2000 then
+		base_limit = math.max(1, base_limit - 1)
+	end
+
+	return math.min(base_limit, math.max(1, math.floor(team_size / 2)))
+end
+
+function BB:count_dozer_attackers(dozer_u_key)
+	if not dozer_u_key then return 0 end
+
+	local count = 0
+	local t = game_time()
+
+	for u_key, target_u_key in pairs(self.coop_data.dozer_attackers) do
+		if target_u_key == dozer_u_key then
+			local teammate = self.coop_data.teammates_status[u_key]
+			if teammate and alive(teammate.unit) and (t - teammate.last_update) < CONSTANTS.DOZER_FOCUS_REFRESH then
+				count = count + 1
+			else
+				self.coop_data.dozer_attackers[u_key] = nil
+			end
+		end
+	end
+
+	return count
+end
+
+function BB:is_direction_covered(target_pos, my_unit)
+	if not (target_pos and alive(my_unit)) then return false end
+
+	local my_pos = my_unit:movement() and my_unit:movement():m_head_pos()
+	if not my_pos then return false end
+
+	local my_dir = target_pos - my_pos
+	mvector3.normalize(my_dir)
+
+	local threshold = 0.7
+
+	for u_key, status in pairs(self.coop_data.teammates_status) do
+		if u_key ~= my_unit:key() and status.position and status.facing_direction then
+			local other_to_target = target_pos - status.position
+			mvector3.normalize(other_to_target)
+
+			local dot = mvector3.dot(my_dir, other_to_target)
+			if dot > threshold then
+				return true
+			end
+		end
+	end
+
+	return false
 end
 
 function BB:update_priority_target(unit, priority, state_info)
@@ -1065,6 +1175,71 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
         end
 
+        local function calculate_threat_value(bot_unit, target_data, data)
+            if not (alive(bot_unit) and target_data and target_data.unit) then
+                return 0
+            end
+
+            local target_unit = target_data.unit
+            local base_unit = target_unit:base()
+            local dist = target_data.verified_dis or mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
+
+            local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
+
+            if base_unit then
+                if base_unit:has_tag("tank") then
+                    threat = threat * (THREAT_WEIGHTS.DOZER / 10)
+                    local health_ratio = get_unit_health_ratio(target_unit)
+                    if health_ratio < 0.3 then
+                        threat = threat * 1.3
+                    end
+                elseif base_unit:has_tag("spooc") then
+                    threat = threat * (THREAT_WEIGHTS.CLOAKER / 10)
+                    if dist < 1000 then
+                        threat = threat * 2.0
+                    end
+                elseif base_unit:has_tag("taser") then
+                    local state = target_data.state or "normal"
+                    if state == "tasing_teammate" then
+                        threat = threat * (THREAT_WEIGHTS.TASER_ACTIVE / 10)
+                    else
+                        threat = threat * (THREAT_WEIGHTS.TASER / 10)
+                    end
+                elseif base_unit:has_tag("medic") then
+                    threat = threat * (THREAT_WEIGHTS.MEDIC / 10)
+                elseif base_unit:has_tag("sniper") then
+                    threat = threat * (THREAT_WEIGHTS.SNIPER / 10)
+                end
+            end
+
+            if target_data.is_shield then
+                threat = threat * (THREAT_WEIGHTS.SHIELD / 10)
+            end
+
+            if target_data.char_tweak and target_data.char_tweak.priority_shout then
+                threat = threat * (THREAT_WEIGHTS.SPECIAL / 10)
+            end
+
+            local health_ratio = get_unit_health_ratio(target_unit)
+            if health_ratio < 0.3 then
+                threat = threat + THREAT_WEIGHTS.LOW_HEALTH_BONUS
+            end
+
+            local enemy_brain = target_unit:brain()
+            local enemy_data = enemy_brain and enemy_brain._logic_data
+            if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
+                threat = threat + THREAT_WEIGHTS.TARGETING_ME_BONUS
+            end
+
+            if dist > 3000 then
+                threat = threat * 0.7
+            elseif dist < 500 then
+                threat = threat * 1.5
+            end
+
+            return threat
+        end
+
         local function calculate_suitability(bot_unit, target_data)
             local score = 100.0
             local dist = target_data.verified_dis or mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
@@ -1072,13 +1247,22 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local weapon_type = get_weapon_archetype(bot_unit)
             local target_unit = target_data.unit
             local is_sniper = target_unit:base() and target_unit:base():has_tag("sniper")
+            local is_shield = target_data.is_shield
 
             if weapon_type == "sniper" then
                 score = score + (is_sniper and 50 or 20)
+                if dist < 800 then
+                    score = score - 30
+                end
             elseif weapon_type == "shotgun" then
                 score = score + math.max(0, 100 - dist / 10)
+                if is_shield then
+                    score = score + 40
+                end
             else
-                if dist > 4000 then score = score - 50 end
+                if dist > 4000 then
+                    score = score - 50
+                end
             end
 
             local bot_head_pos = bot_unit:movement():m_head_pos()
@@ -1089,9 +1273,10 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local angle = mvec3_dot(dir_to_target, bot_fwd)
             score = score + (angle * 50)
 
-            if not target_data.verified then score = score * 0.7 end
+            if not target_data.verified then
+                score = score * 0.7
+            end
 
-            local is_shield = target_data.is_shield
             if is_shield then
                 local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
                 if has_ap or not shield_blocks(bot_unit, target_data.m_head_pos) then
@@ -1123,26 +1308,17 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 if attention_data.identified and alive(attention_data.unit) and attention_data.reaction >= AIAttentionObject.REACT_COMBAT then
                     local dist = attention_data.verified_dis
                     if dist and dist > 0 and not (BB.cops_to_intimidate[u_key] and t - BB.cops_to_intimidate[u_key] < BB.grace_period) then
-                        local threat = 10000 / dist
+                        local threat = calculate_threat_value(unit, attention_data, data)
 
-                        if attention_data.is_very_dangerous or (attention_data.char_tweak and attention_data.char_tweak.priority_shout) then
-                            threat = threat * 2.0
-                        end
-                        if attention_data.unit:base() and attention_data.unit:base():has_tag("tank") then
-                            threat = threat * 2.5
+                        if last_target_u_key and last_target_u_key == u_key and (t - last_target_t) <= CONSTANTS.TARGET_SWITCH_DELAY then
+                            threat = threat * 1.3
                         end
 
-                        local enemy_brain = attention_data.unit:brain()
-                        local enemy_data = enemy_brain and enemy_brain._logic_data
-                        if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
-                            threat = threat * 1.6
-                        end
-
-                        if last_target_u_key and last_target_u_key == u_key and (t - last_target_t) <= 0.8 then
-                            threat = threat * 1.25
-                        end
-
-                        potential_targets_map[u_key] = { data = attention_data, score = threat, reaction = attention_data.reaction }
+                        potential_targets_map[u_key] = {
+                            data = attention_data,
+                            score = threat,
+                            reaction = attention_data.reaction
+                        }
                     end
                 end
             end
@@ -1176,8 +1352,31 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                     end
 
                     local is_dozer = global_target.unit:base() and global_target.unit:base():has_tag("tank")
-                    if (not global_target.targeted_by) or is_dozer then
+
+                    if is_dozer then
+                        local current_attackers = BB:count_dozer_attackers(u_key)
+                        local attacker_limit = BB:get_dozer_attacker_limit(global_target.unit, local_target_info.data.verified_dis)
+
+                        if current_attackers >= attacker_limit then
+                            local already_targeting = BB.coop_data.dozer_attackers[data.key] == u_key
+                            if not already_targeting then
+                                dynamic_prio = dynamic_prio * 0.3
+                            end
+                        end
+                    end
+
+                    local allow_target = true
+                    if not is_dozer and global_target.targeted_by and global_target.targeted_by ~= data.key then
+                        allow_target = false
+                    end
+
+                    if allow_target then
                         local suitability = calculate_suitability(unit, local_target_info.data)
+
+                        if not BB:is_direction_covered(local_target_info.data.m_head_pos, unit) then
+                            suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
+                        end
+
                         local final_score = dynamic_prio * suitability
                         if final_score > best_coop_score then
                             best_coop_target = global_target
@@ -1190,6 +1389,14 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             if best_coop_target then
                 best_coop_target.targeted_by = data.key
                 best_coop_target.claimed_at = t
+
+                local is_dozer = best_coop_target.unit:base() and best_coop_target.unit:base():has_tag("tank")
+                if is_dozer then
+                    BB.coop_data.dozer_attackers[data.key] = best_coop_target.u_key
+                else
+                    BB.coop_data.dozer_attackers[data.key] = nil
+                end
+
                 local local_data = potential_targets_map[best_coop_target.u_key]
                 data._last_target_u_key = best_coop_target.u_key
                 data._last_target_t = t
@@ -1202,8 +1409,16 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 local is_dozer = target.data.unit:base() and target.data.unit:base():has_tag("tank")
 
                 local penalty = 1
-                if g and g.targeted_by and not is_dozer then
-                    penalty = 0.35
+                if g and g.targeted_by and g.targeted_by ~= data.key then
+                    if is_dozer then
+                        local current_attackers = BB:count_dozer_attackers(u_key)
+                        local attacker_limit = BB:get_dozer_attacker_limit(target.data.unit, target.data.verified_dis)
+                        if current_attackers >= attacker_limit then
+                            penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
+                        end
+                    else
+                        penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
+                    end
                 end
 
                 local effective = target.score * penalty
@@ -1214,11 +1429,19 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
 
             if best_local_target then
+                local is_dozer = best_local_target.data.unit:base() and best_local_target.data.unit:base():has_tag("tank")
+                if is_dozer then
+                    BB.coop_data.dozer_attackers[data.key] = best_local_target.data.u_key
+                else
+                    BB.coop_data.dozer_attackers[data.key] = nil
+                end
+
                 data._last_target_u_key = best_local_target.data.u_key
                 data._last_target_t = t
                 return best_local_target.data, best_local_target.score, best_local_target.reaction
             end
 
+            BB.coop_data.dozer_attackers[data.key] = nil
             return nil, nil, nil
         end
 
@@ -1955,6 +2178,13 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 					BB:clear_cop_state(u_key)
 					if BB.coop_data and BB.coop_data.priority_targets then
 						BB.coop_data.priority_targets[u_key] = nil
+					end
+					if BB.coop_data and BB.coop_data.dozer_attackers then
+						for bot_key, target_key in pairs(BB.coop_data.dozer_attackers) do
+							if target_key == u_key then
+								BB.coop_data.dozer_attackers[bot_key] = nil
+							end
+						end
 					end
 				end
 
