@@ -56,7 +56,6 @@ function MathUtils.clamp(x, a, b)
 	return math.min(math.max(x, a), b)
 end
 
-
 local function _get_mask(name, fallback_slots)
 	if name and managers and managers.slot and managers.slot.get_mask then
 		local ok, m = pcall(managers.slot.get_mask, managers.slot, name)
@@ -567,7 +566,6 @@ function BTAction:tick(context)
     return self.action(context)
 end
 
--- Target Selection Tree
 local function build_target_selection_tree()
     return BTSelector:new("TargetSelection", {
         BTSequence:new("CoopTargetSelection", {
@@ -608,7 +606,6 @@ local function build_target_selection_tree()
 
                 return BTNode.SUCCESS
             end),
-
 
             BTSelector:new("SelectBestTarget", {
                 BTSequence:new("SelectGlobalPriorityTarget", {
@@ -767,7 +764,6 @@ local function build_target_selection_tree()
         }),
 
         BTSequence:new("SimpleTargetSelection", {
-
             BTAction:new("CollectSimpleTargets", function(ctx)
                 ctx.potential_targets = {}
 
@@ -821,6 +817,621 @@ local function build_target_selection_tree()
     })
 end
 
+local function build_combat_behavior_tree()
+    return BTSelector:new("CombatBehavior", {
+        BTSequence:new("MeleeAttack", {
+            BTCondition:new("CheckMeleeCooldown", function(ctx)
+                local my_data = ctx.data.internal_data or {}
+                local t = ctx.t
+                if not my_data.melee_t or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
+                    my_data.melee_t = t
+                    return true
+                end
+                return false
+            end),
+
+            BTCondition:new("CheckLowAmmo", function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return false end
+
+                local unit_inventory = unit:inventory()
+                if not unit_inventory then return false end
+
+                local current_wep = unit_inventory:equipped_unit()
+                if not (current_wep and current_wep:base()) then return false end
+
+                local ammo_max, ammo = current_wep:base():ammo_info()
+                if not (ammo_max and ammo_max > 0) then return false end
+
+                local current_ammo_ratio = ammo / ammo_max
+                return current_ammo_ratio <= 0.5
+            end),
+
+            BTAction:new("FindMeleeTarget", function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return BTNode.FAILURE end
+
+                local crim_mov = unit:movement()
+                if not crim_mov then return BTNode.FAILURE end
+
+                local my_pos = crim_mov:m_head_pos()
+                local look_vec = crim_mov:m_rot():y()
+
+                local best_melee_target, best_melee_priority = nil, 0
+
+                for _, u_char in pairs(ctx.data.detected_attention_objects or {}) do
+                    if u_char.identified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
+                        if u_char.verified and u_char.verified_dis and u_char.verified_dis <= CONSTANTS.MELEE_DISTANCE then
+                            local unit_pos = u_char.m_head_pos
+                            if unit_pos then
+                                local vec = unit_pos - my_pos
+                                if MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.MELEE_ANGLE then
+                                    local melee_priority = 0
+
+                                    if u_char.is_shield then
+                                        melee_priority = 10
+                                    elseif not (u_char.char_tweak and u_char.char_tweak.priority_shout) then
+                                        local enemy = u_char.unit
+                                        local enemy_inventory = enemy:inventory()
+                                        local enemy_anim = enemy:anim_data()
+                                        if enemy_inventory and enemy_inventory:get_weapon() and enemy_anim and not enemy_anim.hurt then
+                                            melee_priority = 5
+                                        end
+                                    end
+
+                                    if melee_priority > best_melee_priority then
+                                        best_melee_priority = melee_priority
+                                        best_melee_target = u_char
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+
+                if best_melee_target then
+                    ctx.melee_target = best_melee_target
+                    return BTNode.SUCCESS
+                end
+
+                return BTNode.FAILURE
+            end),
+
+            BTAction:new("ExecuteMelee", function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return BTNode.FAILURE end
+
+                local target = ctx.melee_target
+                if not target then return BTNode.FAILURE end
+
+                local target_unit = target.unit
+                local damage = target_unit:character_damage()
+                if not (damage and damage._HEALTH_INIT) then return BTNode.FAILURE end
+
+                local unit_inventory = unit:inventory()
+                local current_wep = unit_inventory and unit_inventory:equipped_unit()
+
+                local health_damage = math.ceil(damage._HEALTH_INIT / 2)
+                local my_pos = unit:movement():m_head_pos()
+                local vec = target.m_head_pos - my_pos
+                local target_body = target_unit:body("body")
+                if not target_body then return BTNode.FAILURE end
+
+                local col_ray = {ray = -vec, body = target_body, position = target.m_head_pos}
+                local damage_info = {
+                    attacker_unit = unit,
+                    weapon_unit = current_wep,
+                    variant = target.is_shield and "melee" or "bullet",
+                    damage = target.is_shield and 0 or health_damage,
+                    col_ray = col_ray,
+                    origin = my_pos
+                }
+
+                if target.is_shield then
+                    damage_info.shield_knock = true
+                    safe_call(damage.damage_melee, damage, damage_info)
+                else
+                    damage_info.knock_down = true
+                    safe_call(damage.damage_bullet, damage, damage_info)
+                end
+
+                play_net_redirect(unit, "melee")
+
+                return BTNode.SUCCESS
+            end)
+        }),
+
+        BTSequence:new("ThrowConcussion", {
+            BTCondition:new("IsConcEnabled", function(ctx)
+                return BB:get("conc", false)
+            end),
+
+            BTCondition:new("CheckConcCooldown", function(ctx)
+                local my_data = ctx.data.internal_data or {}
+                local t = ctx.t
+
+                my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
+                if t < my_data._next_conc_eval_t then
+                    return false
+                end
+
+                my_data._next_conc_eval_t = t + 1
+
+                if my_data._conc_cooldown_t and t < my_data._conc_cooldown_t then
+                    return false
+                end
+
+                return true
+            end),
+
+            BTCondition:new("CheckConcResourceReady", function(ctx)
+                if not (tweak_data.blackmarket and tweak_data.blackmarket.projectiles) then
+                    return false
+                end
+
+                local conc_tweak = tweak_data.blackmarket.projectiles.concussion
+                if not (conc_tweak and conc_tweak.unit) then
+                    return false
+                end
+
+                if not managers.dyn_resource then
+                    return false
+                end
+
+                return managers.dyn_resource:is_resource_ready(
+                    Idstring("unit"),
+                    Idstring(conc_tweak.unit),
+                    managers.dyn_resource.DYN_RESOURCES_PACKAGE
+                )
+            end),
+
+            BTAction:new("AnalyzeEnemyClusters", function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return BTNode.FAILURE end
+
+                local crim_mov = unit:movement()
+                if not crim_mov then return BTNode.FAILURE end
+
+                local from_pos = crim_mov:m_head_pos()
+                local look_vec = crim_mov:m_rot():y()
+
+                local close_enemies, shield_count, special_count = 0, 0, 0
+                local enemy_cluster = {}
+
+                for _, u_char in pairs(ctx.data.detected_attention_objects or {}) do
+                    if u_char.identified and u_char.verified and u_char.verified_dis and u_char.verified_dis <= CONSTANTS.CONC_DISTANCE then
+                        local enemy = u_char.unit
+                        if alive(enemy) and are_units_foes(unit, enemy) then
+                            local enemy_brain = enemy:brain()
+                            if not (u_char.is_converted or (enemy_brain and enemy_brain:surrendered())) then
+                                local vec = u_char.m_head_pos - from_pos
+                                if vec and MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
+                                    local enemy_base = enemy:base()
+                                    local tweak_table = enemy_base and enemy_base._tweak_table
+
+                                    if tweak_table and tweak_table ~= "tank" then
+                                        close_enemies = close_enemies + 1
+
+                                        if u_char.is_shield then
+                                            shield_count = shield_count + 1
+                                        end
+                                        if u_char.char_tweak and u_char.char_tweak.priority_shout then
+                                            special_count = special_count + 1
+                                        end
+
+                                        table.insert(enemy_cluster, u_char)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+
+                local should_throw = (close_enemies >= 5) or (shield_count >= 2) or (special_count >= 2 and close_enemies >= 3)
+                if not should_throw then
+                    return BTNode.FAILURE
+                end
+
+                ctx.enemy_cluster = enemy_cluster
+                ctx.close_enemies = close_enemies
+                return BTNode.SUCCESS
+            end),
+
+            BTAction:new("FindBestCluster", function(ctx)
+                local enemy_cluster = ctx.enemy_cluster
+                if not enemy_cluster or #enemy_cluster == 0 then
+                    return BTNode.FAILURE
+                end
+
+                local best_cluster_pos, best_cluster_count, target_unit = nil, 0, nil
+
+                for i, u_char1 in ipairs(enemy_cluster) do
+                    local cluster_count = 0
+
+                    for j, u_char2 in ipairs(enemy_cluster) do
+                        if i ~= j and u_char2.m_head_pos then
+                            local dist = MathUtils.mvec3_distance(u_char1.m_head_pos, u_char2.m_head_pos)
+                            if dist <= CONSTANTS.CLUSTER_DISTANCE then
+                                cluster_count = cluster_count + 1
+                            end
+                        end
+                    end
+
+                    if cluster_count > best_cluster_count then
+                        best_cluster_count = cluster_count
+                        best_cluster_pos = u_char1.m_head_pos
+                        target_unit = u_char1.unit
+                    end
+                end
+
+                if not (alive(target_unit) and best_cluster_count >= 2 and best_cluster_pos) then
+                    return BTNode.FAILURE
+                end
+
+                ctx.conc_target_pos = best_cluster_pos
+                ctx.conc_target_unit = target_unit
+                return BTNode.SUCCESS
+            end),
+
+            BTAction:new("ThrowGrenade", function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return BTNode.FAILURE end
+
+                local target_pos = ctx.conc_target_pos
+                if not target_pos then return BTNode.FAILURE end
+
+                local conc_tweak = tweak_data.blackmarket.projectiles.concussion
+                local crim_mov = unit:movement()
+                local from_pos = crim_mov:m_head_pos()
+
+                local mvec_spread_direction = target_pos - from_pos
+
+                if ProjectileBase and ProjectileBase.spawn then
+                    local cc_unit = ProjectileBase.spawn(conc_tweak.unit, from_pos, Rotation())
+                    if cc_unit and cc_unit:base() then
+                        MathUtils.mvec3_norm(mvec_spread_direction)
+                        play_net_redirect(unit, "throw_grenade")
+                        safe_say(unit, "g43", true, true)
+                        cc_unit:base():throw({dir = mvec_spread_direction, owner = unit})
+
+                        local my_data = ctx.data.internal_data or {}
+                        my_data._conc_cooldown_t = ctx.t + CONSTANTS.CONC_COOLDOWN
+
+                        return BTNode.SUCCESS
+                    end
+                end
+
+                return BTNode.FAILURE
+            end)
+        }),
+
+        BTSequence:new("SmartReload", {
+            BTCondition:new("CheckReloadCooldown", function(ctx)
+                local my_data = ctx.data.internal_data or {}
+                local t = ctx.t
+                if not my_data.reload_t or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
+                    my_data.reload_t = t
+                    return true
+                end
+                return false
+            end),
+
+            BTCondition:new("CanReload", function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return false end
+
+                local unit_anim = unit:anim_data()
+                if unit_anim and unit_anim.reload then return false end
+
+                local unit_movement = unit:movement()
+                if not (unit_movement and not unit_movement:chk_action_forbidden("reload")) then
+                    return false
+                end
+
+                return true
+            end),
+
+            BTAction:new("CheckAmmoAndReload", function(ctx)
+                local unit = ctx.unit
+                local unit_inventory = unit:inventory()
+                if not unit_inventory then return BTNode.FAILURE end
+
+                local current_wep = unit_inventory:equipped_unit()
+                if not (current_wep and current_wep:base()) then return BTNode.FAILURE end
+
+                local ammo_max, ammo = current_wep:base():ammo_info()
+                if not (ammo_max and ammo_max > 0) then return BTNode.FAILURE end
+
+                if BB:get("coop", false) then
+                    local teammates_reloading = 0
+                    for u_key, status in pairs(BB.coop_data.teammates_status) do
+                        if u_key ~= unit:key() and status.is_reloading then
+                            teammates_reloading = teammates_reloading + 1
+                        end
+                    end
+                    if teammates_reloading >= CONSTANTS.MAX_RELOADING_TEAMMATES and ammo > 0 then
+                        return BTNode.FAILURE
+                    end
+                end
+
+                local nearby_threats = 0
+                local closest_threat = math.huge
+                for _, u_char in pairs(ctx.data.detected_attention_objects or {}) do
+                    if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
+                        nearby_threats = nearby_threats + 1
+                        if u_char.verified_dis and u_char.verified_dis < closest_threat then
+                            closest_threat = u_char.verified_dis
+                        end
+                    end
+                end
+
+                local reload_threshold = 0.6
+                if nearby_threats == 0 then
+                    reload_threshold = 0.8
+                elseif closest_threat < 500 then
+                    reload_threshold = 0.3
+                elseif nearby_threats > 3 then
+                    reload_threshold = 0.4
+                end
+
+                if ammo <= math.ceil(ammo_max * reload_threshold) then
+                    local objective = ctx.data.objective
+                    local in_cover = objective and objective.in_place
+                    if in_cover or closest_threat > 1000 or ammo == 0 then
+                        local brain = unit:brain()
+                        if brain then
+                            brain:action_request({type = "reload", body_part = 3})
+                            return BTNode.SUCCESS
+                        end
+                    end
+                end
+
+                return BTNode.FAILURE
+            end)
+        })
+    })
+end
+
+local function build_interaction_tree()
+    return BTSequence:new("Interaction", {
+        BTCondition:new("CanInteract", function(ctx)
+            local unit = ctx.unit
+            if not alive(unit) then return false end
+
+            local unit_damage = unit:character_damage()
+            if unit_damage and unit_damage:need_revive() then return false end
+
+            local anim_data = unit:anim_data()
+            if not anim_data or anim_data.tased then return false end
+
+            local my_data = ctx.data.internal_data or {}
+            if my_data.acting then return false end
+
+            local unit_sound = unit:sound()
+            if unit_sound and unit_sound:speaking() then return false end
+
+            local t = ctx.t
+            if my_data._intimidate_t and my_data._intimidate_t + CONSTANTS.INTIMIDATE_COOLDOWN >= t then
+                return false
+            end
+
+            my_data._intimidate_t = t
+            return true
+        end),
+
+        BTSelector:new("ChooseInteraction", {
+            BTSequence:new("IntimidateCivilian", {
+                BTAction:new("FindCivilian", function(ctx)
+                    if not (TeamAILogicIdle and TeamAILogicIdle.find_civilian_to_intimidate) then
+                        return BTNode.FAILURE
+                    end
+
+                    local civ = TeamAILogicIdle.find_civilian_to_intimidate(
+                        ctx.unit,
+                        CONSTANTS.INTIMIDATE_ANGLE,
+                        CONSTANTS.INTIMIDATE_DISTANCE
+                    )
+
+                    if alive(civ) then
+                        ctx.civilian_target = civ
+                        return BTNode.SUCCESS
+                    end
+
+                    return BTNode.FAILURE
+                end),
+
+                BTAction:new("IntimidateCiv", function(ctx)
+                    if not (TeamAILogicIdle and TeamAILogicIdle.intimidate_civilians) then
+                        return BTNode.FAILURE
+                    end
+
+                    local unit = ctx.unit
+                    local anim_data = unit:anim_data()
+                    local carrying = unit:movement() and unit:movement():carrying_bag()
+                    local allow_actions = (not anim_data.reload) and (not carrying)
+
+                    safe_call(TeamAILogicIdle.intimidate_civilians, ctx.data, unit, true, allow_actions)
+                    return BTNode.SUCCESS
+                end)
+            }),
+
+            BTSequence:new("IntimidateEnemy", {
+                BTAction:new("FindEnemyToIntim", function(ctx)
+                    local unit = ctx.unit
+                    if not (alive(unit) and unit:movement()) then
+                        return BTNode.FAILURE
+                    end
+
+                    local look_vec = unit:movement():m_rot():y()
+                    local has_room = managers.groupai and managers.groupai:state() and
+                                   managers.groupai:state():has_room_for_police_hostage()
+                    local consider_all = BB:get("dom", false)
+
+                    local targets = {}
+                    if consider_all then
+                        targets = ctx.data.detected_attention_objects or {}
+                    else
+                        for u_key, t in pairs(BB.cops_to_intimidate or {}) do
+                            if ctx.t - t < BB.grace_period then
+                                local att_obj = ctx.data.detected_attention_objects and
+                                              ctx.data.detected_attention_objects[u_key]
+                                if att_obj then
+                                    targets[u_key] = att_obj
+                                end
+                            end
+                        end
+                    end
+
+                    local best_nmy, best_dis
+
+                    for _, u_char in pairs(targets) do
+                        if u_char and u_char.identified and u_char.verified then
+                            local enemy = u_char.unit
+                            if alive(enemy) then
+                                if not BB:is_blacklisted_cop(enemy:key()) then
+                                    local anim_data = enemy:anim_data()
+                                    local is_surrender_state = anim_data and
+                                                              (anim_data.hands_back or anim_data.surrender)
+
+                                    if are_units_foes(unit, enemy) or is_surrender_state then
+                                        local intim_dis = u_char.verified_dis
+                                        if intim_dis and intim_dis <= CONSTANTS.INTIMIDATE_DISTANCE and u_char.m_pos then
+                                            local vec = u_char.m_pos - ctx.data.m_pos
+                                            if MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
+                                                local char_tweak = u_char.char_tweak
+                                                if char_tweak and char_tweak.surrender and not char_tweak.priority_shout then
+                                                    local enemy_inventory = enemy:inventory()
+                                                    if enemy_inventory and enemy_inventory:get_weapon() and anim_data then
+                                                        if has_room or is_surrender_state then
+                                                            local health_ratio = get_unit_health_ratio(enemy)
+                                                            local is_hurt = health_ratio < 1
+
+                                                            local intim_priority = anim_data.hands_back and 3
+                                                                or anim_data.surrender and 2
+                                                                or (is_hurt and 1)
+
+                                                            if intim_priority then
+                                                                intim_dis = intim_dis / intim_priority
+                                                                if (not best_dis) or best_dis > intim_dis then
+                                                                    best_nmy = enemy
+                                                                    best_dis = intim_dis
+                                                                end
+                                                            end
+                                                        end
+                                                    end
+                                                end
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    if alive(best_nmy) then
+                        ctx.enemy_to_intimidate = best_nmy
+                        return BTNode.SUCCESS
+                    end
+
+                    return BTNode.FAILURE
+                end),
+
+                BTAction:new("IntimidateEnemy", function(ctx)
+                    local intim_unit = ctx.enemy_to_intimidate
+                    if not alive(intim_unit) then return BTNode.FAILURE end
+
+                    if BB:is_blacklisted_cop(intim_unit:key()) then
+                        return BTNode.FAILURE
+                    end
+
+                    local anim_data = intim_unit:anim_data()
+                    if not anim_data then return BTNode.FAILURE end
+
+                    local act_name, sound_name
+                    if anim_data.hands_back then
+                        act_name, sound_name = "arrest", "l03x_sin"
+                    elseif anim_data.surrender then
+                        act_name, sound_name = "arrest", "l02x_sin"
+                    else
+                        act_name, sound_name = "gesture_stop", "l01x_sin"
+                    end
+
+                    local unit = ctx.unit
+                    if not alive(unit) then return BTNode.FAILURE end
+
+                    safe_say(unit, sound_name, true, true)
+
+                    local carrying = unit:movement() and unit:movement():carrying_bag()
+                    local allow_actions = (not unit:anim_data().reload) and (not carrying)
+
+                    if allow_actions then
+                        request_act(unit, act_name, ctx.data)
+                    end
+
+                    BB:on_intimidation_attempt(intim_unit:key())
+
+                    local intim_brain = intim_unit:brain()
+                    if intim_brain and intim_brain.on_intimidated then
+                        intim_brain:on_intimidated(1, unit)
+                    end
+
+                    return BTNode.SUCCESS
+                end)
+            }),
+
+            BTSequence:new("MarkEnemy", {
+                BTCondition:new("CheckMarkCooldown", function(ctx)
+                    ctx.data._last_mark_t = ctx.data._last_mark_t or 0
+                    return ctx.data._last_mark_t + CONSTANTS.MARK_COOLDOWN < ctx.t
+                end),
+
+                BTAction:new("FindEnemyToMark", function(ctx)
+                    if not (TeamAILogicAssault and TeamAILogicAssault.find_enemy_to_mark) then
+                        return BTNode.FAILURE
+                    end
+
+                    local nmy = TeamAILogicAssault.find_enemy_to_mark(
+                        ctx.data.detected_attention_objects,
+                        ctx.unit
+                    )
+
+                    if alive(nmy) then
+                        ctx.enemy_to_mark = nmy
+                        return BTNode.SUCCESS
+                    end
+
+                    return BTNode.FAILURE
+                end),
+
+                BTAction:new("MarkEnemy", function(ctx)
+                    if not (TeamAILogicAssault and TeamAILogicAssault.mark_enemy) then
+                        return BTNode.FAILURE
+                    end
+
+                    local unit = ctx.unit
+                    local anim_data = unit:anim_data()
+                    local carrying = unit:movement() and unit:movement():carrying_bag()
+                    local allow_actions = (not anim_data.reload) and (not carrying)
+
+                    safe_call(TeamAILogicAssault.mark_enemy, ctx.data, unit, ctx.enemy_to_mark, true, allow_actions)
+                    ctx.data._last_mark_t = ctx.t
+
+                    return BTNode.SUCCESS
+                end)
+            })
+        })
+    })
+end
+
+local function build_main_ai_tree()
+    return BTParallel:new("MainAI", {
+        build_target_selection_tree(),
+        build_combat_behavior_tree(),
+        build_interaction_tree()
+    }, BTParallel.REQUIRE_ONE)
+end
+
+
 local function visualize_tree(root_node)
     local function print_node_recursive(node, prefix, is_last)
         if not node then return end
@@ -872,7 +1483,6 @@ local function visualize_tree(root_node)
     end
 end
 
--- BB Object Initialization and Methods
 BB._path = ModPath
 BB._data_path = SavePath .. "bb_data.txt"
 BB._data = BB._data or {}
@@ -886,6 +1496,13 @@ BB.coop_data = BB.coop_data or {
 	teammates_status = {},
 	dozer_attackers = {},
 	target_directions = {}
+}
+
+BB.behavior_trees = {
+    target_selection = build_target_selection_tree(),
+    combat = build_combat_behavior_tree(),
+    interaction = build_interaction_tree(),
+    main = build_main_ai_tree()
 }
 
 function BB:Save()
@@ -965,7 +1582,6 @@ function BB:on_intimidation_result(u_key, success)
 
 	local rec = self.dom_failures[u_key] or { attempts = 0 }
 	rec.attempts = (rec.attempts or 0) + 1
-
 	rec.last_t = game_time()
 	self.dom_failures[u_key] = rec
 
@@ -977,7 +1593,6 @@ end
 
 function BB:add_cop_to_intimidation_list(unit_key)
 	if not unit_key then return end
-
 	if self:is_blacklisted_cop(unit_key) then return end
 
 	local t = game_time()
@@ -1192,6 +1807,8 @@ function BB:get_priority_targets()
 
     return active_targets
 end
+
+visualize_tree(BB.behavior_trees.main)
 
 local function remove_ai_from_bullet_mask(self, setup_data)
 	local user_unit = setup_data and setup_data.user_unit
@@ -1837,36 +2454,34 @@ end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 	if TeamAILogicIdle then
-        local target_selection_tree = build_target_selection_tree()
-        visualize_tree(target_selection_tree)
         function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
             local unit = data.unit
-                if not is_valid_unit(unit) then
-                    return nil, nil, nil
-                end
-
-                local context = {
-                    unit = unit,
-                    data = data,
-                    t = data.t or game_time(),
-                    attention_objects = attention_objects,
-                    last_target_u_key = data._last_target_u_key,
-                    last_target_t = data._last_target_t or 0,
-
-                    selected_target = nil,
-                    selected_score = nil,
-                    selected_reaction = nil,
-                    selected_u_key = nil
-                }
-
-                target_selection_tree:reset()
-                local result = target_selection_tree:tick(context)
-
-                if result == BTNode.SUCCESS and context.selected_target then
-                    return context.selected_target, context.selected_score, context.selected_reaction
-                end
-
+            if not is_valid_unit(unit) then
                 return nil, nil, nil
+            end
+
+            local context = {
+                unit = unit,
+                data = data,
+                t = data.t or game_time(),
+                attention_objects = attention_objects,
+                last_target_u_key = data._last_target_u_key,
+                last_target_t = data._last_target_t or 0,
+
+                selected_target = nil,
+                selected_score = nil,
+                selected_reaction = nil,
+                selected_u_key = nil
+            }
+
+            BB.behavior_trees.target_selection:reset()
+            local result = BB.behavior_trees.target_selection:tick(context)
+
+            if result == BTNode.SUCCESS and context.selected_target then
+                return context.selected_target, context.selected_score, context.selected_reaction
+            end
+
+            return nil, nil, nil
         end
 
 		if BB:get("maskup", false) then
@@ -2019,276 +2634,20 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             data._ai_last_mark_t = t
         end
 
-		function TeamAILogicAssault.check_smart_reload(data)
-			local unit = data.unit
-			if not alive(unit) then return end
-
-			local unit_anim = unit:anim_data()
-			local unit_movement = unit:movement()
-			local unit_inventory = unit:inventory()
-
-			if not unit_anim or unit_anim.reload then return end
-			if not (unit_movement and not unit_movement:chk_action_forbidden("reload")) then return end
-			if not unit_inventory then return end
-
-			local current_wep = unit_inventory:equipped_unit()
-			if not (current_wep and current_wep:base()) then return end
-
-			local ammo_max, ammo = current_wep:base():ammo_info()
-			if not (ammo_max and ammo_max > 0) then return end
-
-			if BB:get("coop", false) then
-				local teammates_reloading = 0
-				for u_key, status in pairs(BB.coop_data.teammates_status) do
-					if u_key ~= unit:key() and status.is_reloading then
-						teammates_reloading = teammates_reloading + 1
-					end
-				end
-				if teammates_reloading >= CONSTANTS.MAX_RELOADING_TEAMMATES and ammo > 0 then
-					return
-				end
-			end
-
-			local nearby_threats = 0
-			local closest_threat = math.huge
-			for _, u_char in pairs(data.detected_attention_objects or {}) do
-				if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
-					nearby_threats = nearby_threats + 1
-					if u_char.verified_dis and u_char.verified_dis < closest_threat then
-						closest_threat = u_char.verified_dis
-					end
-				end
-			end
-
-			local reload_threshold = 0.6
-			if nearby_threats == 0 then
-				reload_threshold = 0.8
-			elseif closest_threat < 500 then
-				reload_threshold = 0.3
-			elseif nearby_threats > 3 then
-				reload_threshold = 0.4
-			end
-
-			if ammo <= math_ceil(ammo_max * reload_threshold) then
-				local objective = data.objective
-				local in_cover = objective and objective.in_place
-				if in_cover or closest_threat > 1000 or ammo == 0 then
-					if unit:brain() then
-						unit:brain():action_request({type = "reload", body_part = 3})
-					end
-				end
-			end
-		end
-
-		local function execute_melee_attack(data, criminal)
-			if not alive(criminal) then return end
-
-			local criminal_inventory = criminal:inventory()
-			if not criminal_inventory then return end
-
-			local current_wep = criminal_inventory:equipped_unit()
-			local crim_mov = criminal:movement()
-			if not crim_mov then return end
-
-			local my_pos = crim_mov:m_head_pos()
-			local look_vec = crim_mov:m_rot():y()
-
-			local current_ammo_ratio = 1
-			if current_wep and current_wep:base() then
-				local ammo_max, ammo = current_wep:base():ammo_info()
-				if ammo_max and ammo_max > 0 then
-					current_ammo_ratio = ammo / ammo_max
-				end
-			end
-
-			if current_ammo_ratio > 0.5 then return end
-
-			local best_melee_target, best_melee_priority = nil, 0
-
-			for _, u_char in pairs(data.detected_attention_objects or {}) do
-				if u_char.identified and alive(u_char.unit) and are_units_foes(criminal, u_char.unit) then
-					if u_char.verified and u_char.verified_dis and u_char.verified_dis <= CONSTANTS.MELEE_DISTANCE then
-						local unit_pos = u_char.m_head_pos
-						if unit_pos then
-							local vec = unit_pos - my_pos
-							if MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.MELEE_ANGLE then
-								local melee_priority = 0
-
-								if u_char.is_shield then
-									melee_priority = 10
-								elseif not (u_char.char_tweak and u_char.char_tweak.priority_shout) then
-									local unit = u_char.unit
-									local unit_inventory = unit:inventory()
-									local unit_anim = unit:anim_data()
-									if unit_inventory and unit_inventory:get_weapon() and unit_anim and not unit_anim.hurt then
-										melee_priority = 5
-									end
-								end
-
-								if melee_priority > best_melee_priority then
-									best_melee_priority = melee_priority
-									best_melee_target = u_char
-								end
-							end
-						end
-					end
-				end
-			end
-
-			if not best_melee_target then return end
-
-			local unit = best_melee_target.unit
-			local damage = unit:character_damage()
-			if not (damage and damage._HEALTH_INIT) then return end
-
-			local health_damage = math_ceil(damage._HEALTH_INIT / 2)
-			local vec = best_melee_target.m_head_pos - my_pos
-			local unit_body = unit:body("body")
-			if not unit_body then return end
-
-			local col_ray = {ray = -vec, body = unit_body, position = best_melee_target.m_head_pos}
-			local damage_info = {
-				attacker_unit = criminal,
-				weapon_unit = current_wep,
-				variant = best_melee_target.is_shield and "melee" or "bullet",
-				damage = best_melee_target.is_shield and 0 or health_damage,
-				col_ray = col_ray,
-				origin = my_pos
-			}
-
-			if best_melee_target.is_shield then
-				damage_info.shield_knock = true
-				safe_call(damage.damage_melee, damage, damage_info)
-			else
-				damage_info.knock_down = true
-				safe_call(damage.damage_bullet, damage, damage_info)
-			end
-
-			play_net_redirect(criminal, "melee")
-		end
-
-		local function throw_concussion_grenade(data, criminal)
-			if not (BB:get("conc", false) and alive(criminal)) then return false end
-			if not (tweak_data.blackmarket and tweak_data.blackmarket.projectiles) then return false end
-
-			local conc_tweak = tweak_data.blackmarket.projectiles.concussion
-			if not (conc_tweak and conc_tweak.unit) then return false end
-
-			if not managers.dyn_resource then return false end
-			local pkg_ready = managers.dyn_resource:is_resource_ready(Idstring("unit"), Idstring(conc_tweak.unit), managers.dyn_resource.DYN_RESOURCES_PACKAGE)
-			if not pkg_ready then return false end
-
-			local crim_mov = criminal:movement()
-			if not crim_mov then return false end
-
-			local from_pos = crim_mov:m_head_pos()
-			local look_vec = crim_mov:m_rot():y()
-
-			local close_enemies, shield_count, special_count = 0, 0, 0
-			local enemy_cluster = {}
-
-            for _, u_char in pairs(data.detected_attention_objects or {}) do
-                if u_char.identified and u_char.verified and u_char.verified_dis and u_char.verified_dis <= CONSTANTS.CONC_DISTANCE then
-                    local unit = u_char.unit
-                    if alive(unit) and are_units_foes(criminal, unit) then
-                        local unit_brain = unit:brain()
-                        if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
-                            local vec = u_char.m_head_pos - from_pos
-                            if vec and MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
-                                local unit_base = unit:base()
-                                local tweak_table = unit_base and unit_base._tweak_table
-
-                                if tweak_table and tweak_table ~= "tank" then
-                                    close_enemies = close_enemies + 1
-
-                                    if u_char.is_shield then
-                                        shield_count = shield_count + 1
-                                    end
-                                    if u_char.char_tweak and u_char.char_tweak.priority_shout then
-                                        special_count = special_count + 1
-                                    end
-
-                                    table.insert(enemy_cluster, u_char)
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-
-			local should_throw = (close_enemies >= 5) or (shield_count >= 2) or (special_count >= 2 and close_enemies >= 3)
-			if not should_throw then return false end
-
-			local best_cluster_pos, best_cluster_count, target_unit = nil, 0, nil
-
-			for i, u_char1 in ipairs(enemy_cluster) do
-				local cluster_count = 0
-
-				for j, u_char2 in ipairs(enemy_cluster) do
-					if i ~= j and u_char2.m_head_pos then
-						local dist = MathUtils.mvec3_distance(u_char1.m_head_pos, u_char2.m_head_pos)
-						if dist <= CONSTANTS.CLUSTER_DISTANCE then
-							cluster_count = cluster_count + 1
-						end
-					end
-				end
-
-				if cluster_count > best_cluster_count then
-					best_cluster_count = cluster_count
-					best_cluster_pos = u_char1.m_head_pos
-					target_unit = u_char1.unit
-				end
-			end
-
-			if not (alive(target_unit) and best_cluster_count >= 2 and best_cluster_pos) then return false end
-
-			local mvec_spread_direction = best_cluster_pos - from_pos
-			if ProjectileBase and ProjectileBase.spawn then
-				local cc_unit = ProjectileBase.spawn(conc_tweak.unit, from_pos, Rotation())
-				if cc_unit and cc_unit:base() then
-					MathUtils.mvec3_norm(mvec_spread_direction)
-					play_net_redirect(criminal, "throw_grenade")
-					safe_say(criminal, "g43", true, true)
-					cc_unit:base():throw({dir = mvec_spread_direction, owner = criminal})
-					return true
-				end
-			end
-
-			return false
-		end
-
         if Network:is_server() then
             if TeamAILogicAssault.update then
                 local old_update = TeamAILogicAssault.update
                 function TeamAILogicAssault.update(data, ...)
-                    local t = game_time()
-                    local my_data = data.internal_data or {}
                     local unit = data.unit
 
-                    if BB:get("coop", false) and is_team_ai(unit) then
-                        BB:update_teammate_status(unit)
-                    end
+                    local context = {
+                        unit = unit,
+                        data = data,
+                        t = game_time()
+                    }
 
-                    my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
-                    if t >= my_data._next_conc_eval_t then
-                        my_data._next_conc_eval_t = t + 1
-                        if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
-                            local thrown = safe_call(throw_concussion_grenade, data, unit)
-                            if thrown then
-                                my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
-                            end
-                        end
-                    end
-
-                    if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
-                        my_data.melee_t = t
-                        safe_call(execute_melee_attack, data, unit)
-                    end
-
-                    if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
-                        my_data.reload_t = t
-                        safe_call(TeamAILogicAssault.check_smart_reload, data)
-                    end
+                    BB.behavior_trees.combat:reset()
+                    BB.behavior_trees.combat:tick(context)
 
                     return old_update(data, ...)
                 end
@@ -2298,7 +2657,15 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 		if TeamAILogicAssault.exit then
 			local old_exit = TeamAILogicAssault.exit
 			function TeamAILogicAssault.exit(data, ...)
-				safe_call(TeamAILogicAssault.check_smart_reload, data)
+                local context = {
+                    unit = data.unit,
+                    data = data,
+                    t = game_time()
+                }
+
+                BB.behavior_trees.combat:reset()
+                BB.behavior_trees.combat:tick(context)
+
 				return old_exit(data, ...)
 			end
 		end
@@ -2309,160 +2676,16 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 	if TeamAILogicBase then
 		local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
-		local function find_enemy_to_intimidate(data)
-			if not (alive(data.unit) and data.unit:movement()) then
-				return nil
-			end
-
-			local look_vec = data.unit:movement():m_rot():y()
-			local has_room = managers.groupai and managers.groupai:state() and managers.groupai:state():has_room_for_police_hostage()
-			local consider_all = BB:get("dom", false)
-
-			local targets = {}
-			if consider_all then
-				targets = data.detected_attention_objects or {}
-			else
-				for u_key, t in pairs(BB.cops_to_intimidate or {}) do
-					if data.t - t < BB.grace_period then
-						local att_obj = data.detected_attention_objects and data.detected_attention_objects[u_key]
-						if att_obj then
-							targets[u_key] = att_obj
-						end
-					end
-				end
-			end
-
-			local best_nmy, best_dis
-
-			for _, u_char in pairs(targets) do
-				if u_char and u_char.identified and u_char.verified then
-					local unit = u_char.unit
-					if alive(unit) then
-						if not BB:is_blacklisted_cop(unit:key()) then
-							local anim_data = unit:anim_data()
-							local is_surrender_state = anim_data and (anim_data.hands_back or anim_data.surrender)
-
-							if are_units_foes(data.unit, unit) or is_surrender_state then
-								local intim_dis = u_char.verified_dis
-								if intim_dis and intim_dis <= CONSTANTS.INTIMIDATE_DISTANCE and u_char.m_pos then
-									local vec = u_char.m_pos - data.m_pos
-									if MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
-										local char_tweak = u_char.char_tweak
-										if char_tweak and char_tweak.surrender and not char_tweak.priority_shout then
-											local unit_inventory = unit:inventory()
-											if unit_inventory and unit_inventory:get_weapon() and anim_data then
-												if has_room or is_surrender_state then
-													local health_ratio = get_unit_health_ratio(unit)
-													local is_hurt = health_ratio < 1
-
-													local intim_priority = anim_data.hands_back and 3
-														or anim_data.surrender and 2
-														or (is_hurt and 1)
-
-													if intim_priority then
-														intim_dis = intim_dis / intim_priority
-														if (not best_dis) or best_dis > intim_dis then
-															best_nmy = unit
-															best_dis = intim_dis
-														end
-													end
-												end
-											end
-										end
-									end
-								end
-							end
-						end
-					end
-				end
-			end
-
-			return best_nmy
-		end
-
-		local function intimidate_law_enforcement(data, intim_unit, play_action)
-			if not alive(intim_unit) then return end
-
-			if BB:is_blacklisted_cop(intim_unit:key()) then
-				return
-			end
-
-			local anim_data = intim_unit:anim_data()
-			if not anim_data then return end
-
-			local act_name, sound_name
-			if anim_data.hands_back then
-				act_name, sound_name = "arrest", "l03x_sin"
-			elseif anim_data.surrender then
-				act_name, sound_name = "arrest", "l02x_sin"
-			else
-				act_name, sound_name = "gesture_stop", "l01x_sin"
-			end
-
-			local unit = data.unit
-			if not alive(unit) then return end
-
-			safe_say(unit, sound_name, true, true)
-
-			if play_action then
-				request_act(unit, act_name, data)
-			end
-
-			BB:on_intimidation_attempt(intim_unit:key())
-
-			local intim_brain = intim_unit:brain()
-			if intim_brain and intim_brain.on_intimidated then
-				intim_brain:on_intimidated(1, unit)
-			end
-		end
-
-		local function perform_interaction_check(data)
-			local unit = data.unit
-			if not alive(unit) then return end
-
-			local unit_damage = unit:character_damage()
-			if unit_damage and unit_damage:need_revive() then return end
-
-			local anim_data = unit:anim_data()
-			if not anim_data or anim_data.tased then return end
-
-			local my_data = data.internal_data or {}
-			if my_data.acting then return end
-
-			local t = data.t
-			local unit_sound = unit:sound()
-			if unit_sound and unit_sound:speaking() then return end
-
-			if my_data._intimidate_t and my_data._intimidate_t + CONSTANTS.INTIMIDATE_COOLDOWN >= t then
-				return
-			end
-
-			my_data._intimidate_t = t
-
-			local carrying = unit:movement() and unit:movement():carrying_bag()
-			local allow_actions = (not anim_data.reload) and (not carrying)
-
-			local civ = TeamAILogicIdle and TeamAILogicIdle.find_civilian_to_intimidate
-				and TeamAILogicIdle.find_civilian_to_intimidate(unit, CONSTANTS.INTIMIDATE_ANGLE, CONSTANTS.INTIMIDATE_DISTANCE)
-			local dom = find_enemy_to_intimidate(data)
-			local nmy = TeamAILogicAssault and TeamAILogicAssault.find_enemy_to_mark
-				and TeamAILogicAssault.find_enemy_to_mark(data.detected_attention_objects, unit)
-
-			if alive(civ) and TeamAILogicIdle and TeamAILogicIdle.intimidate_civilians then
-				safe_call(TeamAILogicIdle.intimidate_civilians, data, unit, true, allow_actions)
-			elseif alive(dom) then
-				intimidate_law_enforcement(data, dom, allow_actions)
-			elseif alive(nmy) and TeamAILogicAssault and TeamAILogicAssault.mark_enemy then
-                data._last_mark_t = data._last_mark_t or 0
-                if data._last_mark_t + CONSTANTS.MARK_COOLDOWN < t then
-                    safe_call(TeamAILogicAssault.mark_enemy, data, unit, nmy, true, allow_actions)
-                    data._last_mark_t = t
-                end
-			end
-		end
-
 		function TeamAILogicBase._set_attention_obj(data, new_att_obj, new_reaction)
-			safe_call(perform_interaction_check, data)
+            local context = {
+                unit = data.unit,
+                data = data,
+                t = game_time()
+            }
+
+            BB.behavior_trees.interaction:reset()
+            BB.behavior_trees.interaction:tick(context)
+
 			data.attention_obj = new_att_obj
 			if new_att_obj then
 				new_att_obj.reaction = new_reaction or new_att_obj.reaction
