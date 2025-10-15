@@ -46,6 +46,13 @@ local SLOTS = {
 	HOSTAGES = 22
 }
 
+local MathUtils = {}
+MathUtils.mvec3_norm = mvector3.normalize
+MathUtils.mvec3_angle = mvector3.angle
+MathUtils.mvec3_dot = mvector3.dot
+MathUtils.mvec3_distance = mvector3.distance
+
+
 local function _get_mask(name, fallback_slots)
 	if name and managers and managers.slot and managers.slot.get_mask then
 		local ok, m = pcall(managers.slot.get_mask, managers.slot, name)
@@ -189,6 +196,683 @@ local function get_unit_health_ratio(unit)
 	return damage.health_ratio and damage:health_ratio() or 0
 end
 
+local function is_valid_unit(unit)
+    return alive(unit) and unit:movement()
+end
+
+local function is_valid_target(attention_data)
+    return attention_data and
+           attention_data.identified and
+           alive(attention_data.unit) and
+           attention_data.reaction >= AIAttentionObject.REACT_COMBAT
+end
+
+local function is_in_grace_period(u_key, t)
+    local cop_time = BB.cops_to_intimidate[u_key]
+    return cop_time and (t - cop_time) < BB.grace_period
+end
+
+local function get_weapon_archetype(unit)
+    local equipped_wep = unit:inventory() and unit:inventory():equipped_unit()
+    if not equipped_wep then return "unknown" end
+
+    local wep_tweak = equipped_wep:base() and equipped_wep:base()._tweak_data
+    if not wep_tweak then return "unknown" end
+
+    if wep_tweak.categories and table.contains(wep_tweak.categories, "sniper") then
+        return "sniper"
+    elseif wep_tweak.categories and table.contains(wep_tweak.categories, "shotgun") then
+        return "shotgun"
+    else
+        return "rifle"
+    end
+end
+
+local function calculate_threat_value(bot_unit, target_data, data)
+    if not (alive(bot_unit) and target_data and target_data.unit) then
+        return 0
+    end
+
+    local target_unit = target_data.unit
+    local base_unit = target_unit:base()
+    local dist = target_data.verified_dis or mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
+
+    local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
+
+    if base_unit then
+        if base_unit:has_tag("tank") then
+            threat = threat * (THREAT_WEIGHTS.DOZER / 10)
+            local health_ratio = get_unit_health_ratio(target_unit)
+            if health_ratio < 0.3 then
+                threat = threat * 1.3
+            end
+        elseif base_unit:has_tag("spooc") then
+            threat = threat * (THREAT_WEIGHTS.CLOAKER / 10)
+            if dist < 1000 then
+                threat = threat * 2.0
+            end
+        elseif base_unit:has_tag("taser") then
+            local state = target_data.state or "normal"
+            if state == "tasing_teammate" then
+                threat = threat * (THREAT_WEIGHTS.TASER_ACTIVE / 10)
+            else
+                threat = threat * (THREAT_WEIGHTS.TASER / 10)
+            end
+        elseif base_unit:has_tag("medic") then
+            threat = threat * (THREAT_WEIGHTS.MEDIC / 10)
+        elseif base_unit:has_tag("sniper") then
+            threat = threat * (THREAT_WEIGHTS.SNIPER / 10)
+        end
+    end
+
+    if target_data.is_shield then
+        threat = threat * (THREAT_WEIGHTS.SHIELD / 10)
+    end
+
+    if target_data.char_tweak and target_data.char_tweak.priority_shout then
+        threat = threat * (THREAT_WEIGHTS.SPECIAL / 10)
+    end
+
+    local health_ratio = get_unit_health_ratio(target_unit)
+    if health_ratio < 0.3 then
+        threat = threat + THREAT_WEIGHTS.LOW_HEALTH_BONUS
+    end
+
+    local enemy_brain = target_unit:brain()
+    local enemy_data = enemy_brain and enemy_brain._logic_data
+    if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
+        threat = threat + THREAT_WEIGHTS.TARGETING_ME_BONUS
+    end
+
+    if dist > 3000 then
+        threat = threat * 0.7
+    elseif dist < 500 then
+        threat = threat * 1.5
+    end
+
+    return threat
+end
+
+local function calculate_suitability(bot_unit, target_data)
+    local score = 100.0
+    local dist = target_data.verified_dis or mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
+
+    local weapon_type = get_weapon_archetype(bot_unit)
+    local target_unit = target_data.unit
+    local is_sniper = target_unit:base() and target_unit:base():has_tag("sniper")
+    local is_shield = target_data.is_shield
+
+    if weapon_type == "sniper" then
+        score = score + (is_sniper and 50 or 20)
+        if dist < 800 then
+            score = score - 30
+        end
+    elseif weapon_type == "shotgun" then
+        score = score + math.max(0, 100 - dist / 10)
+        if is_shield then
+            score = score + 40
+        end
+    else
+        if dist > 4000 then
+            score = score - 50
+        end
+    end
+
+    local bot_head_pos = bot_unit:movement():m_head_pos()
+    local bot_fwd = bot_unit:movement():m_head_rot():y()
+    local dir_to_target = target_data.m_head_pos - bot_head_pos
+    mvec3_norm(dir_to_target)
+
+    local angle = mvec3_dot(dir_to_target, bot_fwd)
+    score = score + (angle * 50)
+
+    if not target_data.verified then
+        score = score * 0.7
+    end
+
+    if is_shield then
+        local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
+        if has_ap or not shield_blocks(bot_unit, target_data.m_head_pos) then
+            score = score + 30
+        else
+            score = score - 80
+        end
+    end
+
+    return score
+end
+
+local BTNode = {}
+BTNode.__index = BTNode
+
+BTNode.SUCCESS = "success"
+BTNode.FAILURE = "failure"
+BTNode.RUNNING = "running"
+
+function BTNode:new(name)
+    local node = {
+        name = name or "BTNode",
+        _status = nil
+    }
+    setmetatable(node, self)
+    return node
+end
+
+function BTNode:tick(context)
+    return BTNode.FAILURE
+end
+
+function BTNode:reset()
+    self._status = nil
+end
+
+local BTSequence = BTNode:new("Sequence")
+BTSequence.__index = BTSequence
+setmetatable(BTSequence, BTNode)
+
+function BTSequence:new(name, children)
+    local node = BTNode.new(self, name)
+    node.children = children or {}
+    node.current_index = 1
+    return node
+end
+
+function BTSequence:tick(context)
+    while self.current_index <= #self.children do
+        local child = self.children[self.current_index]
+        local result = child:tick(context)
+
+        if result == BTNode.FAILURE then
+            self.current_index = 1
+            return BTNode.FAILURE
+        elseif result == BTNode.RUNNING then
+            return BTNode.RUNNING
+        end
+
+        self.current_index = self.current_index + 1
+    end
+
+    self.current_index = 1
+    return BTNode.SUCCESS
+end
+
+function BTSequence:reset()
+    BTNode.reset(self)
+    self.current_index = 1
+    for _, child in ipairs(self.children) do
+        child:reset()
+    end
+end
+
+local BTSelector = BTNode:new("Selector")
+BTSelector.__index = BTSelector
+setmetatable(BTSelector, BTNode)
+
+function BTSelector:new(name, children)
+    local node = BTNode.new(self, name)
+    node.children = children or {}
+    node.current_index = 1
+    return node
+end
+
+function BTSelector:tick(context)
+    while self.current_index <= #self.children do
+        local child = self.children[self.current_index]
+        local result = child:tick(context)
+
+        if result == BTNode.SUCCESS then
+            self.current_index = 1
+            return BTNode.SUCCESS
+        elseif result == BTNode.RUNNING then
+            return BTNode.RUNNING
+        end
+
+        self.current_index = self.current_index + 1
+    end
+
+    self.current_index = 1
+    return BTNode.FAILURE
+end
+
+function BTSelector:reset()
+    BTNode.reset(self)
+    self.current_index = 1
+    for _, child in ipairs(self.children) do
+        child:reset()
+    end
+end
+
+local BTParallel = BTNode:new("Parallel")
+BTParallel.__index = BTParallel
+setmetatable(BTParallel, BTNode)
+
+BTParallel.REQUIRE_ALL = "all"
+BTParallel.REQUIRE_ONE = "one"
+
+function BTParallel:new(name, children, policy)
+    local node = BTNode.new(self, name)
+    node.children = children or {}
+    node.policy = policy or BTParallel.REQUIRE_ALL
+    return node
+end
+
+function BTParallel:tick(context)
+    local success_count = 0
+    local failure_count = 0
+    local running_count = 0
+
+    for _, child in ipairs(self.children) do
+        local result = child:tick(context)
+
+        if result == BTNode.SUCCESS then
+            success_count = success_count + 1
+        elseif result == BTNode.FAILURE then
+            failure_count = failure_count + 1
+        elseif result == BTNode.RUNNING then
+            running_count = running_count + 1
+        end
+    end
+
+    if self.policy == BTParallel.REQUIRE_ALL then
+        if success_count == #self.children then
+            return BTNode.SUCCESS
+        elseif failure_count > 0 then
+            return BTNode.FAILURE
+        end
+    elseif self.policy == BTParallel.REQUIRE_ONE then
+        if success_count > 0 then
+            return BTNode.SUCCESS
+        elseif failure_count == #self.children then
+            return BTNode.FAILURE
+        end
+    end
+
+    return BTNode.RUNNING
+end
+
+local BTInverter = BTNode:new("Inverter")
+BTInverter.__index = BTInverter
+setmetatable(BTInverter, BTNode)
+
+function BTInverter:new(name, child)
+    local node = BTNode.new(self, name)
+    node.child = child
+    return node
+end
+
+function BTInverter:tick(context)
+    local result = self.child:tick(context)
+
+    if result == BTNode.SUCCESS then
+        return BTNode.FAILURE
+    elseif result == BTNode.FAILURE then
+        return BTNode.SUCCESS
+    end
+
+    return result
+end
+
+local BTRepeater = BTNode:new("Repeater")
+BTRepeater.__index = BTRepeater
+setmetatable(BTRepeater, BTNode)
+
+function BTRepeater:new(name, child, count)
+    local node = BTNode.new(self, name)
+    node.child = child
+    node.max_count = count or -1
+    node.current_count = 0
+    return node
+end
+
+function BTRepeater:tick(context)
+    if self.max_count > 0 and self.current_count >= self.max_count then
+        self.current_count = 0
+        return BTNode.SUCCESS
+    end
+
+    local result = self.child:tick(context)
+
+    if result ~= BTNode.RUNNING then
+        self.current_count = self.current_count + 1
+    end
+
+    return BTNode.RUNNING
+end
+
+local BTCondition = BTNode:new("Condition")
+BTCondition.__index = BTCondition
+setmetatable(BTCondition, BTNode)
+
+function BTCondition:new(name, check_func)
+    local node = BTNode.new(self, name)
+    node.check = check_func
+    return node
+end
+
+function BTCondition:tick(context)
+    return self.check(context) and BTNode.SUCCESS or BTNode.FAILURE
+end
+
+local BTAction = BTNode:new("Action")
+BTAction.__index = BTAction
+setmetatable(BTAction, BTNode)
+
+function BTAction:new(name, action_func)
+    local node = BTNode.new(self, name)
+    node.action = action_func
+    return node
+end
+
+function BTAction:tick(context)
+    return self.action(context)
+end
+
+-- Target Selection Tree
+local function build_target_selection_tree()
+    return BTSelector:new("TargetSelection", {
+        BTSequence:new("CoopTargetSelection", {
+            BTCondition:new("IsCoopEnabled", function(ctx)
+                return BB:get("coop", false)
+            end),
+
+            BTAction:new("UpdateTeammateStatus", function(ctx)
+                if is_team_ai(ctx.unit) then
+                    BB:update_teammate_status(ctx.unit)
+                end
+                return BTNode.SUCCESS
+            end),
+
+            BTAction:new("CollectPotentialTargets", function(ctx)
+                ctx.potential_targets = {}
+
+                for u_key, attention_data in pairs(ctx.attention_objects or {}) do
+                    if is_valid_target(attention_data) and
+                       attention_data.verified_dis and
+                       attention_data.verified_dis > 0 and
+                       not is_in_grace_period(u_key, ctx.t) then
+
+                        local threat = calculate_threat_value(ctx.unit, attention_data, ctx.data)
+
+                        if ctx.last_target_u_key == u_key and
+                           (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
+                            threat = threat * 1.3
+                        end
+
+                        ctx.potential_targets[u_key] = {
+                            data = attention_data,
+                            score = threat,
+                            reaction = attention_data.reaction
+                        }
+                    end
+                end
+
+                return BTNode.SUCCESS
+            end),
+
+
+            BTSelector:new("SelectBestTarget", {
+                BTSequence:new("SelectGlobalPriorityTarget", {
+                    BTAction:new("GetGlobalPriorities", function(ctx)
+                        ctx.global_priority_targets = BB:get_priority_targets()
+                        return next(ctx.global_priority_targets) and BTNode.SUCCESS or BTNode.FAILURE
+                    end),
+
+                    BTAction:new("EvaluateGlobalTargets", function(ctx)
+                        local best_target, best_score = nil, -1
+
+                        for u_key, global_target in pairs(ctx.global_priority_targets) do
+                            local local_target = ctx.potential_targets[u_key]
+
+                            if local_target then
+                                local dynamic_prio = global_target.priority
+
+                                if global_target.state == "tasing_teammate" then
+                                    dynamic_prio = dynamic_prio * 3
+                                end
+
+                                local is_dozer = global_target.unit:base() and
+                                               global_target.unit:base():has_tag("tank")
+
+                                if is_dozer then
+                                    local current_attackers = BB:count_dozer_attackers(u_key)
+                                    local attacker_limit = BB:get_dozer_attacker_limit(
+                                        global_target.unit,
+                                        local_target.data.verified_dis
+                                    )
+
+                                    if current_attackers >= attacker_limit then
+                                        local already_targeting =
+                                            BB.coop_data.dozer_attackers[ctx.data.key] == u_key
+                                        if not already_targeting then
+                                            dynamic_prio = dynamic_prio * 0.3
+                                        end
+                                    end
+                                end
+
+                                local allow_target = true
+                                if not is_dozer and
+                                   global_target.targeted_by and
+                                   global_target.targeted_by ~= ctx.data.key then
+                                    allow_target = false
+                                end
+
+                                if allow_target then
+                                    local suitability = calculate_suitability(
+                                        ctx.unit,
+                                        local_target.data
+                                    )
+
+                                    if not BB:is_direction_covered(
+                                        local_target.data.m_head_pos,
+                                        ctx.unit
+                                    ) then
+                                        suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
+                                    end
+
+                                    local final_score = dynamic_prio * suitability
+
+                                    if final_score > best_score then
+                                        best_target = global_target
+                                        best_score = final_score
+                                        ctx.selected_u_key = u_key
+                                        ctx.selected_target = local_target.data
+                                        ctx.selected_score = local_target.score
+                                        ctx.selected_reaction = local_target.reaction
+                                    end
+                                end
+                            end
+                        end
+
+                        if best_target then
+                            best_target.targeted_by = ctx.data.key
+                            best_target.claimed_at = ctx.t
+
+                            local is_dozer = best_target.unit:base() and
+                                           best_target.unit:base():has_tag("tank")
+                            if is_dozer then
+                                BB.coop_data.dozer_attackers[ctx.data.key] = best_target.u_key
+                            else
+                                BB.coop_data.dozer_attackers[ctx.data.key] = nil
+                            end
+
+                            return BTNode.SUCCESS
+                        end
+
+                        return BTNode.FAILURE
+                    end)
+                }),
+
+                BTAction:new("SelectLocalTarget", function(ctx)
+                    local best_target, max_score = nil, -1
+                    local global_priorities = BB:get_priority_targets()
+
+                    for u_key, target in pairs(ctx.potential_targets) do
+                        local g = global_priorities[u_key]
+                        local is_dozer = target.data.unit:base() and
+                                       target.data.unit:base():has_tag("tank")
+
+                        local penalty = 1
+
+                        if g and g.targeted_by and g.targeted_by ~= ctx.data.key then
+                            if is_dozer then
+                                local current_attackers = BB:count_dozer_attackers(u_key)
+                                local attacker_limit = BB:get_dozer_attacker_limit(
+                                    target.data.unit,
+                                    target.data.verified_dis
+                                )
+                                if current_attackers >= attacker_limit then
+                                    penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
+                                end
+                            else
+                                penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
+                            end
+                        end
+
+                        local effective = target.score * penalty
+
+                        if effective > max_score then
+                            max_score = effective
+                            best_target = target
+                            ctx.selected_u_key = u_key
+                            ctx.selected_target = target.data
+                            ctx.selected_score = target.score
+                            ctx.selected_reaction = target.reaction
+                        end
+                    end
+
+                    if best_target then
+                        local is_dozer = best_target.data.unit:base() and
+                                       best_target.data.unit:base():has_tag("tank")
+                        if is_dozer then
+                            BB.coop_data.dozer_attackers[ctx.data.key] = ctx.selected_u_key
+                        else
+                            BB.coop_data.dozer_attackers[ctx.data.key] = nil
+                        end
+
+                        return BTNode.SUCCESS
+                    end
+
+                    BB.coop_data.dozer_attackers[ctx.data.key] = nil
+                    return BTNode.FAILURE
+                end)
+            }),
+
+            BTAction:new("RecordLastTarget", function(ctx)
+                if ctx.selected_target then
+                    ctx.data._last_target_u_key = ctx.selected_u_key
+                    ctx.data._last_target_t = ctx.t
+                end
+                return BTNode.SUCCESS
+            end)
+        }),
+
+        BTSequence:new("SimpleTargetSelection", {
+
+            BTAction:new("CollectSimpleTargets", function(ctx)
+                ctx.potential_targets = {}
+
+                for u_key, attention_data in pairs(ctx.attention_objects or {}) do
+                    if is_valid_target(attention_data) and
+                       attention_data.verified_dis and
+                       attention_data.verified_dis > 0 and
+                       not is_in_grace_period(u_key, ctx.t) then
+
+                        local threat = calculate_threat_value(ctx.unit, attention_data, ctx.data)
+
+                        if ctx.last_target_u_key == u_key and
+                           (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
+                            threat = threat * 1.3
+                        end
+
+                        ctx.potential_targets[u_key] = {
+                            data = attention_data,
+                            score = threat,
+                            reaction = attention_data.reaction
+                        }
+                    end
+                end
+
+                return next(ctx.potential_targets) and BTNode.SUCCESS or BTNode.FAILURE
+            end),
+
+            BTAction:new("SelectBestSimpleTarget", function(ctx)
+                local best_target, max_score = nil, -1
+
+                for u_key, target in pairs(ctx.potential_targets) do
+                    if target.score > max_score then
+                        max_score = target.score
+                        best_target = target
+                        ctx.selected_u_key = u_key
+                        ctx.selected_target = target.data
+                        ctx.selected_score = target.score
+                        ctx.selected_reaction = target.reaction
+                    end
+                end
+
+                if best_target then
+                    ctx.data._last_target_u_key = ctx.selected_u_key
+                    ctx.data._last_target_t = ctx.t
+                    return BTNode.SUCCESS
+                end
+
+                return BTNode.FAILURE
+            end)
+        })
+    })
+end
+
+local function visualize_tree(root_node)
+    local function print_node_recursive(node, prefix, is_last)
+        if not node then return end
+
+        local line_prefix = prefix .. (is_last and "`-- " or "|-- ")
+
+        local node_type = getmetatable(node) and getmetatable(node).__index.name or "Unknown"
+        local node_name = node.name or "Unnamed"
+
+        local info = string.format("[%s] %s", node_type, node_name)
+
+        if node_type == "Repeater" then
+            local count_str = (node.max_count == -1) and "infinite" or tostring(node.max_count)
+            info = info .. " (" .. count_str .. " times)"
+        elseif node_type == "Parallel" then
+            info = info .. " (Policy: " .. (node.policy or "N/A") .. ")"
+        end
+
+        bb_log(line_prefix .. info)
+
+        local children = {}
+        if node.children then
+            children = node.children
+        elseif node.child then
+            children = { node.child }
+        end
+
+        local child_count = #children
+        if child_count > 0 then
+            local next_prefix = prefix .. (is_last and "    " or "|   ")
+            for i, child in ipairs(children) do
+                print_node_recursive(child, next_prefix, i == child_count)
+            end
+        end
+    end
+
+    if not root_node then
+        bb_log("Tree is empty.")
+        return
+    end
+
+    local root_type = getmetatable(root_node) and getmetatable(root_node).__index.name or "Unknown"
+    bb_log(string.format("[%s] %s", root_type, root_node.name))
+
+    local children = root_node.children or (root_node.child and {root_node.child}) or {}
+    local child_count = #children
+    for i, child in ipairs(children) do
+        print_node_recursive(child, "", i == child_count)
+    end
+end
+
+-- BB Object Initialization and Methods
 BB._path = ModPath
 BB._data_path = SavePath .. "bb_data.txt"
 BB._data = BB._data or {}
@@ -507,6 +1191,14 @@ function BB:get_priority_targets()
     end
 
     return active_targets
+end
+
+local function remove_ai_from_bullet_mask(self, setup_data)
+	local user_unit = setup_data and setup_data.user_unit
+	if alive(user_unit) and is_team_ai(user_unit) and self._bullet_slotmask then
+		local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
+		self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
+	end
 end
 
 Hooks:Add("LocalizationManagerPostInit", "LocalizationManagerPostInit_BB", function(loc)
@@ -970,14 +1662,6 @@ if RequiredScript == "lib/tweak_data/playertweakdata" then
 	end
 end
 
-local function remove_ai_from_bullet_mask(self, setup_data)
-	local user_unit = setup_data and setup_data.user_unit
-	if alive(user_unit) and is_team_ai(user_unit) and self._bullet_slotmask then
-		local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
-		self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
-	end
-end
-
 if RequiredScript == "lib/units/weapons/newnpcraycastweaponbase" then
 	if NewNPCRaycastWeaponBase and NewNPCRaycastWeaponBase.setup then
 		local old_setup = NewNPCRaycastWeaponBase.setup
@@ -1153,296 +1837,36 @@ end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 	if TeamAILogicIdle then
-		local mvec3_norm = mvector3.normalize
-		local mvec3_angle = mvector3.angle
-		local mvec3_dot = mvector3.dot
-		local mvec3_distance = mvector3.distance
-		local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
-
-        local function get_weapon_archetype(unit)
-            local equipped_wep = unit:inventory() and unit:inventory():equipped_unit()
-            if not equipped_wep then return "unknown" end
-
-            local wep_tweak = equipped_wep:base() and equipped_wep:base()._tweak_data
-            if not wep_tweak then return "unknown" end
-
-            if wep_tweak.categories and table.contains(wep_tweak.categories, "sniper") then
-                return "sniper"
-            elseif wep_tweak.categories and table.contains(wep_tweak.categories, "shotgun") then
-                return "shotgun"
-            else
-                return "rifle"
-            end
-        end
-
-        local function calculate_threat_value(bot_unit, target_data, data)
-            if not (alive(bot_unit) and target_data and target_data.unit) then
-                return 0
-            end
-
-            local target_unit = target_data.unit
-            local base_unit = target_unit:base()
-            local dist = target_data.verified_dis or mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
-
-            local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
-
-            if base_unit then
-                if base_unit:has_tag("tank") then
-                    threat = threat * (THREAT_WEIGHTS.DOZER / 10)
-                    local health_ratio = get_unit_health_ratio(target_unit)
-                    if health_ratio < 0.3 then
-                        threat = threat * 1.3
-                    end
-                elseif base_unit:has_tag("spooc") then
-                    threat = threat * (THREAT_WEIGHTS.CLOAKER / 10)
-                    if dist < 1000 then
-                        threat = threat * 2.0
-                    end
-                elseif base_unit:has_tag("taser") then
-                    local state = target_data.state or "normal"
-                    if state == "tasing_teammate" then
-                        threat = threat * (THREAT_WEIGHTS.TASER_ACTIVE / 10)
-                    else
-                        threat = threat * (THREAT_WEIGHTS.TASER / 10)
-                    end
-                elseif base_unit:has_tag("medic") then
-                    threat = threat * (THREAT_WEIGHTS.MEDIC / 10)
-                elseif base_unit:has_tag("sniper") then
-                    threat = threat * (THREAT_WEIGHTS.SNIPER / 10)
-                end
-            end
-
-            if target_data.is_shield then
-                threat = threat * (THREAT_WEIGHTS.SHIELD / 10)
-            end
-
-            if target_data.char_tweak and target_data.char_tweak.priority_shout then
-                threat = threat * (THREAT_WEIGHTS.SPECIAL / 10)
-            end
-
-            local health_ratio = get_unit_health_ratio(target_unit)
-            if health_ratio < 0.3 then
-                threat = threat + THREAT_WEIGHTS.LOW_HEALTH_BONUS
-            end
-
-            local enemy_brain = target_unit:brain()
-            local enemy_data = enemy_brain and enemy_brain._logic_data
-            if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
-                threat = threat + THREAT_WEIGHTS.TARGETING_ME_BONUS
-            end
-
-            if dist > 3000 then
-                threat = threat * 0.7
-            elseif dist < 500 then
-                threat = threat * 1.5
-            end
-
-            return threat
-        end
-
-        local function calculate_suitability(bot_unit, target_data)
-            local score = 100.0
-            local dist = target_data.verified_dis or mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
-
-            local weapon_type = get_weapon_archetype(bot_unit)
-            local target_unit = target_data.unit
-            local is_sniper = target_unit:base() and target_unit:base():has_tag("sniper")
-            local is_shield = target_data.is_shield
-
-            if weapon_type == "sniper" then
-                score = score + (is_sniper and 50 or 20)
-                if dist < 800 then
-                    score = score - 30
-                end
-            elseif weapon_type == "shotgun" then
-                score = score + math.max(0, 100 - dist / 10)
-                if is_shield then
-                    score = score + 40
-                end
-            else
-                if dist > 4000 then
-                    score = score - 50
-                end
-            end
-
-            local bot_head_pos = bot_unit:movement():m_head_pos()
-            local bot_fwd = bot_unit:movement():m_head_rot():y()
-            local dir_to_target = target_data.m_head_pos - bot_head_pos
-            mvec3_norm(dir_to_target)
-
-            local angle = mvec3_dot(dir_to_target, bot_fwd)
-            score = score + (angle * 50)
-
-            if not target_data.verified then
-                score = score * 0.7
-            end
-
-            if is_shield then
-                local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-                if has_ap or not shield_blocks(bot_unit, target_data.m_head_pos) then
-                    score = score + 30
-                else
-                    score = score - 80
-                end
-            end
-
-            return score
-        end
-
+        local target_selection_tree = build_target_selection_tree()
+        visualize_tree(target_selection_tree)
         function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
             local unit = data.unit
-            if not (alive(unit) and unit:movement()) then return end
-
-            local t = data.t or game_time()
-            local is_team_ai_unit = is_team_ai(unit)
-
-            if BB:get("coop", false) and is_team_ai_unit then
-                BB:update_teammate_status(unit)
-            end
-
-            local last_target_u_key = data._last_target_u_key
-            local last_target_t = data._last_target_t or 0
-
-            local potential_targets_map = {}
-            for u_key, attention_data in pairs(attention_objects or {}) do
-                if attention_data.identified and alive(attention_data.unit) and attention_data.reaction >= AIAttentionObject.REACT_COMBAT then
-                    local dist = attention_data.verified_dis
-                    if dist and dist > 0 and not (BB.cops_to_intimidate[u_key] and t - BB.cops_to_intimidate[u_key] < BB.grace_period) then
-                        local threat = calculate_threat_value(unit, attention_data, data)
-
-                        if last_target_u_key and last_target_u_key == u_key and (t - last_target_t) <= CONSTANTS.TARGET_SWITCH_DELAY then
-                            threat = threat * 1.3
-                        end
-
-                        potential_targets_map[u_key] = {
-                            data = attention_data,
-                            score = threat,
-                            reaction = attention_data.reaction
-                        }
-                    end
-                end
-            end
-
-            if not BB:get("coop", false) then
-                local best_local_target, max_score = nil, -1
-                for _, target in pairs(potential_targets_map) do
-                    if target.score > max_score then
-                        max_score = target.score
-                        best_local_target = target
-                    end
+                if not is_valid_unit(unit) then
+                    return nil, nil, nil
                 end
 
-                if best_local_target then
-                    data._last_target_u_key = best_local_target.data.u_key
-                    data._last_target_t = t
-                    return best_local_target.data, best_local_target.score, best_local_target.reaction
+                local context = {
+                    unit = unit,
+                    data = data,
+                    t = data.t or game_time(),
+                    attention_objects = attention_objects,
+                    last_target_u_key = data._last_target_u_key,
+                    last_target_t = data._last_target_t or 0,
+
+                    selected_target = nil,
+                    selected_score = nil,
+                    selected_reaction = nil,
+                    selected_u_key = nil
+                }
+
+                target_selection_tree:reset()
+                local result = target_selection_tree:tick(context)
+
+                if result == BTNode.SUCCESS and context.selected_target then
+                    return context.selected_target, context.selected_score, context.selected_reaction
                 end
+
                 return nil, nil, nil
-            end
-
-            local global_priority_targets = BB:get_priority_targets()
-            local best_coop_target, best_coop_score = nil, -1
-
-            for u_key, global_target in pairs(global_priority_targets) do
-                local local_target_info = potential_targets_map[u_key]
-                if local_target_info then
-                    local dynamic_prio = global_target.priority
-                    if global_target.state == "tasing_teammate" then
-                        dynamic_prio = dynamic_prio * 3
-                    end
-
-                    local is_dozer = global_target.unit:base() and global_target.unit:base():has_tag("tank")
-
-                    if is_dozer then
-                        local current_attackers = BB:count_dozer_attackers(u_key)
-                        local attacker_limit = BB:get_dozer_attacker_limit(global_target.unit, local_target_info.data.verified_dis)
-
-                        if current_attackers >= attacker_limit then
-                            local already_targeting = BB.coop_data.dozer_attackers[data.key] == u_key
-                            if not already_targeting then
-                                dynamic_prio = dynamic_prio * 0.3
-                            end
-                        end
-                    end
-
-                    local allow_target = true
-                    if not is_dozer and global_target.targeted_by and global_target.targeted_by ~= data.key then
-                        allow_target = false
-                    end
-
-                    if allow_target then
-                        local suitability = calculate_suitability(unit, local_target_info.data)
-
-                        if not BB:is_direction_covered(local_target_info.data.m_head_pos, unit) then
-                            suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
-                        end
-
-                        local final_score = dynamic_prio * suitability
-                        if final_score > best_coop_score then
-                            best_coop_target = global_target
-                            best_coop_score = final_score
-                        end
-                    end
-                end
-            end
-
-            if best_coop_target then
-                best_coop_target.targeted_by = data.key
-                best_coop_target.claimed_at = t
-
-                local is_dozer = best_coop_target.unit:base() and best_coop_target.unit:base():has_tag("tank")
-                if is_dozer then
-                    BB.coop_data.dozer_attackers[data.key] = best_coop_target.u_key
-                else
-                    BB.coop_data.dozer_attackers[data.key] = nil
-                end
-
-                local local_data = potential_targets_map[best_coop_target.u_key]
-                data._last_target_u_key = best_coop_target.u_key
-                data._last_target_t = t
-                return local_data.data, local_data.score, local_data.reaction
-            end
-
-            local best_local_target, max_score = nil, -1
-            for u_key, target in pairs(potential_targets_map) do
-                local g = global_priority_targets[u_key]
-                local is_dozer = target.data.unit:base() and target.data.unit:base():has_tag("tank")
-
-                local penalty = 1
-                if g and g.targeted_by and g.targeted_by ~= data.key then
-                    if is_dozer then
-                        local current_attackers = BB:count_dozer_attackers(u_key)
-                        local attacker_limit = BB:get_dozer_attacker_limit(target.data.unit, target.data.verified_dis)
-                        if current_attackers >= attacker_limit then
-                            penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
-                        end
-                    else
-                        penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
-                    end
-                end
-
-                local effective = target.score * penalty
-                if effective > max_score then
-                    max_score = effective
-                    best_local_target = target
-                end
-            end
-
-            if best_local_target then
-                local is_dozer = best_local_target.data.unit:base() and best_local_target.data.unit:base():has_tag("tank")
-                if is_dozer then
-                    BB.coop_data.dozer_attackers[data.key] = best_local_target.data.u_key
-                else
-                    BB.coop_data.dozer_attackers[data.key] = nil
-                end
-
-                data._last_target_u_key = best_local_target.data.u_key
-                data._last_target_t = t
-                return best_local_target.data, best_local_target.score, best_local_target.reaction
-            end
-
-            BB.coop_data.dozer_attackers[data.key] = nil
-            return nil, nil, nil
         end
 
 		if BB:get("maskup", false) then
