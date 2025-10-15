@@ -52,6 +52,10 @@ MathUtils.mvec3_angle = mvector3.angle
 MathUtils.mvec3_dot = mvector3.dot
 MathUtils.mvec3_distance = mvector3.distance
 
+function MathUtils.clamp(x, a, b)
+	return math.min(math.max(x, a), b)
+end
+
 
 local function _get_mask(name, fallback_slots)
 	if name and managers and managers.slot and managers.slot.get_mask then
@@ -91,10 +95,6 @@ local function safe_call(func, ...)
 		bb_log("Error: " .. tostring(result), "ERROR")
 	end
 	return result
-end
-
-local function clamp(x, a, b)
-	return math.min(math.max(x, a), b)
 end
 
 local function as_bool_from_item(item)
@@ -235,7 +235,7 @@ local function calculate_threat_value(bot_unit, target_data, data)
 
     local target_unit = target_data.unit
     local base_unit = target_unit:base()
-    local dist = target_data.verified_dis or mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
+    local dist = target_data.verified_dis or MathUtils.mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
 
     local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
 
@@ -295,7 +295,7 @@ end
 
 local function calculate_suitability(bot_unit, target_data)
     local score = 100.0
-    local dist = target_data.verified_dis or mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
+    local dist = target_data.verified_dis or MathUtils.mvec3_distance(bot_unit:movement():m_head_pos(), target_data.m_head_pos)
 
     local weapon_type = get_weapon_archetype(bot_unit)
     local target_unit = target_data.unit
@@ -321,9 +321,9 @@ local function calculate_suitability(bot_unit, target_data)
     local bot_head_pos = bot_unit:movement():m_head_pos()
     local bot_fwd = bot_unit:movement():m_head_rot():y()
     local dir_to_target = target_data.m_head_pos - bot_head_pos
-    mvec3_norm(dir_to_target)
+    MathUtils.mvec3_norm(dir_to_target)
 
-    local angle = mvec3_dot(dir_to_target, bot_fwd)
+    local angle = MathUtils.mvec3_dot(dir_to_target, bot_fwd)
     score = score + (angle * 50)
 
     if not target_data.verified then
@@ -1115,16 +1115,16 @@ function BB:is_direction_covered(target_pos, my_unit)
 	if not my_pos then return false end
 
 	local my_dir = target_pos - my_pos
-	mvector3.normalize(my_dir)
+	MathUtils.mvec3_norm(my_dir)
 
 	local threshold = 0.7
 
 	for u_key, status in pairs(self.coop_data.teammates_status) do
 		if u_key ~= my_unit:key() and status.position and status.facing_direction then
 			local other_to_target = target_pos - status.position
-			mvector3.normalize(other_to_target)
+			MathUtils.mvec3_norm(other_to_target)
 
-			local dot = mvector3.dot(my_dir, other_to_target)
+			local dot = MathUtils.mvec3_dot(my_dir, other_to_target)
 			if dot > threshold then
 				return true
 			end
@@ -1347,7 +1347,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 					nr_crim = nr_crim + 1
 				end
 			end
-			nr_crim = clamp(nr_crim, 1, 4)
+			nr_crim = MathUtils.clamp(nr_crim, 1, 4)
 			return balance_multipliers and balance_multipliers[nr_crim] or 1
 		end
 	end
@@ -1891,9 +1891,6 @@ end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 	if TeamAILogicAssault then
-		local mvec3_angle = mvector3.angle
-		local mvec3_norm = mvector3.normalize
-		local mvec3_distance = mvector3.distance
 		local math_ceil = math.ceil
 		local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
@@ -1936,7 +1933,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
 								local dis = attention_info.verified_dis
 								if not dis and target_head then
-									dis = mvec3_distance(my_head, target_head)
+									dis = MathUtils.mvec3_distance(my_head, target_head)
 								end
 
 								if dis and dis <= CONSTANTS.MARK_DISTANCE then
@@ -2114,7 +2111,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 						local unit_pos = u_char.m_head_pos
 						if unit_pos then
 							local vec = unit_pos - my_pos
-							if mvec3_angle(vec, look_vec) <= CONSTANTS.MELEE_ANGLE then
+							if MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.MELEE_ANGLE then
 								local melee_priority = 0
 
 								if u_char.is_shield then
@@ -2197,7 +2194,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                         local unit_brain = unit:brain()
                         if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
                             local vec = u_char.m_head_pos - from_pos
-                            if vec and mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
+                            if vec and MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
                                 local unit_base = unit:base()
                                 local tweak_table = unit_base and unit_base._tweak_table
 
@@ -2229,7 +2226,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
 				for j, u_char2 in ipairs(enemy_cluster) do
 					if i ~= j and u_char2.m_head_pos then
-						local dist = mvec3_distance(u_char1.m_head_pos, u_char2.m_head_pos)
+						local dist = MathUtils.mvec3_distance(u_char1.m_head_pos, u_char2.m_head_pos)
 						if dist <= CONSTANTS.CLUSTER_DISTANCE then
 							cluster_count = cluster_count + 1
 						end
@@ -2249,7 +2246,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 			if ProjectileBase and ProjectileBase.spawn then
 				local cc_unit = ProjectileBase.spawn(conc_tweak.unit, from_pos, Rotation())
 				if cc_unit and cc_unit:base() then
-					mvec3_norm(mvec_spread_direction)
+					MathUtils.mvec3_norm(mvec_spread_direction)
 					play_net_redirect(criminal, "throw_grenade")
 					safe_say(criminal, "g43", true, true)
 					cc_unit:base():throw({dir = mvec_spread_direction, owner = criminal})
@@ -2311,7 +2308,6 @@ end
 if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 	if TeamAILogicBase then
 		local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
-		local mvec3_angle = mvector3.angle
 
 		local function find_enemy_to_intimidate(data)
 			if not (alive(data.unit) and data.unit:movement()) then
@@ -2350,7 +2346,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 								local intim_dis = u_char.verified_dis
 								if intim_dis and intim_dis <= CONSTANTS.INTIMIDATE_DISTANCE and u_char.m_pos then
 									local vec = u_char.m_pos - data.m_pos
-									if mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
+									if MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
 										local char_tweak = u_char.char_tweak
 										if char_tweak and char_tweak.surrender and not char_tweak.priority_shout then
 											local unit_inventory = unit:inventory()
