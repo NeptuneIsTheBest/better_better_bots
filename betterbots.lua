@@ -566,6 +566,276 @@ function BTAction:tick(context)
     return self.action(context)
 end
 
+local BTCooldownCheck = BTNode:new("CooldownCheck")
+BTCooldownCheck.__index = BTCooldownCheck
+setmetatable(BTCooldownCheck, BTNode)
+
+function BTCooldownCheck:new(name, data_key, cooldown_duration, time_key)
+    local node = BTNode.new(self, name)
+    node.data_key = data_key or "cooldown_data"
+    node.cooldown_duration = cooldown_duration or 1
+    node.time_key = time_key or "t"
+    return node
+end
+
+function BTCooldownCheck:tick(context)
+    local data = context.data and context.data.internal_data or {}
+    local current_time = context[self.time_key] or game_time()
+    local last_time = data[self.data_key]
+
+    if not last_time or (current_time - last_time) >= self.cooldown_duration then
+        data[self.data_key] = current_time
+        return BTNode.SUCCESS
+    end
+
+    return BTNode.FAILURE
+end
+
+local BTDataCollector = BTNode:new("DataCollector")
+BTDataCollector.__index = BTDataCollector
+setmetatable(BTDataCollector, BTNode)
+
+function BTDataCollector:new(name, config)
+    local node = BTNode.new(self, name)
+    node.source_key = config.source_key or "attention_objects"
+    node.target_key = config.target_key or "collected_data"
+    node.filter_func = config.filter_func or function() return true end
+    node.transform_func = config.transform_func or function(item) return item end
+    node.min_count = config.min_count or 0
+    return node
+end
+
+function BTDataCollector:tick(context)
+    local source = context[self.source_key] or {}
+    local collected = {}
+
+    for key, item in pairs(source) do
+        if self.filter_func(item, context, key) then
+            collected[key] = self.transform_func(item, context, key)
+        end
+    end
+
+    context[self.target_key] = collected
+
+    return (self.min_count == 0 or next(collected) ~= nil) and BTNode.SUCCESS or BTNode.FAILURE
+end
+
+local BTBestSelector = BTNode:new("BestSelector")
+BTBestSelector.__index = BTBestSelector
+setmetatable(BTBestSelector, BTNode)
+
+function BTBestSelector:new(name, config)
+    local node = BTNode.new(self, name)
+    node.source_key = config.source_key or "candidates"
+    node.score_func = config.score_func or function(item) return item.score or 0 end
+    node.filter_func = config.filter_func or function() return true end
+    node.result_keys = config.result_keys or {best = "selected_item", score = "selected_score"}
+    node.maximize = config.maximize ~= false
+    return node
+end
+
+function BTBestSelector:tick(context)
+    local source = context[self.source_key] or {}
+    local best_item, best_score, best_key = nil, nil, nil
+
+    for key, item in pairs(source) do
+        if self.filter_func(item, context, key) then
+            local score = self.score_func(item, context, key)
+
+            if not best_score or (self.maximize and score > best_score) or (not self.maximize and score < best_score) then
+                best_score = score
+                best_item = item
+                best_key = key
+            end
+        end
+    end
+
+    if best_item then
+        for result_type, context_key in pairs(self.result_keys) do
+            if result_type == "best" then
+                context[context_key] = best_item
+            elseif result_type == "score" then
+                context[context_key] = best_score
+            elseif result_type == "key" then
+                context[context_key] = best_key
+            end
+        end
+        return BTNode.SUCCESS
+    end
+
+    return BTNode.FAILURE
+end
+
+local BTThresholdCheck = BTNode:new("ThresholdCheck")
+BTThresholdCheck.__index = BTThresholdCheck
+setmetatable(BTThresholdCheck, BTNode)
+
+function BTThresholdCheck:new(name, config)
+    local node = BTNode.new(self, name)
+    node.value_func = config.value_func
+    node.threshold = config.threshold
+    node.operator = config.operator or ">="
+    return node
+end
+
+function BTThresholdCheck:tick(context)
+    local value = self.value_func(context)
+    local threshold = type(self.threshold) == "function" and self.threshold(context) or self.threshold
+
+    local result = false
+    if self.operator == ">" then
+        result = value > threshold
+    elseif self.operator == "<" then
+        result = value < threshold
+    elseif self.operator == ">=" then
+        result = value >= threshold
+    elseif self.operator == "<=" then
+        result = value <= threshold
+    elseif self.operator == "==" then
+        result = value == threshold
+    elseif self.operator == "~=" then
+        result = value ~= threshold
+    end
+
+    return result and BTNode.SUCCESS or BTNode.FAILURE
+end
+
+local BTStateCheck = BTNode:new("StateCheck")
+BTStateCheck.__index = BTStateCheck
+setmetatable(BTStateCheck, BTNode)
+
+function BTStateCheck:new(name, check_funcs, mode)
+    local node = BTNode.new(self, name)
+    node.checks = type(check_funcs) == "table" and check_funcs or {check_funcs}
+    node.mode = mode or "all"
+    return node
+end
+
+function BTStateCheck:tick(context)
+    if self.mode == "all" then
+        for _, check_func in ipairs(self.checks) do
+            if not check_func(context) then
+                return BTNode.FAILURE
+            end
+        end
+        return BTNode.SUCCESS
+    else
+        for _, check_func in ipairs(self.checks) do
+            if check_func(context) then
+                return BTNode.SUCCESS
+            end
+        end
+        return BTNode.FAILURE
+    end
+end
+
+local BTRangeFinder = BTNode:new("RangeFinder")
+BTRangeFinder.__index = BTRangeFinder
+setmetatable(BTRangeFinder, BTNode)
+
+function BTRangeFinder:new(name, config)
+    local node = BTNode.new(self, name)
+    node.source_key = config.source_key
+    node.origin_func = config.origin_func
+    node.position_func = config.position_func
+    node.max_distance = config.max_distance
+    node.max_angle = config.max_angle
+    node.direction_func = config.direction_func
+    node.filter_func = config.filter_func or function() return true end
+    node.result_key = config.result_key or "found_items"
+    node.priority_func = config.priority_func
+    return node
+end
+
+function BTRangeFinder:tick(context)
+    local source = context[self.source_key] or {}
+    local origin = self.origin_func(context)
+    local direction = self.direction_func and self.direction_func(context)
+
+    if not origin then
+        return BTNode.FAILURE
+    end
+
+    local found = {}
+    local best_item, best_priority = nil, -math.huge
+
+    for key, item in pairs(source) do
+        if self.filter_func(item, context, key) then
+            local pos = self.position_func(item, context)
+
+            if pos then
+                local distance = MathUtils.mvec3_distance(origin, pos)
+
+                if not self.max_distance or distance <= self.max_distance then
+                    local valid = true
+
+                    if self.max_angle and direction then
+                        local vec = pos - origin
+                        local angle = MathUtils.mvec3_angle(vec, direction)
+                        valid = angle <= self.max_angle
+                    end
+
+                    if valid then
+                        table.insert(found, {key = key, item = item, distance = distance})
+
+                        if self.priority_func then
+                            local priority = self.priority_func(item, context, key, distance)
+                            if priority > best_priority then
+                                best_priority = priority
+                                best_item = item
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    context[self.result_key] = found
+    if self.priority_func and best_item then
+        context[self.result_key .. "_best"] = best_item
+    end
+
+    return #found > 0 and BTNode.SUCCESS or BTNode.FAILURE
+end
+
+local BTCounter = BTNode:new("Counter")
+BTCounter.__index = BTCounter
+setmetatable(BTCounter, BTNode)
+
+function BTCounter:new(name, config)
+    local node = BTNode.new(self, name)
+    node.source_key = config.source_key
+    node.filter_func = config.filter_func or function() return true end
+    node.count_key = config.count_key or "count"
+    node.min_count = config.min_count
+    node.max_count = config.max_count
+    return node
+end
+
+function BTCounter:tick(context)
+    local source = context[self.source_key] or {}
+    local count = 0
+
+    for key, item in pairs(source) do
+        if self.filter_func(item, context, key) then
+            count = count + 1
+        end
+    end
+
+    context[self.count_key] = count
+
+    local valid = true
+    if self.min_count and count < self.min_count then
+        valid = false
+    end
+    if self.max_count and count > self.max_count then
+        valid = false
+    end
+
+    return valid and BTNode.SUCCESS or BTNode.FAILURE
+end
+
 local function build_target_selection_tree()
     return BTSelector:new("TargetSelection", {
         BTSequence:new("CoopTargetSelection", {
@@ -580,32 +850,31 @@ local function build_target_selection_tree()
                 return BTNode.SUCCESS
             end),
 
-            BTAction:new("CollectPotentialTargets", function(ctx)
-                ctx.potential_targets = {}
+            BTDataCollector:new("CollectPotentialTargets", {
+                source_key = "attention_objects",
+                target_key = "potential_targets",
+                filter_func = function(item, ctx, key)
+                    return is_valid_target(item) and
+                           item.verified_dis and
+                           item.verified_dis > 0 and
+                           not is_in_grace_period(key, ctx.t)
+                end,
+                transform_func = function(item, ctx, key)
+                    local threat = calculate_threat_value(ctx.unit, item, ctx.data)
 
-                for u_key, attention_data in pairs(ctx.attention_objects or {}) do
-                    if is_valid_target(attention_data) and
-                       attention_data.verified_dis and
-                       attention_data.verified_dis > 0 and
-                       not is_in_grace_period(u_key, ctx.t) then
-
-                        local threat = calculate_threat_value(ctx.unit, attention_data, ctx.data)
-
-                        if ctx.last_target_u_key == u_key and
-                           (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
-                            threat = threat * 1.3
-                        end
-
-                        ctx.potential_targets[u_key] = {
-                            data = attention_data,
-                            score = threat,
-                            reaction = attention_data.reaction
-                        }
+                    if ctx.last_target_u_key == key and
+                       (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
+                        threat = threat * 1.3
                     end
-                end
 
-                return BTNode.SUCCESS
-            end),
+                    return {
+                        data = item,
+                        score = threat,
+                        reaction = item.reaction
+                    }
+                end,
+                min_count = 0
+            }),
 
             BTSelector:new("SelectBestTarget", {
                 BTSequence:new("SelectGlobalPriorityTarget", {
@@ -764,53 +1033,51 @@ local function build_target_selection_tree()
         }),
 
         BTSequence:new("SimpleTargetSelection", {
-            BTAction:new("CollectSimpleTargets", function(ctx)
-                ctx.potential_targets = {}
+            BTDataCollector:new("CollectSimpleTargets", {
+                source_key = "attention_objects",
+                target_key = "potential_targets",
+                filter_func = function(item, ctx, key)
+                    return is_valid_target(item) and
+                           item.verified_dis and
+                           item.verified_dis > 0 and
+                           not is_in_grace_period(key, ctx.t)
+                end,
+                transform_func = function(item, ctx, key)
+                    local threat = calculate_threat_value(ctx.unit, item, ctx.data)
 
-                for u_key, attention_data in pairs(ctx.attention_objects or {}) do
-                    if is_valid_target(attention_data) and
-                       attention_data.verified_dis and
-                       attention_data.verified_dis > 0 and
-                       not is_in_grace_period(u_key, ctx.t) then
-
-                        local threat = calculate_threat_value(ctx.unit, attention_data, ctx.data)
-
-                        if ctx.last_target_u_key == u_key and
-                           (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
-                            threat = threat * 1.3
-                        end
-
-                        ctx.potential_targets[u_key] = {
-                            data = attention_data,
-                            score = threat,
-                            reaction = attention_data.reaction
-                        }
+                    if ctx.last_target_u_key == key and
+                       (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
+                        threat = threat * 1.3
                     end
-                end
 
-                return next(ctx.potential_targets) and BTNode.SUCCESS or BTNode.FAILURE
-            end),
+                    return {
+                        data = item,
+                        score = threat,
+                        reaction = item.reaction
+                    }
+                end,
+                min_count = 1
+            }),
 
-            BTAction:new("SelectBestSimpleTarget", function(ctx)
-                local best_target, max_score = nil, -1
+            BTBestSelector:new("SelectBestSimpleTarget", {
+                source_key = "potential_targets",
+                score_func = function(item) return item.score end,
+                result_keys = {
+                    best = "selected_target_obj",
+                    score = "selected_score",
+                    key = "selected_u_key"
+                },
+                maximize = true
+            }),
 
-                for u_key, target in pairs(ctx.potential_targets) do
-                    if target.score > max_score then
-                        max_score = target.score
-                        best_target = target
-                        ctx.selected_u_key = u_key
-                        ctx.selected_target = target.data
-                        ctx.selected_score = target.score
-                        ctx.selected_reaction = target.reaction
-                    end
-                end
-
-                if best_target then
+            BTAction:new("ExtractTargetData", function(ctx)
+                if ctx.selected_target_obj then
+                    ctx.selected_target = ctx.selected_target_obj.data
+                    ctx.selected_reaction = ctx.selected_target_obj.reaction
                     ctx.data._last_target_u_key = ctx.selected_u_key
                     ctx.data._last_target_t = ctx.t
                     return BTNode.SUCCESS
                 end
-
                 return BTNode.FAILURE
             end)
         })
@@ -820,88 +1087,63 @@ end
 local function build_combat_behavior_tree()
     return BTSelector:new("CombatBehavior", {
         BTSequence:new("MeleeAttack", {
-            BTCondition:new("CheckMeleeCooldown", function(ctx)
-                local my_data = ctx.data.internal_data or {}
-                local t = ctx.t
-                if not my_data.melee_t or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
-                    my_data.melee_t = t
-                    return true
-                end
-                return false
-            end),
+            BTCooldownCheck:new("CheckMeleeCooldown", "melee_t", CONSTANTS.MELEE_CHECK_INTERVAL, "t"),
 
-            BTCondition:new("CheckLowAmmo", function(ctx)
-                local unit = ctx.unit
-                if not alive(unit) then return false end
+            BTThresholdCheck:new("CheckLowAmmo", {
+                value_func = function(ctx)
+                    local unit = ctx.unit
+                    if not alive(unit) then return 1 end
 
-                local unit_inventory = unit:inventory()
-                if not unit_inventory then return false end
+                    local unit_inventory = unit:inventory()
+                    if not unit_inventory then return 1 end
 
-                local current_wep = unit_inventory:equipped_unit()
-                if not (current_wep and current_wep:base()) then return false end
+                    local current_wep = unit_inventory:equipped_unit()
+                    if not (current_wep and current_wep:base()) then return 1 end
 
-                local ammo_max, ammo = current_wep:base():ammo_info()
-                if not (ammo_max and ammo_max > 0) then return false end
+                    local ammo_max, ammo = current_wep:base():ammo_info()
+                    if not (ammo_max and ammo_max > 0) then return 1 end
 
-                local current_ammo_ratio = ammo / ammo_max
-                return current_ammo_ratio <= 0.5
-            end),
+                    return ammo / ammo_max
+                end,
+                threshold = 0.5,
+                operator = "<="
+            }),
 
-            BTAction:new("FindMeleeTarget", function(ctx)
-                local unit = ctx.unit
-                if not alive(unit) then return BTNode.FAILURE end
-
-                local crim_mov = unit:movement()
-                if not crim_mov then return BTNode.FAILURE end
-
-                local my_pos = crim_mov:m_head_pos()
-                local look_vec = crim_mov:m_rot():y()
-
-                local best_melee_target, best_melee_priority = nil, 0
-
-                for _, u_char in pairs(ctx.data.detected_attention_objects or {}) do
-                    if u_char.identified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
-                        if u_char.verified and u_char.verified_dis and u_char.verified_dis <= CONSTANTS.MELEE_DISTANCE then
-                            local unit_pos = u_char.m_head_pos
-                            if unit_pos then
-                                local vec = unit_pos - my_pos
-                                if MathUtils.mvec3_angle(vec, look_vec) <= CONSTANTS.MELEE_ANGLE then
-                                    local melee_priority = 0
-
-                                    if u_char.is_shield then
-                                        melee_priority = 10
-                                    elseif not (u_char.char_tweak and u_char.char_tweak.priority_shout) then
-                                        local enemy = u_char.unit
-                                        local enemy_inventory = enemy:inventory()
-                                        local enemy_anim = enemy:anim_data()
-                                        if enemy_inventory and enemy_inventory:get_weapon() and enemy_anim and not enemy_anim.hurt then
-                                            melee_priority = 5
-                                        end
-                                    end
-
-                                    if melee_priority > best_melee_priority then
-                                        best_melee_priority = melee_priority
-                                        best_melee_target = u_char
-                                    end
-                                end
-                            end
+            BTRangeFinder:new("FindMeleeTarget", {
+                source_key = "detected_attention_objects",
+                origin_func = function(ctx)
+                    return ctx.unit and ctx.unit:movement() and ctx.unit:movement():m_head_pos()
+                end,
+                direction_func = function(ctx)
+                    return ctx.unit and ctx.unit:movement() and ctx.unit:movement():m_rot():y()
+                end,
+                position_func = function(item) return item.m_head_pos end,
+                max_distance = CONSTANTS.MELEE_DISTANCE,
+                max_angle = CONSTANTS.MELEE_ANGLE,
+                filter_func = function(item, ctx)
+                    return item.identified and alive(item.unit) and are_units_foes(ctx.unit, item.unit)
+                end,
+                result_key = "melee_candidates",
+                priority_func = function(item, ctx, key, distance)
+                    if item.is_shield then
+                        return 10
+                    elseif not (item.char_tweak and item.char_tweak.priority_shout) then
+                        local enemy = item.unit
+                        local enemy_inventory = enemy:inventory()
+                        local enemy_anim = enemy:anim_data()
+                        if enemy_inventory and enemy_inventory:get_weapon() and enemy_anim and not enemy_anim.hurt then
+                            return 5
                         end
                     end
+                    return 0
                 end
-
-                if best_melee_target then
-                    ctx.melee_target = best_melee_target
-                    return BTNode.SUCCESS
-                end
-
-                return BTNode.FAILURE
-            end),
+            }),
 
             BTAction:new("ExecuteMelee", function(ctx)
                 local unit = ctx.unit
                 if not alive(unit) then return BTNode.FAILURE end
 
-                local target = ctx.melee_target
+                local target = ctx.melee_candidates_best
                 if not target then return BTNode.FAILURE end
 
                 local target_unit = target.unit
@@ -946,22 +1188,22 @@ local function build_combat_behavior_tree()
                 return BB:get("conc", false)
             end),
 
-            BTCondition:new("CheckConcCooldown", function(ctx)
+            BTAction:new("CheckConcCooldown", function(ctx)
                 local my_data = ctx.data.internal_data or {}
                 local t = ctx.t
 
                 my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
                 if t < my_data._next_conc_eval_t then
-                    return false
+                    return BTNode.FAILURE
                 end
 
                 my_data._next_conc_eval_t = t + 1
 
                 if my_data._conc_cooldown_t and t < my_data._conc_cooldown_t then
-                    return false
+                    return BTNode.FAILURE
                 end
 
-                return true
+                return BTNode.SUCCESS
             end),
 
             BTCondition:new("CheckConcResourceReady", function(ctx)
@@ -1106,30 +1348,22 @@ local function build_combat_behavior_tree()
         }),
 
         BTSequence:new("SmartReload", {
-            BTCondition:new("CheckReloadCooldown", function(ctx)
-                local my_data = ctx.data.internal_data or {}
-                local t = ctx.t
-                if not my_data.reload_t or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
-                    my_data.reload_t = t
-                    return true
+            BTCooldownCheck:new("CheckReloadCooldown", "reload_t", CONSTANTS.RELOAD_CHECK_INTERVAL, "t"),
+
+            BTStateCheck:new("CanReload", {
+                function(ctx)
+                    local unit = ctx.unit
+                    if not alive(unit) then return false end
+                    local unit_anim = unit:anim_data()
+                    return not (unit_anim and unit_anim.reload)
+                end,
+                function(ctx)
+                    local unit = ctx.unit
+                    if not alive(unit) then return false end
+                    local unit_movement = unit:movement()
+                    return unit_movement and not unit_movement:chk_action_forbidden("reload")
                 end
-                return false
-            end),
-
-            BTCondition:new("CanReload", function(ctx)
-                local unit = ctx.unit
-                if not alive(unit) then return false end
-
-                local unit_anim = unit:anim_data()
-                if unit_anim and unit_anim.reload then return false end
-
-                local unit_movement = unit:movement()
-                if not (unit_movement and not unit_movement:chk_action_forbidden("reload")) then
-                    return false
-                end
-
-                return true
-            end),
+            }, "all"),
 
             BTAction:new("CheckAmmoAndReload", function(ctx)
                 local unit = ctx.unit
@@ -1194,30 +1428,39 @@ end
 
 local function build_interaction_tree()
     return BTSequence:new("Interaction", {
-        BTCondition:new("CanInteract", function(ctx)
-            local unit = ctx.unit
-            if not alive(unit) then return false end
-
-            local unit_damage = unit:character_damage()
-            if unit_damage and unit_damage:need_revive() then return false end
-
-            local anim_data = unit:anim_data()
-            if not anim_data or anim_data.tased then return false end
-
-            local my_data = ctx.data.internal_data or {}
-            if my_data.acting then return false end
-
-            local unit_sound = unit:sound()
-            if unit_sound and unit_sound:speaking() then return false end
-
-            local t = ctx.t
-            if my_data._intimidate_t and my_data._intimidate_t + CONSTANTS.INTIMIDATE_COOLDOWN >= t then
-                return false
+        BTStateCheck:new("CanInteract", {
+            function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return false end
+                local unit_damage = unit:character_damage()
+                return not (unit_damage and unit_damage:need_revive())
+            end,
+            function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return false end
+                local anim_data = unit:anim_data()
+                return not (anim_data and anim_data.tased)
+            end,
+            function(ctx)
+                local my_data = ctx.data.internal_data or {}
+                return not my_data.acting
+            end,
+            function(ctx)
+                local unit = ctx.unit
+                if not alive(unit) then return false end
+                local unit_sound = unit:sound()
+                return not (unit_sound and unit_sound:speaking())
+            end,
+            function(ctx)
+                local my_data = ctx.data.internal_data or {}
+                local t = ctx.t
+                if my_data._intimidate_t and my_data._intimidate_t + CONSTANTS.INTIMIDATE_COOLDOWN >= t then
+                    return false
+                end
+                my_data._intimidate_t = t
+                return true
             end
-
-            my_data._intimidate_t = t
-            return true
-        end),
+        }, "all"),
 
         BTSelector:new("ChooseInteraction", {
             BTSequence:new("IntimidateCivilian", {
@@ -1504,6 +1747,7 @@ BB.behavior_trees = {
     interaction = build_interaction_tree(),
     main = build_main_ai_tree()
 }
+visualize_tree(BB.behavior_trees.main)
 
 function BB:Save()
 	local ok, encoded = pcall(json.encode, self._data)
@@ -1807,8 +2051,6 @@ function BB:get_priority_targets()
 
     return active_targets
 end
-
-visualize_tree(BB.behavior_trees.main)
 
 local function remove_ai_from_bullet_mask(self, setup_data)
 	local user_unit = setup_data and setup_data.user_unit
@@ -2643,7 +2885,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     local context = {
                         unit = unit,
                         data = data,
-                        t = game_time()
+                        t = game_time(),
+                        detected_attention_objects = data.detected_attention_objects
                     }
 
                     BB.behavior_trees.combat:reset()
@@ -2660,7 +2903,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 local context = {
                     unit = data.unit,
                     data = data,
-                    t = game_time()
+                    t = game_time(),
+                    detected_attention_objects = data.detected_attention_objects
                 }
 
                 BB.behavior_trees.combat:reset()
