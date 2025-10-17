@@ -584,7 +584,6 @@ function BTCooldownCheck:tick(context)
     local last_time = data[self.data_key]
 
     if not last_time or (current_time - last_time) >= self.cooldown_duration then
-        data[self.data_key] = current_time
         return BTNode.SUCCESS
     end
 
@@ -837,6 +836,18 @@ function BTCounter:tick(context)
 end
 
 local function build_target_selection_tree()
+	local function transform_target_func(item, ctx, key)
+		local threat = calculate_threat_value(ctx.unit, item, ctx.data)
+		if ctx.last_target_u_key == key and (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
+			threat = threat * 1.3
+		end
+		return {
+			data = item,
+			score = threat,
+			reaction = item.reaction
+		}
+	end
+
     return BTSelector:new("TargetSelection", {
         BTSequence:new("CoopTargetSelection", {
             BTCondition:new("IsCoopEnabled", function(ctx)
@@ -859,20 +870,7 @@ local function build_target_selection_tree()
                            item.verified_dis > 0 and
                            not is_in_grace_period(key, ctx.t)
                 end,
-                transform_func = function(item, ctx, key)
-                    local threat = calculate_threat_value(ctx.unit, item, ctx.data)
-
-                    if ctx.last_target_u_key == key and
-                       (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
-                        threat = threat * 1.3
-                    end
-
-                    return {
-                        data = item,
-                        score = threat,
-                        reaction = item.reaction
-                    }
-                end,
+                transform_func = transform_target_func,
                 min_count = 0
             }),
 
@@ -1042,20 +1040,7 @@ local function build_target_selection_tree()
                            item.verified_dis > 0 and
                            not is_in_grace_period(key, ctx.t)
                 end,
-                transform_func = function(item, ctx, key)
-                    local threat = calculate_threat_value(ctx.unit, item, ctx.data)
-
-                    if ctx.last_target_u_key == key and
-                       (ctx.t - (ctx.last_target_t or 0)) <= CONSTANTS.TARGET_SWITCH_DELAY then
-                        threat = threat * 1.3
-                    end
-
-                    return {
-                        data = item,
-                        score = threat,
-                        reaction = item.reaction
-                    }
-                end,
+                transform_func = transform_target_func,
                 min_count = 1
             }),
 
@@ -1178,6 +1163,9 @@ local function build_combat_behavior_tree()
                 end
 
                 play_net_redirect(unit, "melee")
+
+				local my_data = ctx.data.internal_data or {}
+				my_data.melee_t = ctx.t
 
                 return BTNode.SUCCESS
             end)
@@ -1415,6 +1403,8 @@ local function build_combat_behavior_tree()
                         local brain = unit:brain()
                         if brain then
                             brain:action_request({type = "reload", body_part = 3})
+							local my_data = ctx.data.internal_data or {}
+							my_data.reload_t = ctx.t
                             return BTNode.SUCCESS
                         end
                     end
@@ -1676,7 +1666,9 @@ end
 
 
 local function visualize_tree(root_node)
-    local function print_node_recursive(node, prefix, is_last)
+    local lines = {}
+
+    local function build_node_recursive(node, prefix, is_last)
         if not node then return end
 
         local line_prefix = prefix .. (is_last and "`-- " or "|-- ")
@@ -1693,7 +1685,7 @@ local function visualize_tree(root_node)
             info = info .. " (Policy: " .. (node.policy or "N/A") .. ")"
         end
 
-        bb_log(line_prefix .. info)
+        table.insert(lines, line_prefix .. info)
 
         local children = {}
         if node.children then
@@ -1706,24 +1698,25 @@ local function visualize_tree(root_node)
         if child_count > 0 then
             local next_prefix = prefix .. (is_last and "    " or "|   ")
             for i, child in ipairs(children) do
-                print_node_recursive(child, next_prefix, i == child_count)
+                build_node_recursive(child, next_prefix, i == child_count)
             end
         end
     end
 
     if not root_node then
-        bb_log("Tree is empty.")
-        return
+        return "Tree is empty."
     end
 
     local root_type = getmetatable(root_node) and getmetatable(root_node).__index.name or "Unknown"
-    bb_log(string.format("[%s] %s", root_type, root_node.name))
+    table.insert(lines, string.format("[%s] %s", root_type, root_node.name))
 
     local children = root_node.children or (root_node.child and {root_node.child}) or {}
     local child_count = #children
     for i, child in ipairs(children) do
-        print_node_recursive(child, "", i == child_count)
+        build_node_recursive(child, "", i == child_count)
     end
+
+    return table.concat(lines, "\n")
 end
 
 BB._path = ModPath
@@ -1747,7 +1740,7 @@ BB.behavior_trees = {
     interaction = build_interaction_tree(),
     main = build_main_ai_tree()
 }
-visualize_tree(BB.behavior_trees.main)
+bb_log("------------Main Behavior Tree------------\n" .. visualize_tree(BB and BB.behavior_trees and BB.behavior_trees.main))
 
 function BB:Save()
 	local ok, encoded = pcall(json.encode, self._data)
@@ -2707,19 +2700,19 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 data = data,
                 t = data.t or game_time(),
                 attention_objects = attention_objects,
+                detected_attention_objects = data.detected_attention_objects,
                 last_target_u_key = data._last_target_u_key,
                 last_target_t = data._last_target_t or 0,
-
                 selected_target = nil,
                 selected_score = nil,
                 selected_reaction = nil,
                 selected_u_key = nil
             }
 
-            BB.behavior_trees.target_selection:reset()
-            local result = BB.behavior_trees.target_selection:tick(context)
+            BB.behavior_trees.main:reset()
+            BB.behavior_trees.main:tick(context)
 
-            if result == BTNode.SUCCESS and context.selected_target then
+            if context.selected_target then
                 return context.selected_target, context.selected_score, context.selected_reaction
             end
 
@@ -2886,11 +2879,18 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                         unit = unit,
                         data = data,
                         t = game_time(),
-                        detected_attention_objects = data.detected_attention_objects
+                        attention_objects = data.attention_objects,
+                        detected_attention_objects = data.detected_attention_objects,
+						last_target_u_key = data._last_target_u_key,
+						last_target_t = data._last_target_t or 0
                     }
 
-                    BB.behavior_trees.combat:reset()
-                    BB.behavior_trees.combat:tick(context)
+                    BB.behavior_trees.main:reset()
+                    BB.behavior_trees.main:tick(context)
+
+					if context.selected_target and data.attention_obj ~= context.selected_target then
+						TeamAILogicBase._set_attention_obj(data, context.selected_target, context.selected_reaction)
+					end
 
                     return old_update(data, ...)
                 end
@@ -2900,16 +2900,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 		if TeamAILogicAssault.exit then
 			local old_exit = TeamAILogicAssault.exit
 			function TeamAILogicAssault.exit(data, ...)
-                local context = {
-                    unit = data.unit,
-                    data = data,
-                    t = game_time(),
-                    detected_attention_objects = data.detected_attention_objects
-                }
-
-                BB.behavior_trees.combat:reset()
-                BB.behavior_trees.combat:tick(context)
-
 				return old_exit(data, ...)
 			end
 		end
@@ -2921,15 +2911,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 		local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
 		function TeamAILogicBase._set_attention_obj(data, new_att_obj, new_reaction)
-            local context = {
-                unit = data.unit,
-                data = data,
-                t = game_time()
-            }
-
-            BB.behavior_trees.interaction:reset()
-            BB.behavior_trees.interaction:tick(context)
-
 			data.attention_obj = new_att_obj
 			if new_att_obj then
 				new_att_obj.reaction = new_reaction or new_att_obj.reaction
