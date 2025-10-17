@@ -1676,7 +1676,9 @@ end
 
 
 local function visualize_tree(root_node)
-    local function print_node_recursive(node, prefix, is_last)
+    local lines = {}
+
+    local function build_node_recursive(node, prefix, is_last)
         if not node then return end
 
         local line_prefix = prefix .. (is_last and "`-- " or "|-- ")
@@ -1693,7 +1695,7 @@ local function visualize_tree(root_node)
             info = info .. " (Policy: " .. (node.policy or "N/A") .. ")"
         end
 
-        bb_log(line_prefix .. info)
+        table.insert(lines, line_prefix .. info)
 
         local children = {}
         if node.children then
@@ -1706,24 +1708,25 @@ local function visualize_tree(root_node)
         if child_count > 0 then
             local next_prefix = prefix .. (is_last and "    " or "|   ")
             for i, child in ipairs(children) do
-                print_node_recursive(child, next_prefix, i == child_count)
+                build_node_recursive(child, next_prefix, i == child_count)
             end
         end
     end
 
     if not root_node then
-        bb_log("Tree is empty.")
-        return
+        return "Tree is empty."
     end
 
     local root_type = getmetatable(root_node) and getmetatable(root_node).__index.name or "Unknown"
-    bb_log(string.format("[%s] %s", root_type, root_node.name))
+    table.insert(lines, string.format("[%s] %s", root_type, root_node.name))
 
     local children = root_node.children or (root_node.child and {root_node.child}) or {}
     local child_count = #children
     for i, child in ipairs(children) do
-        print_node_recursive(child, "", i == child_count)
+        build_node_recursive(child, "", i == child_count)
     end
+
+    return table.concat(lines, "\n")
 end
 
 BB._path = ModPath
@@ -1747,7 +1750,7 @@ BB.behavior_trees = {
     interaction = build_interaction_tree(),
     main = build_main_ai_tree()
 }
-visualize_tree(BB.behavior_trees.main)
+bb_log("------------Main Behavior Tree------------\n" .. visualize_tree(BB and BB.behavior_trees and BB.behavior_trees.main))
 
 function BB:Save()
 	local ok, encoded = pcall(json.encode, self._data)
