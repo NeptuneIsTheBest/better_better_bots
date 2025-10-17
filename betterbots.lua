@@ -2291,32 +2291,32 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
 					return old_regen(self)
 				end
 			end
+		end
 
-            if TeamAIDamage._check_bleed_out then
-                local old_checkbleedout = TeamAIDamage._check_bleed_out
-                function TeamAIDamage:_check_bleed_out()
-                    if self._health <= 0 and BB:get("instadwn", false) then
-                        managers.groupai:state():on_criminal_disabled(self._unit)
-                        if Network:is_server() then
-                            managers.groupai:state():report_criminal_downed(self._unit)
-                        end
-
-                        self:_die()
-
-                        local dmg_info = {
-                            variant = "bleeding",
-                            result = {
-                                type = "death"
-                            }
-                        }
-                        self:_call_listeners(dmg_info)
-                        return
+        if TeamAIDamage._check_bleed_out then
+            local old_checkbleedout = TeamAIDamage._check_bleed_out
+            function TeamAIDamage:_check_bleed_out()
+                if self._health <= 0 and BB:get("instadwn", false) then
+                    managers.groupai:state():on_criminal_disabled(self._unit)
+                    if Network:is_server() then
+                        managers.groupai:state():report_criminal_downed(self._unit)
                     end
 
-                    return old_checkbleedout(self)
+                    self:_die()
+
+                    local dmg_info = {
+                        variant = "bleeding",
+                        result = {
+                            type = "death"
+                        }
+                    }
+                    self:_call_listeners(dmg_info)
+                    return
                 end
+
+                return old_checkbleedout(self)
             end
-		end
+        end
 
 		function TeamAIDamage:friendly_fire_hit()
 			return
