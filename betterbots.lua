@@ -341,19 +341,34 @@ local function calculate_suitability(bot_unit, target_data)
     return score
 end
 
-local BTNode = {}
-BTNode.__index = BTNode
+local STATUS = {
+    SUCCESS = "success",
+    FAILURE = "failure",
+    RUNNING = "running"
+}
 
-BTNode.SUCCESS = "success"
-BTNode.FAILURE = "failure"
-BTNode.RUNNING = "running"
+local function create_class(name, parent)
+    local class = {}
+    class.__index = class
+    class.name = name
+
+    if parent then
+        setmetatable(class, parent)
+    end
+
+    return class
+end
+
+local BTNode = create_class("BTNode")
+BTNode.SUCCESS = STATUS.SUCCESS
+BTNode.FAILURE = STATUS.FAILURE
+BTNode.RUNNING = STATUS.RUNNING
 
 function BTNode:new(name)
-    local node = {
-        name = name or "BTNode",
+    local node = setmetatable({
+        name = name or self.name,
         _status = nil
-    }
-    setmetatable(node, self)
+    }, self)
     return node
 end
 
@@ -363,87 +378,66 @@ end
 
 function BTNode:reset()
     self._status = nil
+
+    if self.children then
+        for i = 1, #self.children do
+            self.children[i]:reset()
+        end
+    elseif self.child then
+        self.child:reset()
+    end
 end
 
-local BTSequence = BTNode:new("Sequence")
-BTSequence.__index = BTSequence
-setmetatable(BTSequence, BTNode)
+local BTComposite = create_class("BTComposite", BTNode)
 
-function BTSequence:new(name, children)
+function BTComposite:new(name, children)
     local node = BTNode.new(self, name)
     node.children = children or {}
     node.current_index = 1
     return node
 end
+
+function BTComposite:reset()
+    BTNode.reset(self)
+    self.current_index = 1
+end
+
+function BTComposite:tick_children(context, early_exit_status)
+    local children = self.children
+    local index = self.current_index
+    local count = #children
+
+    while index <= count do
+        local result = children[index]:tick(context)
+
+        if result == early_exit_status then
+            self.current_index = 1
+            return early_exit_status
+        elseif result == BTNode.RUNNING then
+            self.current_index = index
+            return BTNode.RUNNING
+        end
+
+        index = index + 1
+    end
+
+    self.current_index = 1
+    return early_exit_status == BTNode.FAILURE and BTNode.SUCCESS or BTNode.FAILURE
+end
+
+local BTSequence = create_class("BTSequence", BTComposite)
 
 function BTSequence:tick(context)
-    while self.current_index <= #self.children do
-        local child = self.children[self.current_index]
-        local result = child:tick(context)
-
-        if result == BTNode.FAILURE then
-            self.current_index = 1
-            return BTNode.FAILURE
-        elseif result == BTNode.RUNNING then
-            return BTNode.RUNNING
-        end
-
-        self.current_index = self.current_index + 1
-    end
-
-    self.current_index = 1
-    return BTNode.SUCCESS
+    return self:tick_children(context, BTNode.FAILURE)
 end
 
-function BTSequence:reset()
-    BTNode.reset(self)
-    self.current_index = 1
-    for _, child in ipairs(self.children) do
-        child:reset()
-    end
-end
-
-local BTSelector = BTNode:new("Selector")
-BTSelector.__index = BTSelector
-setmetatable(BTSelector, BTNode)
-
-function BTSelector:new(name, children)
-    local node = BTNode.new(self, name)
-    node.children = children or {}
-    node.current_index = 1
-    return node
-end
+local BTSelector = create_class("BTSelector", BTComposite)
 
 function BTSelector:tick(context)
-    while self.current_index <= #self.children do
-        local child = self.children[self.current_index]
-        local result = child:tick(context)
-
-        if result == BTNode.SUCCESS then
-            self.current_index = 1
-            return BTNode.SUCCESS
-        elseif result == BTNode.RUNNING then
-            return BTNode.RUNNING
-        end
-
-        self.current_index = self.current_index + 1
-    end
-
-    self.current_index = 1
-    return BTNode.FAILURE
+    return self:tick_children(context, BTNode.SUCCESS)
 end
 
-function BTSelector:reset()
-    BTNode.reset(self)
-    self.current_index = 1
-    for _, child in ipairs(self.children) do
-        child:reset()
-    end
-end
-
-local BTParallel = BTNode:new("Parallel")
-BTParallel.__index = BTParallel
-setmetatable(BTParallel, BTNode)
+local BTParallel = create_class("BTParallel", BTNode)
 
 BTParallel.REQUIRE_ALL = "all"
 BTParallel.REQUIRE_ONE = "one"
@@ -456,48 +450,44 @@ function BTParallel:new(name, children, policy)
 end
 
 function BTParallel:tick(context)
+    local children = self.children
+    local child_count = #children
     local success_count = 0
     local failure_count = 0
-    local running_count = 0
+    local policy = self.policy
 
-    for _, child in ipairs(self.children) do
-        local result = child:tick(context)
+    for i = 1, child_count do
+        local result = children[i]:tick(context)
 
         if result == BTNode.SUCCESS then
             success_count = success_count + 1
+            if policy == BTParallel.REQUIRE_ONE then
+                return BTNode.SUCCESS
+            end
         elseif result == BTNode.FAILURE then
             failure_count = failure_count + 1
-        elseif result == BTNode.RUNNING then
-            running_count = running_count + 1
+            if policy == BTParallel.REQUIRE_ALL then
+                return BTNode.FAILURE
+            end
         end
     end
 
-    if self.policy == BTParallel.REQUIRE_ALL then
-        if success_count == #self.children then
-            return BTNode.SUCCESS
-        elseif failure_count > 0 then
-            return BTNode.FAILURE
-        end
-    elseif self.policy == BTParallel.REQUIRE_ONE then
-        if success_count > 0 then
-            return BTNode.SUCCESS
-        elseif failure_count == #self.children then
-            return BTNode.FAILURE
-        end
+    if policy == BTParallel.REQUIRE_ALL then
+        return success_count == child_count and BTNode.SUCCESS or BTNode.RUNNING
+    else -- REQUIRE_ONE
+        return failure_count == child_count and BTNode.FAILURE or BTNode.RUNNING
     end
-
-    return BTNode.RUNNING
 end
 
-local BTInverter = BTNode:new("Inverter")
-BTInverter.__index = BTInverter
-setmetatable(BTInverter, BTNode)
+local BTDecorator = create_class("BTDecorator", BTNode)
 
-function BTInverter:new(name, child)
+function BTDecorator:new(name, child)
     local node = BTNode.new(self, name)
     node.child = child
     return node
 end
+
+local BTInverter = create_class("BTInverter", BTDecorator)
 
 function BTInverter:tick(context)
     local result = self.child:tick(context)
@@ -511,20 +501,19 @@ function BTInverter:tick(context)
     return result
 end
 
-local BTRepeater = BTNode:new("Repeater")
-BTRepeater.__index = BTRepeater
-setmetatable(BTRepeater, BTNode)
+local BTRepeater = create_class("BTRepeater", BTDecorator)
 
 function BTRepeater:new(name, child, count)
-    local node = BTNode.new(self, name)
-    node.child = child
+    local node = BTDecorator.new(self, name, child)
     node.max_count = count or -1
     node.current_count = 0
     return node
 end
 
 function BTRepeater:tick(context)
-    if self.max_count > 0 and self.current_count >= self.max_count then
+    local max = self.max_count
+
+    if max > 0 and self.current_count >= max then
         self.current_count = 0
         return BTNode.SUCCESS
     end
@@ -538,13 +527,16 @@ function BTRepeater:tick(context)
     return BTNode.RUNNING
 end
 
-local BTCondition = BTNode:new("Condition")
-BTCondition.__index = BTCondition
-setmetatable(BTCondition, BTNode)
+function BTRepeater:reset()
+    BTDecorator.reset(self)
+    self.current_count = 0
+end
+
+local BTCondition = create_class("BTCondition", BTNode)
 
 function BTCondition:new(name, check_func)
     local node = BTNode.new(self, name)
-    node.check = check_func
+    node.check = check_func or function() return false end
     return node
 end
 
@@ -552,13 +544,11 @@ function BTCondition:tick(context)
     return self.check(context) and BTNode.SUCCESS or BTNode.FAILURE
 end
 
-local BTAction = BTNode:new("Action")
-BTAction.__index = BTAction
-setmetatable(BTAction, BTNode)
+local BTAction = create_class("BTAction", BTNode)
 
 function BTAction:new(name, action_func)
     local node = BTNode.new(self, name)
-    node.action = action_func
+    node.action = action_func or function() return BTNode.FAILURE end
     return node
 end
 
@@ -566,9 +556,7 @@ function BTAction:tick(context)
     return self.action(context)
 end
 
-local BTCooldownCheck = BTNode:new("CooldownCheck")
-BTCooldownCheck.__index = BTCooldownCheck
-setmetatable(BTCooldownCheck, BTNode)
+local BTCooldownCheck = create_class("BTCooldownCheck", BTNode)
 
 function BTCooldownCheck:new(name, data_key, cooldown_duration, time_key)
     local node = BTNode.new(self, name)
@@ -579,7 +567,13 @@ function BTCooldownCheck:new(name, data_key, cooldown_duration, time_key)
 end
 
 function BTCooldownCheck:tick(context)
-    local data = context.data and context.data.internal_data or {}
+    local data = context.data and context.data.internal_data
+    if not data then
+        data = {}
+        context.data = context.data or {}
+        context.data.internal_data = data
+    end
+
     local current_time = context[self.time_key] or game_time()
     local last_time = data[self.data_key]
 
@@ -591,58 +585,76 @@ function BTCooldownCheck:tick(context)
     return BTNode.FAILURE
 end
 
-local BTDataCollector = BTNode:new("DataCollector")
-BTDataCollector.__index = BTDataCollector
-setmetatable(BTDataCollector, BTNode)
+local BTDataCollector = create_class("BTDataCollector", BTNode)
 
 function BTDataCollector:new(name, config)
     local node = BTNode.new(self, name)
-    node.source_key = config.source_key or "attention_objects"
-    node.target_key = config.target_key or "collected_data"
-    node.filter_func = config.filter_func or function() return true end
-    node.transform_func = config.transform_func or function(item) return item end
-    node.min_count = config.min_count or 0
+    local cfg = config or {}
+
+    node.source_key = cfg.source_key or "attention_objects"
+    node.target_key = cfg.target_key or "collected_data"
+    node.filter_func = cfg.filter_func or function() return true end
+    node.transform_func = cfg.transform_func or function(item) return item end
+    node.min_count = cfg.min_count or 0
+
     return node
 end
 
 function BTDataCollector:tick(context)
-    local source = context[self.source_key] or {}
+    local source = context[self.source_key]
+    if not source then
+        context[self.target_key] = {}
+        return self.min_count == 0 and BTNode.SUCCESS or BTNode.FAILURE
+    end
+
     local collected = {}
+    local filter = self.filter_func
+    local transform = self.transform_func
+    local count = 0
 
     for key, item in pairs(source) do
-        if self.filter_func(item, context, key) then
-            collected[key] = self.transform_func(item, context, key)
+        if filter(item, context, key) then
+            collected[key] = transform(item, context, key)
+            count = count + 1
         end
     end
 
     context[self.target_key] = collected
 
-    return (self.min_count == 0 or next(collected) ~= nil) and BTNode.SUCCESS or BTNode.FAILURE
+    return (self.min_count == 0 or count >= self.min_count) and BTNode.SUCCESS or BTNode.FAILURE
 end
 
-local BTBestSelector = BTNode:new("BestSelector")
-BTBestSelector.__index = BTBestSelector
-setmetatable(BTBestSelector, BTNode)
+local BTBestSelector = create_class("BTBestSelector", BTNode)
 
 function BTBestSelector:new(name, config)
     local node = BTNode.new(self, name)
-    node.source_key = config.source_key or "candidates"
-    node.score_func = config.score_func or function(item) return item.score or 0 end
-    node.filter_func = config.filter_func or function() return true end
-    node.result_keys = config.result_keys or {best = "selected_item", score = "selected_score"}
-    node.maximize = config.maximize ~= false
+    local cfg = config or {}
+
+    node.source_key = cfg.source_key or "candidates"
+    node.score_func = cfg.score_func or function(item) return item.score or 0 end
+    node.filter_func = cfg.filter_func or function() return true end
+    node.result_keys = cfg.result_keys or {best = "selected_item", score = "selected_score"}
+    node.maximize = cfg.maximize ~= false
+
     return node
 end
 
 function BTBestSelector:tick(context)
-    local source = context[self.source_key] or {}
-    local best_item, best_score, best_key = nil, nil, nil
+    local source = context[self.source_key]
+    if not source then
+        return BTNode.FAILURE
+    end
+
+    local best_item, best_score, best_key
+    local filter = self.filter_func
+    local score_func = self.score_func
+    local maximize = self.maximize
 
     for key, item in pairs(source) do
-        if self.filter_func(item, context, key) then
-            local score = self.score_func(item, context, key)
+        if filter(item, context, key) then
+            local score = score_func(item, context, key)
 
-            if not best_score or (self.maximize and score > best_score) or (not self.maximize and score < best_score) then
+            if not best_score or (maximize and score > best_score) or (not maximize and score < best_score) then
                 best_score = score
                 best_item = item
                 best_key = key
@@ -650,31 +662,43 @@ function BTBestSelector:tick(context)
         end
     end
 
-    if best_item then
-        for result_type, context_key in pairs(self.result_keys) do
-            if result_type == "best" then
-                context[context_key] = best_item
-            elseif result_type == "score" then
-                context[context_key] = best_score
-            elseif result_type == "key" then
-                context[context_key] = best_key
-            end
-        end
-        return BTNode.SUCCESS
+    if not best_item then
+        return BTNode.FAILURE
     end
 
-    return BTNode.FAILURE
+    for result_type, context_key in pairs(self.result_keys) do
+        if result_type == "best" then
+            context[context_key] = best_item
+        elseif result_type == "score" then
+            context[context_key] = best_score
+        elseif result_type == "key" then
+            context[context_key] = best_key
+        end
+    end
+
+    return BTNode.SUCCESS
 end
 
-local BTThresholdCheck = BTNode:new("ThresholdCheck")
-BTThresholdCheck.__index = BTThresholdCheck
-setmetatable(BTThresholdCheck, BTNode)
+local BTThresholdCheck = create_class("BTThresholdCheck", BTNode)
+
+local OPERATORS = {
+    [">"] = function(a, b) return a > b end,
+    ["<"] = function(a, b) return a < b end,
+    [">="] = function(a, b) return a >= b end,
+    ["<="] = function(a, b) return a <= b end,
+    ["=="] = function(a, b) return a == b end,
+    ["~="] = function(a, b) return a ~= b end
+}
 
 function BTThresholdCheck:new(name, config)
     local node = BTNode.new(self, name)
-    node.value_func = config.value_func
-    node.threshold = config.threshold
-    node.operator = config.operator or ">="
+    local cfg = config or {}
+
+    node.value_func = cfg.value_func
+    node.threshold = cfg.threshold
+    node.operator = cfg.operator or ">="
+    node.compare_func = OPERATORS[node.operator]
+
     return node
 end
 
@@ -682,27 +706,10 @@ function BTThresholdCheck:tick(context)
     local value = self.value_func(context)
     local threshold = type(self.threshold) == "function" and self.threshold(context) or self.threshold
 
-    local result = false
-    if self.operator == ">" then
-        result = value > threshold
-    elseif self.operator == "<" then
-        result = value < threshold
-    elseif self.operator == ">=" then
-        result = value >= threshold
-    elseif self.operator == "<=" then
-        result = value <= threshold
-    elseif self.operator == "==" then
-        result = value == threshold
-    elseif self.operator == "~=" then
-        result = value ~= threshold
-    end
-
-    return result and BTNode.SUCCESS or BTNode.FAILURE
+    return self.compare_func(value, threshold) and BTNode.SUCCESS or BTNode.FAILURE
 end
 
-local BTStateCheck = BTNode:new("StateCheck")
-BTStateCheck.__index = BTStateCheck
-setmetatable(BTStateCheck, BTNode)
+local BTStateCheck = create_class("BTStateCheck", BTNode)
 
 function BTStateCheck:new(name, check_funcs, mode)
     local node = BTNode.new(self, name)
@@ -712,16 +719,19 @@ function BTStateCheck:new(name, check_funcs, mode)
 end
 
 function BTStateCheck:tick(context)
+    local checks = self.checks
+    local count = #checks
+
     if self.mode == "all" then
-        for _, check_func in ipairs(self.checks) do
-            if not check_func(context) then
+        for i = 1, count do
+            if not checks[i](context) then
                 return BTNode.FAILURE
             end
         end
         return BTNode.SUCCESS
     else
-        for _, check_func in ipairs(self.checks) do
-            if check_func(context) then
+        for i = 1, count do
+            if checks[i](context) then
                 return BTNode.SUCCESS
             end
         end
@@ -729,57 +739,73 @@ function BTStateCheck:tick(context)
     end
 end
 
-local BTRangeFinder = BTNode:new("RangeFinder")
-BTRangeFinder.__index = BTRangeFinder
-setmetatable(BTRangeFinder, BTNode)
+local BTRangeFinder = create_class("BTRangeFinder", BTNode)
 
 function BTRangeFinder:new(name, config)
     local node = BTNode.new(self, name)
-    node.source_key = config.source_key
-    node.origin_func = config.origin_func
-    node.position_func = config.position_func
-    node.max_distance = config.max_distance
-    node.max_angle = config.max_angle
-    node.direction_func = config.direction_func
-    node.filter_func = config.filter_func or function() return true end
-    node.result_key = config.result_key or "found_items"
-    node.priority_func = config.priority_func
+    local cfg = config or {}
+
+    node.source_key = cfg.source_key
+    node.origin_func = cfg.origin_func
+    node.position_func = cfg.position_func
+    node.max_distance = cfg.max_distance
+    node.max_angle = cfg.max_angle
+    node.direction_func = cfg.direction_func
+    node.filter_func = cfg.filter_func or function() return true end
+    node.result_key = cfg.result_key or "found_items"
+    node.priority_func = cfg.priority_func
+
     return node
 end
 
 function BTRangeFinder:tick(context)
-    local source = context[self.source_key] or {}
-    local origin = self.origin_func(context)
-    local direction = self.direction_func and self.direction_func(context)
+    local source = context[self.source_key]
+    if not source then
+        return BTNode.FAILURE
+    end
 
+    local origin = self.origin_func(context)
     if not origin then
         return BTNode.FAILURE
     end
 
+    local direction = self.direction_func and self.direction_func(context)
+    local max_distance = self.max_distance
+    local max_angle = self.max_angle
+    local filter = self.filter_func
+    local position_func = self.position_func
+    local priority_func = self.priority_func
+
     local found = {}
-    local best_item, best_priority = nil, -math.huge
+    local found_count = 0
+    local best_item, best_priority
+
+    if priority_func then
+        best_priority = -math.huge
+    end
 
     for key, item in pairs(source) do
-        if self.filter_func(item, context, key) then
-            local pos = self.position_func(item, context)
+        if filter(item, context, key) then
+            local pos = position_func(item, context)
 
             if pos then
                 local distance = MathUtils.mvec3_distance(origin, pos)
 
-                if not self.max_distance or distance <= self.max_distance then
+                if not max_distance or distance <= max_distance then
                     local valid = true
 
-                    if self.max_angle and direction then
+                    if max_angle and direction then
                         local vec = pos - origin
                         local angle = MathUtils.mvec3_angle(vec, direction)
-                        valid = angle <= self.max_angle
+                        valid = angle <= max_angle
                     end
 
                     if valid then
-                        table.insert(found, {key = key, item = item, distance = distance})
+                        found_count = found_count + 1
+                        found[found_count] = {key = key, item = item, distance = distance}
 
-                        if self.priority_func then
-                            local priority = self.priority_func(item, context, key, distance)
+                        if priority_func then
+                            local priority = priority_func(item, context, key, distance)
                             if priority > best_priority then
                                 best_priority = priority
                                 best_item = item
@@ -792,48 +818,55 @@ function BTRangeFinder:tick(context)
     end
 
     context[self.result_key] = found
-    if self.priority_func and best_item then
+
+    if best_item then
         context[self.result_key .. "_best"] = best_item
     end
 
-    return #found > 0 and BTNode.SUCCESS or BTNode.FAILURE
+    return found_count > 0 and BTNode.SUCCESS or BTNode.FAILURE
 end
 
-local BTCounter = BTNode:new("Counter")
-BTCounter.__index = BTCounter
-setmetatable(BTCounter, BTNode)
+local BTCounter = create_class("BTCounter", BTNode)
 
 function BTCounter:new(name, config)
     local node = BTNode.new(self, name)
-    node.source_key = config.source_key
-    node.filter_func = config.filter_func or function() return true end
-    node.count_key = config.count_key or "count"
-    node.min_count = config.min_count
-    node.max_count = config.max_count
+    local cfg = config or {}
+
+    node.source_key = cfg.source_key
+    node.filter_func = cfg.filter_func or function() return true end
+    node.count_key = cfg.count_key or "count"
+    node.min_count = cfg.min_count
+    node.max_count = cfg.max_count
+
     return node
 end
 
 function BTCounter:tick(context)
-    local source = context[self.source_key] or {}
+    local source = context[self.source_key]
+    if not source then
+        context[self.count_key] = 0
+        return (not self.min_count or self.min_count == 0) and BTNode.SUCCESS or BTNode.FAILURE
+    end
+
+    local filter = self.filter_func
     local count = 0
 
     for key, item in pairs(source) do
-        if self.filter_func(item, context, key) then
+        if filter(item, context, key) then
             count = count + 1
         end
     end
 
     context[self.count_key] = count
 
-    local valid = true
-    if self.min_count and count < self.min_count then
-        valid = false
-    end
-    if self.max_count and count > self.max_count then
-        valid = false
+    local min = self.min_count
+    local max = self.max_count
+
+    if (min and count < min) or (max and count > max) then
+        return BTNode.FAILURE
     end
 
-    return valid and BTNode.SUCCESS or BTNode.FAILURE
+    return BTNode.SUCCESS
 end
 
 local function build_target_selection_tree()
@@ -1676,16 +1709,16 @@ end
 
 
 local function visualize_tree(root_node)
+    if not root_node then
+        return "Tree is empty."
+    end
+
     local lines = {}
 
     local function build_node_recursive(node, prefix, is_last)
-        if not node then return end
-
         local line_prefix = prefix .. (is_last and "`-- " or "|-- ")
-
-        local node_type = getmetatable(node) and getmetatable(node).__index.name or "Unknown"
+        local node_type = getmetatable(node).__index.name or "Unknown"
         local node_name = node.name or "Unnamed"
-
         local info = string.format("[%s] %s", node_type, node_name)
 
         if node_type == "Repeater" then
@@ -1695,35 +1728,27 @@ local function visualize_tree(root_node)
             info = info .. " (Policy: " .. (node.policy or "N/A") .. ")"
         end
 
-        table.insert(lines, line_prefix .. info)
+        lines[#lines + 1] = line_prefix .. info
 
-        local children = {}
-        if node.children then
-            children = node.children
-        elseif node.child then
-            children = { node.child }
-        end
-
+        local children = node.children or (node.child and {node.child}) or {}
         local child_count = #children
+
         if child_count > 0 then
             local next_prefix = prefix .. (is_last and "    " or "|   ")
-            for i, child in ipairs(children) do
-                build_node_recursive(child, next_prefix, i == child_count)
+            for i = 1, child_count do
+                build_node_recursive(children[i], next_prefix, i == child_count)
             end
         end
     end
 
-    if not root_node then
-        return "Tree is empty."
-    end
-
-    local root_type = getmetatable(root_node) and getmetatable(root_node).__index.name or "Unknown"
-    table.insert(lines, string.format("[%s] %s", root_type, root_node.name))
+    local root_type = getmetatable(root_node).__index.name or "Unknown"
+    lines[1] = string.format("[%s] %s", root_type, root_node.name)
 
     local children = root_node.children or (root_node.child and {root_node.child}) or {}
     local child_count = #children
-    for i, child in ipairs(children) do
-        build_node_recursive(child, "", i == child_count)
+
+    for i = 1, child_count do
+        build_node_recursive(children[i], "", i == child_count)
     end
 
     return table.concat(lines, "\n")
