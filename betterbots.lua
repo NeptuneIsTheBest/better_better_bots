@@ -1269,7 +1269,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local weapon_type = get_weapon_archetype(bot_unit)
             local target_unit = target_data.unit
-            local is_sniper = target_unit:base() and target_unit:base():has_tag and target_unit:base():has_tag("sniper")
+            local is_sniper = target_unit:base() and target_unit:base().has_tag and target_unit:base():has_tag("sniper")
             local is_shield = target_data.is_shield
 
             if weapon_type == "sniper" then
@@ -1413,7 +1413,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 best_coop_target.targeted_by = data.key
                 best_coop_target.claimed_at = t
 
-                local is_dozer = best_coop_target.unit:base() and best_coop_target.unit:base():has_tag and best_coop_target.unit:base():has_tag("tank")
+                local is_dozer = best_coop_target.unit:base() and best_coop_target.unit:base().has_tag and best_coop_target.unit:base():has_tag("tank")
                 if is_dozer then
                     BB.coop_data.dozer_attackers[data.key] = best_coop_target.u_key
                 else
@@ -1429,7 +1429,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local best_local_target, max_score = nil, -1
             for u_key, target in pairs(potential_targets_map) do
                 local g = global_priority_targets[u_key]
-                local is_dozer = target.data.unit:base() and target.data.unit:base():has_tag and target.data.unit:base():has_tag("tank")
+                local is_dozer = target.data.unit:base() and target.data.unit:base().has_tag and target.data.unit:base():has_tag("tank")
 
                 local penalty = 1
                 if g and g.targeted_by and g.targeted_by ~= data.key then
@@ -1452,7 +1452,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
 
             if best_local_target then
-                local is_dozer = best_local_target.data.unit:base() and best_local_target.data.unit:base():has_tag and best_local_target.data.unit:base():has_tag("tank")
+                local is_dozer = best_local_target.data.unit:base() and best_local_target.data.unit:base().has_tag and best_local_target.data.unit:base():has_tag("tank")
                 if is_dozer then
                     BB.coop_data.dozer_attackers[data.key] = best_local_target.data.u_key
                 else
@@ -2162,7 +2162,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 			if CopDamage.damage_bullet then
 				local old_bullet = CopDamage.damage_bullet
 				function CopDamage:damage_bullet(attack_data, ...)
-					if self._unit and alive(self._unit) and self._unit:base() and self._unit:base():has_tag and self._unit:base():has_tag("sniper") then
+					if self._unit and alive(self._unit) and self._unit:base() and self._unit:base().has_tag and self._unit:base():has_tag("sniper") then
 						if attack_data then
 							local attacker_unit = attack_data.attacker_unit
 							if alive(attacker_unit) and is_team_ai(attacker_unit) and self._HEALTH_INIT then
