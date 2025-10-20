@@ -57,13 +57,7 @@ local function safe_call(func, ...)
 		return false, err_msg
 	end
 
-	local traceback_handler = function(err)
-		local traceback_message = debug.traceback("Error: " .. tostring(err), 2)
-		bb_log(traceback_message, "ERROR")
-		return err
-	end
-
-	return xpcall(func, traceback_handler, ...)
+	return pcall(func, ...)
 end
 
 local function _get_mask(name, fallback_slots)
