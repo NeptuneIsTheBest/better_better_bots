@@ -68,7 +68,7 @@ end
 
 local function _get_mask(name, fallback_slots)
 	if name and managers and managers.slot and managers.slot.get_mask then
-		local ok, m = pcall(managers.slot.get_mask, managers.slot, name)
+		local ok, m = safe_call(managers.slot.get_mask, managers.slot, name)
 		if ok and m then
 			return m
 		end
@@ -139,7 +139,9 @@ local function request_act(unit, variant, data)
 	if not (mov and not mov:chk_action_forbidden("action")) then return false end
 	local brain = alive(unit) and unit:brain()
 	if not (brain and brain.action_request) then return false end
-	local ok = brain:action_request({ type = "act", variant = variant, body_part = 3, align_sync = true })
+	local success, ok = safe_call(brain.action_request, brain, { type = "act", variant = variant, body_part = 3, align_sync = true })
+	if not success then return false end
+
 	if ok and data and data.internal_data then
 		data.internal_data.gesture_arrest = true
 	end
@@ -212,7 +214,7 @@ BB.coop_data = BB.coop_data or {
 }
 
 function BB:Save()
-	local ok, encoded = pcall(json.encode, self._data)
+	local ok, encoded = safe_call(json.encode, self._data)
 	if not ok then
 		bb_log("Failed to encode save data", "ERROR")
 		return
@@ -243,7 +245,7 @@ function BB:Load()
 		return
 	end
 
-	local ok, decoded = pcall(json.decode, raw)
+	local ok, decoded = safe_call(json.decode, raw)
 	if ok and type(decoded) == "table" then
 		self._data = decoded
 		bb_log("Data loaded")
@@ -523,7 +525,7 @@ Hooks:Add("LocalizationManagerPostInit", "LocalizationManagerPostInit_BB", funct
 	end
 
 	local loc_dir = BB._path .. "loc/"
-	local files_ok, files = pcall(file.GetFiles, loc_dir)
+	local files_ok, files = safe_call(file.GetFiles, loc_dir)
 
 	if files_ok and files then
 		local lang_key = SystemInfo:language():key()
@@ -1056,8 +1058,11 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 						end
 					end
 
-					if lvl_td and not lvl_td.player_sequence and self._unit:damage() then
-						safe_call(self._unit:damage().run_sequence_simple, self._unit:damage(), "var_model_02")
+					if lvl_td and not lvl_td.player_sequence then
+						local damage_ext = self._unit:damage()
+						if damage_ext then
+							safe_call(damage_ext.run_sequence_simple, damage_ext, "var_model_02")
+						end
 					end
 				end
 			end
@@ -1841,13 +1846,16 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
 			local mvec_spread_direction = best_cluster_pos - from_pos
 			if ProjectileBase and ProjectileBase.spawn then
-				local cc_unit = ProjectileBase.spawn(conc_tweak.unit, from_pos, Rotation())
-				if cc_unit and cc_unit:base() then
-					mvec3_norm(mvec_spread_direction)
-					play_net_redirect(criminal, "throw_grenade")
-					safe_say(criminal, "g43", true, true)
-					cc_unit:base():throw({dir = mvec_spread_direction, owner = criminal})
-					return true
+				local success, cc_unit = safe_call(ProjectileBase.spawn, conc_tweak.unit, from_pos, Rotation())
+				if success and cc_unit then
+					local base_ext = cc_unit:base()
+					if base_ext then
+						mvec3_norm(mvec_spread_direction)
+						play_net_redirect(criminal, "throw_grenade")
+						safe_say(criminal, "g43", true, true)
+						safe_call(base_ext.throw, base_ext, {dir = mvec_spread_direction, owner = criminal})
+						return true
+					end
 				end
 			end
 
@@ -1870,8 +1878,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     if t >= my_data._next_conc_eval_t then
                         my_data._next_conc_eval_t = t + 1
                         if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
-                            local thrown = safe_call(throw_concussion_grenade, data, unit)
-                            if thrown then
+							local success, thrown = safe_call(throw_concussion_grenade, data, unit)
+                            if success and thrown then
                                 my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
                             end
                         end
@@ -2049,7 +2057,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 			if alive(civ) and TeamAILogicIdle and TeamAILogicIdle.intimidate_civilians then
 				safe_call(TeamAILogicIdle.intimidate_civilians, data, unit, true, allow_actions)
 			elseif alive(dom) then
-				intimidate_law_enforcement(data, dom, allow_actions)
+				safe_call(intimidate_law_enforcement, data, dom, allow_actions)
 			elseif alive(nmy) and TeamAILogicAssault and TeamAILogicAssault.mark_enemy then
                 data._last_mark_t = data._last_mark_t or 0
                 if data._last_mark_t + CONSTANTS.MARK_COOLDOWN < t then
