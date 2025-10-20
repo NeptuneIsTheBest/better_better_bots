@@ -46,6 +46,26 @@ local SLOTS = {
 	HOSTAGES = 22
 }
 
+local function bb_log(msg, level)
+	log(string.format("[Better Bots][%s] %s", level or "INFO", tostring(msg)))
+end
+
+local function safe_call(func, ...)
+	if type(func) ~= "function" then
+		local err_msg = "Error: Attempted to call a non-function value (" .. type(func) .. ")"
+		bb_log(err_msg, "ERROR")
+		return false, err_msg
+	end
+
+	local traceback_handler = function(err)
+		local traceback_message = debug.traceback("Error: " .. tostring(err), 2)
+		bb_log(traceback_message, "ERROR")
+		return err
+	end
+
+	return xpcall(func, traceback_handler, ...)
+end
+
 local function _get_mask(name, fallback_slots)
 	if name and managers and managers.slot and managers.slot.get_mask then
 		local ok, m = pcall(managers.slot.get_mask, managers.slot, name)
@@ -72,19 +92,6 @@ local MASK = {
 	players = _get_mask("players", {2, 3, 4, 5}),
 	criminals_no_deployables = _get_mask("criminals_no_deployables", {2, 3, 16})
 }
-
-local function bb_log(msg, level)
-	log(string.format("[Better Bots][%s] %s", level or "INFO", tostring(msg)))
-end
-
-local function safe_call(func, ...)
-	if type(func) ~= "function" then return end
-	local success, result = pcall(func, ...)
-	if not success then
-		bb_log("Error: " .. tostring(result), "ERROR")
-	end
-	return result
-end
 
 local function clamp(x, a, b)
 	return math.min(math.max(x, a), b)
@@ -571,6 +578,7 @@ Hooks:Add("MenuManagerInitialize", "MenuManagerInitialize_BB", function(menu_man
 	register_toggle("callback_ammo_toggle", "ammo")
 	register_toggle("callback_conc_toggle", "conc")
 	register_toggle("callback_coop_toggle", "coop")
+	register_toggle("callback_keepstaying_toggle", "keepstaying")
 
 	if MenuHelper and MenuHelper.LoadFromJsonFile then
 		MenuHelper:LoadFromJsonFile(BB._path .. "menu.txt", BB, BB._data)
@@ -597,6 +605,16 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 				return old_init(self, ...)
 			end
 		end
+
+        if GroupAIStateBase.upd_team_AI_distance then
+            local old_upd_team_AI_distance = GroupAIStateBase.upd_team_AI_distance
+            function GroupAIStateBase:upd_team_AI_distance(...)
+                if BB:get("keepstaying", false) then
+                    return
+                end
+                return old_upd_team_AI_distance(self, ...)
+            end
+        end
 
 		if GroupAIStateBase.chk_say_teamAI_combat_chatter then
 			local old_chatter = GroupAIStateBase.chk_say_teamAI_combat_chatter
@@ -1186,7 +1204,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
 
-            if base_unit then
+            if base_unit and base_unit.has_tag then
                 if base_unit:has_tag("tank") then
                     threat = threat * (THREAT_WEIGHTS.DOZER / 10)
                     local health_ratio = get_unit_health_ratio(target_unit)
@@ -1246,7 +1264,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local weapon_type = get_weapon_archetype(bot_unit)
             local target_unit = target_data.unit
-            local is_sniper = target_unit:base() and target_unit:base():has_tag("sniper")
+            local is_sniper = target_unit:base() and target_unit:base():has_tag and target_unit:base():has_tag("sniper")
             local is_shield = target_data.is_shield
 
             if weapon_type == "sniper" then
@@ -1351,7 +1369,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                         dynamic_prio = dynamic_prio * 3
                     end
 
-                    local is_dozer = global_target.unit:base() and global_target.unit:base():has_tag("tank")
+                    local is_dozer = global_target.unit:base() and global_target.unit:base().has_tag and global_target.unit:base():has_tag("tank")
 
                     if is_dozer then
                         local current_attackers = BB:count_dozer_attackers(u_key)
@@ -1390,7 +1408,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 best_coop_target.targeted_by = data.key
                 best_coop_target.claimed_at = t
 
-                local is_dozer = best_coop_target.unit:base() and best_coop_target.unit:base():has_tag("tank")
+                local is_dozer = best_coop_target.unit:base() and best_coop_target.unit:base():has_tag and best_coop_target.unit:base():has_tag("tank")
                 if is_dozer then
                     BB.coop_data.dozer_attackers[data.key] = best_coop_target.u_key
                 else
@@ -1406,7 +1424,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local best_local_target, max_score = nil, -1
             for u_key, target in pairs(potential_targets_map) do
                 local g = global_priority_targets[u_key]
-                local is_dozer = target.data.unit:base() and target.data.unit:base():has_tag("tank")
+                local is_dozer = target.data.unit:base() and target.data.unit:base():has_tag and target.data.unit:base():has_tag("tank")
 
                 local penalty = 1
                 if g and g.targeted_by and g.targeted_by ~= data.key then
@@ -1429,7 +1447,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
 
             if best_local_target then
-                local is_dozer = best_local_target.data.unit:base() and best_local_target.data.unit:base():has_tag("tank")
+                local is_dozer = best_local_target.data.unit:base() and best_local_target.data.unit:base():has_tag and best_local_target.data.unit:base():has_tag("tank")
                 if is_dozer then
                     BB.coop_data.dozer_attackers[data.key] = best_local_target.data.u_key
                 else
@@ -2136,7 +2154,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 			if CopDamage.damage_bullet then
 				local old_bullet = CopDamage.damage_bullet
 				function CopDamage:damage_bullet(attack_data, ...)
-					if self._unit and alive(self._unit) and self._unit:base() and self._unit:base():has_tag("sniper") then
+					if self._unit and alive(self._unit) and self._unit:base() and self._unit:base():has_tag and self._unit:base():has_tag("sniper") then
 						if attack_data then
 							local attacker_unit = attack_data.attacker_unit
 							if alive(attacker_unit) and is_team_ai(attacker_unit) and self._HEALTH_INIT then

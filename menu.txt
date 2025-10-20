@@ -180,6 +180,15 @@
             "callback" : "callback_coop_toggle",
             "value" : "coop",
             "default_value" : false
+        },
+        {
+            "type" : "toggle",
+            "id" : "keepstaying_toggle",
+            "title" : "keepstaying_toggle_title",
+            "description" : "keepstaying_toggle_desc",
+            "callback" : "callback_keepstaying_toggle",
+            "value" : "coop",
+            "default_value" : false
         }
 	]
 }
