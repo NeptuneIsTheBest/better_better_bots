@@ -36,6 +36,7 @@ local THREAT_WEIGHTS = {
 	MEDIC = 70,
 	SNIPER = 75,
 	SPECIAL = 65,
+	TURRET = 85,
 	LOW_HEALTH_BONUS = 50,
 	TARGETING_ME_BONUS = 60,
 	SAME_TARGET_PENALTY = 0.35,
@@ -1210,7 +1211,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
 
-            if base_unit and base_unit.has_tag then
+            local is_turret = base_unit and base_unit.sentry_gun
+
+            if is_turret then
+                threat = threat * (THREAT_WEIGHTS.TURRET / 10)
+            elseif base_unit and base_unit.has_tag then
                 if base_unit:has_tag("tank") then
                     threat = threat * (THREAT_WEIGHTS.DOZER / 10)
                     local health_ratio = get_unit_health_ratio(target_unit)
@@ -1244,15 +1249,17 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 threat = threat * (THREAT_WEIGHTS.SPECIAL / 10)
             end
 
-            local health_ratio = get_unit_health_ratio(target_unit)
-            if health_ratio < 0.3 then
-                threat = threat + THREAT_WEIGHTS.LOW_HEALTH_BONUS
-            end
+            if not is_turret then
+                local health_ratio = get_unit_health_ratio(target_unit)
+                if health_ratio < 0.3 then
+                    threat = threat + THREAT_WEIGHTS.LOW_HEALTH_BONUS
+                end
 
-            local enemy_brain = target_unit:brain()
-            local enemy_data = enemy_brain and enemy_brain._logic_data
-            if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
-                threat = threat + THREAT_WEIGHTS.TARGETING_ME_BONUS
+                local enemy_brain = target_unit:brain()
+                local enemy_data = enemy_brain and enemy_brain._logic_data
+                if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
+                    threat = threat + THREAT_WEIGHTS.TARGETING_ME_BONUS
+                end
             end
 
             if dist > 3000 then
@@ -1270,10 +1277,17 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local weapon_type = get_weapon_archetype(bot_unit)
             local target_unit = target_data.unit
-            local is_sniper = target_unit:base() and target_unit:base().has_tag and target_unit:base():has_tag("sniper")
+            local base_unit = target_unit:base()
+            local is_turret = base_unit and base_unit.sentry_gun
+            local is_sniper = base_unit and base_unit.has_tag and base_unit:has_tag("sniper")
             local is_shield = target_data.is_shield
 
-            if weapon_type == "sniper" then
+            if is_turret then
+                score = score + 40
+                if dist < 1500 then
+                    score = score + 20
+                end
+            elseif weapon_type == "sniper" then
                 score = score + (is_sniper and 50 or 20)
                 if dist < 800 then
                     score = score - 30
@@ -1375,9 +1389,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                         dynamic_prio = dynamic_prio * 3
                     end
 
-                    local is_dozer = global_target.unit:base() and global_target.unit:base().has_tag and global_target.unit:base():has_tag("tank")
+                    local target_base = global_target.unit:base()
+                    local is_turret = target_base and target_base.sentry_gun
+                    local is_dozer = target_base and target_base.has_tag and target_base:has_tag("tank")
 
-                    if is_dozer then
+                    if is_dozer and not is_turret then
                         local current_attackers = BB:count_dozer_attackers(u_key)
                         local attacker_limit = BB:get_dozer_attacker_limit(global_target.unit, local_target_info.data.verified_dis)
 
@@ -1390,7 +1406,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                     end
 
                     local allow_target = true
-                    if not is_dozer and global_target.targeted_by and global_target.targeted_by ~= data.key then
+                    if not is_dozer and not is_turret and global_target.targeted_by and global_target.targeted_by ~= data.key then
                         allow_target = false
                     end
 
@@ -1414,8 +1430,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 best_coop_target.targeted_by = data.key
                 best_coop_target.claimed_at = t
 
-                local is_dozer = best_coop_target.unit:base() and best_coop_target.unit:base().has_tag and best_coop_target.unit:base():has_tag("tank")
-                if is_dozer then
+                local target_base = best_coop_target.unit:base()
+                local is_turret = target_base and target_base.sentry_gun
+                local is_dozer = target_base and target_base.has_tag and target_base:has_tag("tank")
+
+                if is_dozer and not is_turret then
                     BB.coop_data.dozer_attackers[data.key] = best_coop_target.u_key
                 else
                     BB.coop_data.dozer_attackers[data.key] = nil
@@ -1430,17 +1449,19 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local best_local_target, max_score = nil, -1
             for u_key, target in pairs(potential_targets_map) do
                 local g = global_priority_targets[u_key]
-                local is_dozer = target.data.unit:base() and target.data.unit:base().has_tag and target.data.unit:base():has_tag("tank")
+                local target_base = target.data.unit:base()
+                local is_turret = target_base and target_base.sentry_gun
+                local is_dozer = target_base and target_base.has_tag and target_base:has_tag("tank")
 
                 local penalty = 1
                 if g and g.targeted_by and g.targeted_by ~= data.key then
-                    if is_dozer then
+                    if is_dozer and not is_turret then
                         local current_attackers = BB:count_dozer_attackers(u_key)
                         local attacker_limit = BB:get_dozer_attacker_limit(target.data.unit, target.data.verified_dis)
                         if current_attackers >= attacker_limit then
                             penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
                         end
-                    else
+                    elseif not is_turret then
                         penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
                     end
                 end
@@ -1453,8 +1474,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
 
             if best_local_target then
-                local is_dozer = best_local_target.data.unit:base() and best_local_target.data.unit:base().has_tag and best_local_target.data.unit:base():has_tag("tank")
-                if is_dozer then
+                local target_base = best_local_target.data.unit:base()
+                local is_turret = target_base and target_base.sentry_gun
+                local is_dozer = target_base and target_base.has_tag and target_base:has_tag("tank")
+
+                if is_dozer and not is_turret then
                     BB.coop_data.dozer_attackers[data.key] = best_local_target.data.u_key
                 else
                     BB.coop_data.dozer_attackers[data.key] = nil
@@ -1794,11 +1818,13 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 if u_char.identified and u_char.verified and u_char.verified_dis and u_char.verified_dis <= CONSTANTS.CONC_DISTANCE then
                     local unit = u_char.unit
                     if alive(unit) and are_units_foes(criminal, unit) then
-                        local unit_brain = unit:brain()
+                        local unit_base = unit:base()
+                        local is_turret = unit_base and unit_base.sentry_gun
+                        local unit_brain = not is_turret and unit:brain()
+
                         if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
                             local vec = u_char.m_head_pos - from_pos
                             if vec and mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
-                                local unit_base = unit:base()
                                 local tweak_table = unit_base and unit_base._tweak_table
 
                                 if tweak_table and tweak_table ~= "tank" then
