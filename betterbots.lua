@@ -605,20 +605,16 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 	if GroupAIStateBase then
 		local is_server = Network:is_server()
 
-		if GroupAIStateBase.init then
-			local old_init = GroupAIStateBase.init
-			function GroupAIStateBase:init(...)
-				if is_server and BB:get("conc", false) then
-					if tweak_data.blackmarket and tweak_data.blackmarket.projectiles then
-						local conc_data = tweak_data.blackmarket.projectiles.concussion
-						if conc_data and conc_data.unit then
-							ensure_dyn_unit_loaded(conc_data.unit)
-						end
+		Hooks:PostHook(GroupAIStateBase, "init", "BB_GAISB_init_conc_preload", function(self, ...)
+			if is_server and BB:get("conc", false) then
+				if tweak_data.blackmarket and tweak_data.blackmarket.projectiles then
+					local conc_data = tweak_data.blackmarket.projectiles.concussion
+					if conc_data and conc_data.unit then
+						ensure_dyn_unit_loaded(conc_data.unit)
 					end
 				end
-				return old_init(self, ...)
 			end
-		end
+		end)
 
         if GroupAIStateBase.upd_team_AI_distance then
             local old_upd_team_AI_distance = GroupAIStateBase.upd_team_AI_distance
@@ -640,45 +636,40 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 			end
 		end
 
-		if GroupAIStateBase.on_tase_start then
-			local old_tase = GroupAIStateBase.on_tase_start
-			function GroupAIStateBase:on_tase_start(cop_key, criminal_key, ...)
-				if self._ai_criminals then
-					local bot_record = self._ai_criminals[criminal_key]
-					if bot_record and bot_record.unit then
-						local cop_data = self._police and self._police[cop_key]
-						local taser_unit = cop_data and cop_data.unit
-
-						if alive(taser_unit) then
-							local contour = taser_unit:contour()
-							if contour and managers.player then
-								local mark_id = managers.player:get_contour_for_marked_enemy()
-								if not contour._contour_list or not contour:has_id(mark_id) then
-									if alive(bot_record.unit) then
-										safe_say(bot_record.unit, "f32x_any", true, true)
-									end
-									safe_call(contour.add, contour, "mark_enemy", true)
-								end
-							end
-						end
-					end
-				end
-
-				if BB:get("coop", false) then
+		Hooks:PostHook(GroupAIStateBase, "on_tase_start", "BB_GAISB_on_tase_start_mark", function(self, cop_key, criminal_key, ...)
+			if self._ai_criminals then
+				local bot_record = self._ai_criminals[criminal_key]
+				if bot_record and bot_record.unit then
 					local cop_data = self._police and self._police[cop_key]
 					local taser_unit = cop_data and cop_data.unit
 
 					if alive(taser_unit) then
-						local criminal_data = self:all_char_criminals() and self:all_char_criminals()[criminal_key]
-						if criminal_data and criminal_data.unit then
-							BB:update_priority_target(taser_unit, 25.0, "tasing_teammate")
+						local contour = taser_unit:contour()
+						if contour and managers.player then
+							local mark_id = managers.player:get_contour_for_marked_enemy()
+							if not contour._contour_list or not contour:has_id(mark_id) then
+								if alive(bot_record.unit) then
+									safe_say(bot_record.unit, "f32x_any", true, true)
+								end
+								safe_call(contour.add, contour, "mark_enemy", true)
+							end
 						end
 					end
 				end
-
-				return old_tase(self, cop_key, criminal_key, ...)
 			end
-		end
+
+			if BB:get("coop", false) then
+				local cop_data = self._police and self._police[cop_key]
+				local taser_unit = cop_data and cop_data.unit
+
+				if alive(taser_unit) then
+					local criminal_data = self:all_char_criminals() and self:all_char_criminals()[criminal_key]
+					if criminal_data and criminal_data.unit then
+						BB:update_priority_target(taser_unit, 25.0, "tasing_teammate")
+					end
+				end
+			end
+		end)
 
 		function GroupAIStateBase:_get_balancing_multiplier(balance_multipliers, ...)
 			local nr_crim = 0
@@ -697,24 +688,20 @@ if RequiredScript == "lib/units/player_team/teamaibase" then
 	if TeamAIBase then
 		local is_server = Network:is_server()
 
-		if TeamAIBase.post_init then
-			local old_post = TeamAIBase.post_init
-			function TeamAIBase:post_init(...)
-				old_post(self, ...)
-				self._upgrades = self._upgrades or {}
-				self._upgrade_levels = self._upgrade_levels or {}
+		Hooks:PostHook(TeamAIBase, "post_init", "BB_TeamAIBase_post_init_upgrades", function(self, ...)
+			self._upgrades = self._upgrades or {}
+			self._upgrade_levels = self._upgrade_levels or {}
 
-				if is_server then
-					local upgrades = {
-						"intimidate_enemies", "empowered_intimidation_mul", "intimidation_multiplier",
-						"civ_calming_alerts", "intimidate_aura", "civ_intimidation_mul"
-					}
-					for _, upgrade in ipairs(upgrades) do
-						self:set_upgrade_value("player", upgrade, 1)
-					end
+			if is_server then
+				local upgrades = {
+					"intimidate_enemies", "empowered_intimidation_mul", "intimidation_multiplier",
+					"civ_calming_alerts", "intimidate_aura", "civ_intimidation_mul"
+				}
+				for _, upgrade in ipairs(upgrades) do
+					self:set_upgrade_value("player", upgrade, 1)
 				end
 			end
-		end
+		end)
 
 		function TeamAIBase:set_upgrade_value(category, upgrade, level)
 			if HuskPlayerBase and HuskPlayerBase.set_upgrade_value then
@@ -735,43 +722,34 @@ end
 if RequiredScript == "lib/units/player_team/teamaidamage" then
 	if TeamAIDamage then
 		if BB:get("doc", false) then
-			if TeamAIDamage._apply_damage then
-				local old_damage = TeamAIDamage._apply_damage
-				function TeamAIDamage:_apply_damage(...)
-					local damage_percent, health_subtracted = old_damage(self, ...)
-					if not self._unit then return damage_percent, health_subtracted end
+			Hooks:PostHook(TeamAIDamage, "_apply_damage", "BB_TeamAIDamage_apply_damage_say", function(self, ...)
+				if not self._unit then return end
 
+				local brain = self._unit:brain()
+				if not (brain and brain._logic_data) then return end
+
+				local my_data = brain._logic_data.internal_data
+				if my_data and not my_data.said_hurt then
+					if self._health_ratio and self._health_ratio <= 0.2 and not self:need_revive() then
+						my_data.said_hurt = true
+						if self._unit:sound() then
+							safe_say(self._unit, "g80x_plu", true, true)
+						end
+					end
+				end
+			end)
+
+			Hooks:PostHook(TeamAIDamage, "_regenerated", "BB_TeamAIDamage_regenerated_reset", function(self)
+				if self._unit then
 					local brain = self._unit:brain()
-					if not (brain and brain._logic_data) then return damage_percent, health_subtracted end
-
-					local my_data = brain._logic_data.internal_data
-					if my_data and not my_data.said_hurt then
-						if self._health_ratio and self._health_ratio <= 0.2 and not self:need_revive() then
-							my_data.said_hurt = true
-							if self._unit:sound() then
-								safe_say(self._unit, "g80x_plu", true, true)
-							end
+					if brain and brain._logic_data then
+						local my_data = brain._logic_data.internal_data
+						if my_data then
+							my_data.said_hurt = false
 						end
 					end
-					return damage_percent, health_subtracted
 				end
-			end
-
-			if TeamAIDamage._regenerated then
-				local old_regen = TeamAIDamage._regenerated
-				function TeamAIDamage:_regenerated()
-					if self._unit then
-						local brain = self._unit:brain()
-						if brain and brain._logic_data then
-							local my_data = brain._logic_data.internal_data
-							if my_data then
-								my_data.said_hurt = false
-							end
-						end
-					end
-					return old_regen(self)
-				end
-			end
+			end)
 		end
 
         if TeamAIDamage._check_bleed_out then
@@ -833,15 +811,11 @@ if RequiredScript == "lib/units/interactions/interactionext" then
 				end
 			end
 
-			if ReviveInteractionExt._at_interact_start then
-				local old_start = ReviveInteractionExt._at_interact_start
-				function ReviveInteractionExt:_at_interact_start(player, ...)
-					old_start(self, player, ...)
-					if self.tweak_data == "revive" or self.tweak_data == "free" then
-						cancel_other_rescue_objectives(self._unit, player)
-					end
+			Hooks:PostHook(ReviveInteractionExt, "_at_interact_start", "BB_Revive_cancel_others", function(self, player, ...)
+				if self.tweak_data == "revive" or self.tweak_data == "free" then
+					cancel_other_rescue_objectives(self._unit, player)
 				end
-			end
+			end)
 		end
 	end
 end
@@ -849,10 +823,7 @@ end
 if RequiredScript == "lib/tweak_data/weapontweakdata" then
 	if WeaponTweakData and WeaponTweakData.init then
 		if BB:get("combat", false) then
-			local old_init = WeaponTweakData.init
-			function WeaponTweakData:init(...)
-				old_init(self, ...)
-
+			Hooks:PostHook(WeaponTweakData, "init", "BB_WeaponTweak_bot_weapons", function(self, ...)
 				for k, v in pairs(self) do
 					if type(v) == "table" and k:match("_crew$") then
 						v.DAMAGE = 3
@@ -880,7 +851,7 @@ if RequiredScript == "lib/tweak_data/weapontweakdata" then
 						end
 					end
 				end
-			end
+			end)
 		end
 	end
 end
@@ -1070,9 +1041,8 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 			end
 
 			if TeamAIMovement.set_carrying_bag then
-				local old_set = TeamAIMovement.set_carrying_bag
-				function TeamAIMovement:set_carrying_bag(unit, ...)
-					if not managers.hud then return old_set(self, unit, ...) end
+				Hooks:PostHook(TeamAIMovement, "set_carrying_bag", "BB_TeamAIMovement_set_carrying_bag_label", function(self, unit, ...)
+					if not managers.hud then return end
 
 					local bag_unit = unit or self._carry_unit
 
@@ -1094,9 +1064,7 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 							bag_panel:set_visible(unit and true or false)
 						end
 					end
-
-					return old_set(self, unit, ...)
-				end
+				end)
 			end
 		end
 
@@ -1494,21 +1462,17 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
         end
 
 		if BB:get("maskup", false) then
-			if TeamAILogicIdle.on_alert then
-				local old_onalert = TeamAILogicIdle.on_alert
-				function TeamAILogicIdle.on_alert(data, alert_data, ...)
-					if data.cool then
-						local alert_type = alert_data[1]
-						if CopLogicBase and CopLogicBase.is_alert_aggressive and CopLogicBase.is_alert_aggressive(alert_type) then
-							local unit = data.unit
-							if alive(unit) and unit:movement() then
-								unit:movement():set_cool(false)
-							end
+			Hooks:PreHook(TeamAILogicIdle, "on_alert", "BB_TeamAILogicIdle_on_alert_maskup", function(data, alert_data, ...)
+				if data.cool then
+					local alert_type = alert_data[1]
+					if CopLogicBase and CopLogicBase.is_alert_aggressive and CopLogicBase.is_alert_aggressive(alert_type) then
+						local unit = data.unit
+						if alive(unit) and unit:movement() then
+							unit:movement():set_cool(false)
 						end
 					end
-					return old_onalert(data, alert_data, ...)
 				end
-			end
+			end)
 		end
 	end
 end
@@ -1890,50 +1854,41 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 		end
 
         if Network:is_server() then
-            if TeamAILogicAssault.update then
-                local old_update = TeamAILogicAssault.update
-                function TeamAILogicAssault.update(data, ...)
-                    local t = game_time()
-                    local my_data = data.internal_data or {}
-                    local unit = data.unit
+            Hooks:PostHook(TeamAILogicAssault, "update", "BB_TeamAILogicAssault_extra_update", function(data, ...)
+                local t = game_time()
+                local my_data = data.internal_data or {}
+                local unit = data.unit
 
-                    if BB:get("coop", false) and is_team_ai(unit) then
-                        BB:update_teammate_status(unit)
-                    end
+                if BB:get("coop", false) and is_team_ai(unit) then
+                    BB:update_teammate_status(unit)
+                end
 
-                    my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
-                    if t >= my_data._next_conc_eval_t then
-                        my_data._next_conc_eval_t = t + 1
-                        if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
-							local success, thrown = safe_call(throw_concussion_grenade, data, unit)
-                            if success and thrown then
-                                my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
-                            end
+                my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
+                if t >= my_data._next_conc_eval_t then
+                    my_data._next_conc_eval_t = t + 1
+                    if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
+						local success, thrown = safe_call(throw_concussion_grenade, data, unit)
+                        if success and thrown then
+                            my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
                         end
                     end
-
-                    if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
-                        my_data.melee_t = t
-                        safe_call(execute_melee_attack, data, unit)
-                    end
-
-                    if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
-                        my_data.reload_t = t
-                        safe_call(TeamAILogicAssault.check_smart_reload, data)
-                    end
-
-                    return old_update(data, ...)
                 end
-            end
+
+                if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
+                    my_data.melee_t = t
+                    safe_call(execute_melee_attack, data, unit)
+                end
+
+                if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
+                    my_data.reload_t = t
+                    safe_call(TeamAILogicAssault.check_smart_reload, data)
+                end
+            end)
         end
 
-		if TeamAILogicAssault.exit then
-			local old_exit = TeamAILogicAssault.exit
-			function TeamAILogicAssault.exit(data, ...)
-				safe_call(TeamAILogicAssault.check_smart_reload, data)
-				return old_exit(data, ...)
-			end
-		end
+		Hooks:PostHook(TeamAILogicAssault, "exit", "BB_TeamAILogicAssault_exit_reload", function(data, ...)
+			safe_call(TeamAILogicAssault.check_smart_reload, data)
+		end)
 	end
 end
 
@@ -2094,13 +2049,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 			end
 		end
 
-		function TeamAILogicBase._set_attention_obj(data, new_att_obj, new_reaction)
-			data.attention_obj = new_att_obj
-			if new_att_obj then
-				new_att_obj.reaction = new_reaction or new_att_obj.reaction
-			end
+		Hooks:PostHook(TeamAILogicBase, "_set_attention_obj", "BB_TeamAILogicBase_post_set_attention", function(data, new_att_obj, new_reaction)
             safe_call(perform_interaction_check, data)
-		end
+		end)
 
 		function TeamAILogicBase._get_logic_state_from_reaction(data, reaction)
 			return (not reaction or reaction < REACT_COMBAT) and "idle" or "assault"
@@ -2150,39 +2101,33 @@ end
 
 if RequiredScript == "lib/units/enemies/cop/copbrain" then
 	if CopBrain and CopBrain.convert_to_criminal then
-		local old_convert = CopBrain.convert_to_criminal
-		function CopBrain:convert_to_criminal(...)
-			old_convert(self, ...)
+		Hooks:PostHook(CopBrain, "convert_to_criminal", "BB_CopBrain_post_convert_tweak", function(self, ...)
 			if self._logic_data and self._logic_data.char_tweak then
 				local char_tweak = deep_clone(self._logic_data.char_tweak)
 				char_tweak.access = "teamAI1"
 				char_tweak.always_face_enemy = true
 				self._logic_data.char_tweak = char_tweak
 			end
-		end
+		end)
 	end
 end
 
 if RequiredScript == "lib/units/enemies/cop/copdamage" then
 	if CopDamage then
 		if CopDamage.damage_melee then
-			local old_melee = CopDamage.damage_melee
-			function CopDamage:damage_melee(attack_data, ...)
+			Hooks:PostHook(CopDamage, "damage_melee", "BB_CopDamage_PostDamageMelee_IntimList", function(self, attack_data, ...)
 				if attack_data and attack_data.variant == "taser_tased" and self._unit then
 					BB:add_cop_to_intimidation_list(self._unit:key())
 				end
-				return old_melee(self, attack_data, ...)
-			end
+			end)
 		end
 
 		if CopDamage.sync_damage_melee then
-			local old_sync_melee = CopDamage.sync_damage_melee
-			function CopDamage:sync_damage_melee(variant, ...)
+			Hooks:PostHook(CopDamage, "sync_damage_melee", "BB_CopDamage_PostSyncDamageMelee_IntimList", function(self, variant, ...)
 				if variant == 5 and self._unit then
 					BB:add_cop_to_intimidation_list(self._unit:key())
 				end
-				return old_sync_melee(self, variant, ...)
-			end
+			end)
 		end
 
 		if BB:get("combat", false) then
@@ -2212,107 +2157,99 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 			end
 		end
 
-		if CopDamage.die then
-			local old_die = CopDamage.die
-			function CopDamage:die(attack_data, ...)
-				local unit = self._unit
-				local u_key = alive(unit) and unit:key()
-
-				if BB:get("ammo", false) and attack_data then
-					local attacker_unit = attack_data.attacker_unit
-					if alive(attacker_unit) and is_team_ai(attacker_unit) and self._pickup == "ammo" then
-						self:set_pickup(nil)
-					end
+		Hooks:PreHook(CopDamage, "die", "BB_CopDamage_die_pre_pickup", function(self, attack_data, ...)
+			if BB:get("ammo", false) and attack_data then
+				local attacker_unit = attack_data.attacker_unit
+				if alive(attacker_unit) and is_team_ai(attacker_unit) and self._pickup == "ammo" then
+					self:set_pickup(nil)
 				end
-
-				local res = old_die(self, attack_data, ...)
-
-				if u_key then
-					BB:clear_cop_state(u_key)
-					if BB.coop_data and BB.coop_data.priority_targets then
-						BB.coop_data.priority_targets[u_key] = nil
-					end
-					if BB.coop_data and BB.coop_data.dozer_attackers then
-						for bot_key, target_key in pairs(BB.coop_data.dozer_attackers) do
-							if target_key == u_key then
-								BB.coop_data.dozer_attackers[bot_key] = nil
-							end
-						end
-					end
-				end
-
-				return res
 			end
-		end
+		end)
+
+		Hooks:PostHook(CopDamage, "die", "BB_CopDamage_die_post_cleanup", function(self, attack_data, ...)
+			local unit = self._unit
+			local u_key = alive(unit) and unit:key()
+
+			if u_key then
+				BB:clear_cop_state(u_key)
+				if BB.coop_data and BB.coop_data.priority_targets then
+                    BB.coop_data.priority_targets[u_key] = nil
+                end
+                if BB.coop_data and BB.coop_data.dozer_attackers then
+                    for bot_key, target_key in pairs(BB.coop_data.dozer_attackers) do
+                        if target_key == u_key then
+                            BB.coop_data.dozer_attackers[bot_key] = nil
+                        end
+                    end
+                end
+			end
+		end)
 	end
 end
 
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
 	if CopLogicBase then
 		if BB:get("reflex", false) then
-			if CopLogicBase._upd_attention_obj_detection then
-				local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
-				local old_upd = CopLogicBase._upd_attention_obj_detection
+			local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
-				function CopLogicBase._upd_attention_obj_detection(data, min_reaction, max_reaction, ...)
-					local unit = data.unit
-					if alive(unit) and is_team_ai(unit) then
-						local t = data.t
-						local my_key = data.key
-						local detected_obj = data.detected_attention_objects or {}
-						local unit_mov = unit:movement()
-						if not unit_mov then
-							return old_upd(data, min_reaction, max_reaction, ...)
-						end
+			Hooks:PreHook(CopLogicBase, "_upd_attention_obj_detection", "BB_CopLogicBase_pre_fast_detect", function(data, min_reaction, max_reaction, ...)
+				local unit = data.unit
+				if alive(unit) and is_team_ai(unit) then
+					local t = data.t
+					local my_key = data.key
+					local detected_obj = data.detected_attention_objects or {}
+					local unit_mov = unit:movement()
+					if not unit_mov then
+						return
+					end
 
-						local my_pos = unit_mov:m_head_pos()
-						local my_access = data.SO_access
-						local my_team = data.team
-						local slotmask = data.visibility_slotmask
-						local my_tracker = unit_mov:nav_tracker()
-						if not my_tracker then
-							return old_upd(data, min_reaction, max_reaction, ...)
-						end
+					local my_pos = unit_mov:m_head_pos()
+					local my_access = data.SO_access
+					local my_team = data.team
+					local slotmask = data.visibility_slotmask
+					local my_tracker = unit_mov:nav_tracker()
+					if not my_tracker then
+						return
+					end
 
-						local chk_vis_func = my_tracker.check_visibility
-						local gstate = managers.groupai and managers.groupai:state()
-						if not gstate then
-							return old_upd(data, min_reaction, max_reaction, ...)
-						end
+					local chk_vis_func = my_tracker.check_visibility
+					local gstate = managers.groupai and managers.groupai:state()
+					if not gstate then
+						return
+					end
 
-						local all_attention_objects = gstate:get_AI_attention_objects_by_filter(data.SO_access_str, my_team)
+					local all_attention_objects = gstate:get_AI_attention_objects_by_filter(data.SO_access_str, my_team)
 
-						for u_key, attention_info in pairs(all_attention_objects or {}) do
-							if u_key ~= my_key and not detected_obj[u_key] then
-								local att_tracker = attention_info.nav_tracker
-								if (not att_tracker) or chk_vis_func(my_tracker, att_tracker) then
-									local att_handler = attention_info.handler
-									if att_handler and att_handler.get_attention then
-										local settings = att_handler:get_attention(my_access, min_reaction, max_reaction, my_team)
-										if settings and att_handler.get_detection_m_pos then
-											local attention_pos = att_handler:get_detection_m_pos()
-											if attention_pos then
-												local vis_ray = World:raycast("ray", my_pos, attention_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
-												if not vis_ray or (vis_ray.unit and vis_ray.unit:key() == u_key) then
-													if CopLogicBase._create_detected_attention_object_data then
-														local att_obj = CopLogicBase._create_detected_attention_object_data(t, unit, u_key, attention_info, settings)
-														if att_obj then
-															local new_reaction = (settings and settings.reaction) or AIAttentionObject.REACT_IDLE
+					for u_key, attention_info in pairs(all_attention_objects or {}) do
+						if u_key ~= my_key and not detected_obj[u_key] then
+							local att_tracker = attention_info.nav_tracker
+							if (not att_tracker) or chk_vis_func(my_tracker, att_tracker) then
+								local att_handler = attention_info.handler
+								if att_handler and att_handler.get_attention then
+									local settings = att_handler:get_attention(my_access, min_reaction, max_reaction, my_team)
+									if settings and att_handler.get_detection_m_pos then
+										local attention_pos = att_handler:get_detection_m_pos()
+										if attention_pos then
+											local vis_ray = World:raycast("ray", my_pos, attention_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
+											if not vis_ray or (vis_ray.unit and vis_ray.unit:key() == u_key) then
+												if CopLogicBase._create_detected_attention_object_data then
+													local att_obj = CopLogicBase._create_detected_attention_object_data(t, unit, u_key, attention_info, settings)
+													if att_obj then
+														local new_reaction = (settings and settings.reaction) or AIAttentionObject.REACT_IDLE
 
-															if new_reaction < REACT_COMBAT then
-																local their_team = attention_info.team
-																local foes = my_team and my_team.foes
-																if their_team and foes and foes[their_team.id] then
-																	new_reaction = REACT_COMBAT
-																end
+														if new_reaction < REACT_COMBAT then
+															local their_team = attention_info.team
+															local foes = my_team and my_team.foes
+															if their_team and foes and foes[their_team.id] then
+																new_reaction = REACT_COMBAT
 															end
-
-															att_obj.identified = true
-															att_obj.identified_t = t
-															att_obj.reaction = new_reaction
-															att_obj.settings.reaction = new_reaction
-															detected_obj[u_key] = att_obj
 														end
+
+														att_obj.identified = true
+														att_obj.identified_t = t
+														att_obj.reaction = new_reaction
+														att_obj.settings.reaction = new_reaction
+														detected_obj[u_key] = att_obj
 													end
 												end
 											end
@@ -2322,10 +2259,8 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
 							end
 						end
 					end
-
-					return old_upd(data, min_reaction, max_reaction, ...)
 				end
-			end
+			end)
 		end
 	end
 end
@@ -2333,15 +2268,11 @@ end
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
 	if CopLogicIdle then
 		if Network:is_server() then
-			if CopLogicIdle.enter then
-				local old_enter = CopLogicIdle.enter
-				function CopLogicIdle.enter(data, ...)
-					old_enter(data, ...)
-					if data.is_converted and TeamAILogicAssault and TeamAILogicAssault.check_smart_reload then
-						safe_call(TeamAILogicAssault.check_smart_reload, data)
-					end
+			Hooks:PostHook(CopLogicIdle, "enter", "BB_CopLogicIdle_enter_check_reload", function(data, ...)
+				if data.is_converted and TeamAILogicAssault and TeamAILogicAssault.check_smart_reload then
+					safe_call(TeamAILogicAssault.check_smart_reload, data)
 				end
-			end
+			end)
 
 			if CopLogicIdle.on_intimidated then
 				local old_intim = CopLogicIdle.on_intimidated
