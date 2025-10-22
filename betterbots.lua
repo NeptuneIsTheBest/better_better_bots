@@ -45,7 +45,8 @@ local THREAT_WEIGHTS = {
 local SLOTS = {
     PLAYERS = {2, 3, 4, 5},
     CRIMINALS_NO_DEPLOYABLES = {2, 3, 16},
-	HOSTAGES = 22
+	HOSTAGES = 22,
+	TURRETS = 25
 }
 
 local function bb_log(msg, level)
@@ -2401,4 +2402,10 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 			end
 		end
 	end
+end
+
+if RequiredScript == "lib/units/player_team/teamaibrain" then
+    Hooks:PostHook(TeamAIBrain, "_reset_logic_data", "BB_reset_logic_data", function(self)
+        self._logic_data.enemy_slotmask = self._logic_data.enemy_slotmask + World:make_slot_mask(SLOTS.TURRETS)
+    end)
 end
