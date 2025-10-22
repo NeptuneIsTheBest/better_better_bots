@@ -43,6 +43,8 @@ local THREAT_WEIGHTS = {
 }
 
 local SLOTS = {
+    PLAYERS = {2, 3, 4, 5},
+    CRIMINALS_NO_DEPLOYABLES = {2, 3, 16},
 	HOSTAGES = 22
 }
 
@@ -83,8 +85,8 @@ local MASK = {
 	AI_visibility = _get_mask("AI_visibility", {1, 11, 38, 39}),
 	enemy_shield_check = _get_mask("enemy_shield_check", 8),
 	hostages = _get_mask("hostages", 22),
-	players = _get_mask("players", {2, 3, 4, 5}),
-	criminals_no_deployables = _get_mask("criminals_no_deployables", {2, 3, 16})
+	players = _get_mask("players", SLOTS.PLAYERS),
+	criminals_no_deployables = _get_mask("criminals_no_deployables", SLOTS.CRIMINALS_NO_DEPLOYABLES)
 }
 
 local function clamp(x, a, b)
@@ -172,6 +174,20 @@ local function is_team_ai(unit)
 	if not groupai then return false end
 	local state = groupai:state()
 	return state and state:is_unit_team_AI(unit) or false
+end
+
+local function is_unit_in_slot(unit, slots_table)
+    if not unit or not slots_table then
+        return false
+    end
+
+	for _, slot in ipairs(slots_table) do
+		if unit:in_slot(slot) then
+			return true
+		end
+	end
+
+	return false
 end
 
 local function are_units_foes(a, b)
@@ -984,32 +1000,22 @@ if RequiredScript == "lib/tweak_data/playertweakdata" then
 	end
 end
 
-local function remove_ai_from_bullet_mask(self, setup_data)
-	local user_unit = setup_data and setup_data.user_unit
-	if alive(user_unit) and is_team_ai(user_unit) and self._bullet_slotmask then
+local function remove_ai_and_players_from_bullet_mask(setup_data)
+	local user_unit = setup_data and setup_data._setup and setup_data._setup.user_unit
+
+	if alive(user_unit) and (is_unit_in_slot(user_unit, SLOTS.PLAYERS) or is_unit_in_slot(user_unit, SLOTS.CRIMINALS_NO_DEPLOYABLES)) and setup_data._bullet_slotmask then
 		local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
-		self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
+
+		setup_data._bullet_slotmask = setup_data._bullet_slotmask - ai_friends_mask
 	end
 end
 
 if RequiredScript == "lib/units/weapons/newnpcraycastweaponbase" then
-	if NewNPCRaycastWeaponBase and NewNPCRaycastWeaponBase.setup then
-		local old_setup = NewNPCRaycastWeaponBase.setup
-		function NewNPCRaycastWeaponBase:setup(setup_data, ...)
-			old_setup(self, setup_data, ...)
-			remove_ai_from_bullet_mask(self, setup_data)
-		end
-	end
+    Hooks:PostHook(NewNPCRaycastWeaponBase, "setup", "BB_NewNPCRaycastWeaponBase", remove_ai_and_players_from_bullet_mask)
 end
 
 if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
-	if NPCRaycastWeaponBase and NPCRaycastWeaponBase.setup then
-		local old_setup = NPCRaycastWeaponBase.setup
-		function NPCRaycastWeaponBase:setup(setup_data, ...)
-			old_setup(self, setup_data, ...)
-			remove_ai_from_bullet_mask(self, setup_data)
-		end
-	end
+    Hooks:PostHook(NPCRaycastWeaponBase, "setup", "BB_NPCRaycastWeaponBase", remove_ai_and_players_from_bullet_mask)
 end
 
 if RequiredScript == "lib/units/player_team/teamaimovement" then
@@ -2062,11 +2068,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 		end
 
 		function TeamAILogicBase._set_attention_obj(data, new_att_obj, new_reaction)
-			safe_call(perform_interaction_check, data)
 			data.attention_obj = new_att_obj
 			if new_att_obj then
 				new_att_obj.reaction = new_reaction or new_att_obj.reaction
 			end
+            safe_call(perform_interaction_check, data)
 		end
 
 		function TeamAILogicBase._get_logic_state_from_reaction(data, reaction)
