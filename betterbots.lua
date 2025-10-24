@@ -105,7 +105,13 @@ end
 
 local function game_time()
 	local tm = TimerManager
-	return (tm and tm:game() and tm:game():time()) or 0
+    if tm then
+        local game_timer = tm:game()
+        if game_timer then
+            return game_timer:time()
+        end
+    end
+	return 0
 end
 
 local function head_pos(unit)
@@ -370,7 +376,8 @@ function BB:update_teammate_status(unit)
 	local anim_data = unit:anim_data()
 	local is_reloading = anim_data and anim_data.reload
 
-	local facing_dir = unit_movement and unit_movement:m_head_rot() and unit_movement:m_head_rot():y()
+	local head_rot = unit_movement and unit_movement:m_head_rot()
+	local facing_dir = head_rot and head_rot:y()
 
 	self.coop_data.teammates_status[u_key] = {
 		unit = unit,
@@ -647,7 +654,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 						local contour = taser_unit:contour()
 						if contour and managers.player then
 							local mark_id = managers.player:get_contour_for_marked_enemy()
-							if not contour._contour_list or not contour:has_id(mark_id) then
+							if mark_id and (not contour._contour_list or not contour:has_id(mark_id)) then
 								if alive(bot_record.unit) then
 									safe_say(bot_record.unit, "f32x_any", true, true)
 								end
@@ -1094,12 +1101,6 @@ end
 
 if RequiredScript == "lib/units/player_team/actions/lower_body/criminalactionwalk" then
 	if CriminalActionWalk then
-		function CriminalActionWalk:init(...)
-			if CriminalActionWalk.super and CriminalActionWalk.super.init then
-				return CriminalActionWalk.super.init(self, ...)
-			end
-		end
-
 		local function get_bag_speed_modifier(ext_movement)
 			if not (ext_movement and ext_movement:carrying_bag()) then return 1 end
 
@@ -1118,12 +1119,13 @@ if RequiredScript == "lib/units/player_team/actions/lower_body/criminalactionwal
 			return 1
 		end
 
+		local old_CriminalActionWalk_get_max_walk_speed = CriminalActionWalk._get_max_walk_speed
 		function CriminalActionWalk:_get_max_walk_speed(...)
-			if not (CriminalActionWalk.super and CriminalActionWalk.super._get_max_walk_speed) then
+			if not old_CriminalActionWalk_get_max_walk_speed then
 				return { 150 }
 			end
 
-			local speed = deep_clone(CriminalActionWalk.super._get_max_walk_speed(self, ...))
+			local speed = deep_clone(old_CriminalActionWalk_get_max_walk_speed(self, ...))
 			local mod = get_bag_speed_modifier(self._ext_movement)
 
 			for i = 1, #speed do
@@ -1133,12 +1135,13 @@ if RequiredScript == "lib/units/player_team/actions/lower_body/criminalactionwal
 			return speed
 		end
 
+		local old_CriminalActionWalk_get_current_max_walk_speed = CriminalActionWalk._get_current_max_walk_speed
 		function CriminalActionWalk:_get_current_max_walk_speed(move_dir, ...)
-			if not (CriminalActionWalk.super and CriminalActionWalk.super._get_current_max_walk_speed) then
+			if not old_CriminalActionWalk_get_current_max_walk_speed then
 				return 150
 			end
 
-			local speed = CriminalActionWalk.super._get_current_max_walk_speed(self, move_dir, ...)
+			local speed = old_CriminalActionWalk_get_current_max_walk_speed(self, move_dir, ...)
 			return speed * get_bag_speed_modifier(self._ext_movement)
 		end
 	end
@@ -1529,7 +1532,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
 								if dis and dis <= CONSTANTS.MARK_DISTANCE then
 									local u_contour = att_unit:contour()
-									if u_contour and not (u_contour:has_id(contour_id)
+									if contour_id and contour_id ~= "" and u_contour and not (u_contour:has_id(contour_id)
 										or u_contour:has_id("mark_unit_dangerous")
 										or u_contour:has_id("mark_enemy")) then
 
@@ -2064,7 +2067,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
 		if BB:get("combat", false) then
 			local math_lerp = math.lerp
 			local old_shoot = CopActionShoot._get_shoot_falloff
-			function CopActionShoot:_get_shoot_falloff(target_dis, falloff, ...)
+			CopActionShoot._get_shoot_falloff = function(self, target_dis, falloff, ...)
 				if self and self._unit and alive(self._unit) and is_team_ai(self._unit) then
 					local i = #falloff
 					local data = falloff[i]
@@ -2130,26 +2133,22 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 			end)
 		end
 
-		if BB:get("combat", false) then
-			if CopDamage.damage_bullet then
-				local old_bullet = CopDamage.damage_bullet
-				function CopDamage:damage_bullet(attack_data, ...)
-					if self._unit and alive(self._unit) and self._unit:base() and self._unit:base().has_tag and self._unit:base():has_tag("sniper") then
-						if attack_data then
-							local attacker_unit = attack_data.attacker_unit
-							if alive(attacker_unit) and is_team_ai(attacker_unit) and self._HEALTH_INIT then
-								attack_data.damage = self._HEALTH_INIT
-							end
-						end
-					end
-					return old_bullet(self, attack_data, ...)
-				end
-			end
+		if CopDamage.damage_bullet then
+            Hooks:PreHook(CopDamage, "damage_bullet", "BB_CopDamage_damage_bullet_combat", function(self, attack_data, ...)
+                if BB:get("combat", false) and self._unit and alive(self._unit) and self._unit:base() and self._unit:base().has_tag and self._unit:base():has_tag("sniper") then
+                    if attack_data then
+                        local attacker_unit = attack_data.attacker_unit
+                        if alive(attacker_unit) and is_team_ai(attacker_unit) and self._HEALTH_INIT then
+                            attack_data.damage = self._HEALTH_INIT
+                        end
+                    end
+                end
+            end)
 		end
 
 		if CopDamage.stun_hit then
 			local old_stun = CopDamage.stun_hit
-			function CopDamage:stun_hit(...)
+			CopDamage.stun_hit = function(self, ...)
 				if self._unit and alive(self._unit) and not is_law_unit(self._unit) then
 					return
 				end
@@ -2276,7 +2275,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
 
 			if CopLogicIdle.on_intimidated then
 				local old_intim = CopLogicIdle.on_intimidated
-				function CopLogicIdle.on_intimidated(data, ...)
+				CopLogicIdle.on_intimidated = function(data, ...)
 					local surrender = old_intim(data, ...)
 					local unit = data.unit
 					if alive(unit) then
@@ -2299,12 +2298,11 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
 
 			if CopLogicIdle._get_priority_attention then
 				local old_prio = CopLogicIdle._get_priority_attention
-				function CopLogicIdle._get_priority_attention(data, attention_objects, reaction_func)
-					local best_target, best_priority, best_reaction = old_prio(data, attention_objects, reaction_func)
+				CopLogicIdle._get_priority_attention = function(data, attention_objects, reaction_func)
 					if data.is_converted and TeamAILogicIdle and TeamAILogicIdle._get_priority_attention then
-						best_target, best_priority, best_reaction = TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
+						return TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
 					end
-					return best_target, best_priority, best_reaction
+					return old_prio(data, attention_objects, reaction_func)
 				end
 			end
 		end
@@ -2313,49 +2311,34 @@ end
 
 if RequiredScript == "lib/managers/mission/elementmissionend" then
 	if ElementMissionEnd then
-		local is_offline = Global and Global.game_settings and Global.game_settings.single_player
+		local old_ElementMissionEnd_on_executed = ElementMissionEnd.on_executed
+		ElementMissionEnd.on_executed = function(self, instigator)
+			local is_offline = Global and Global.game_settings and Global.game_settings.single_player
 
-		function ElementMissionEnd:on_executed(instigator)
-			if not self._values.enabled then return end
-			if self._values.state ~= "none" and managers.platform and managers.platform:presence() == "Playing" then
-				if self._values.state == "success" then
-					local num_winners = 0
-					if managers.network and managers.network:session() then
-						num_winners = managers.network:session():amount_of_alive_players()
-					end
-					if is_offline and managers.groupai and managers.groupai:state() then
-						num_winners = num_winners + managers.groupai:state():amount_of_winning_ai_criminals()
-					end
-					if managers.network and managers.network:session() then
-						managers.network:session():send_to_peers("mission_ended", true, num_winners)
-					end
-					if game_state_machine and managers.player and managers.player:player_unit() then
-						game_state_machine:change_state_by_name("victoryscreen", {
-							num_winners = num_winners,
-							personal_win = alive(managers.player:player_unit())
-						})
-					end
-				elseif self._values.state == "failed" then
-					if managers.network and managers.network:session() then
-						managers.network:session():send_to_peers("mission_ended", false, 0)
-					end
-					if game_state_machine then
-						game_state_machine:change_state_by_name("gameoverscreen")
-					end
-				elseif self._values.state == "leave" then
-					if MenuCallbackHandler and MenuCallbackHandler.leave_mission then
-						MenuCallbackHandler:leave_mission()
-					end
-				elseif self._values.state == "leave_safehouse" and instigator and instigator:base() and instigator:base().is_local_player then
-					if MenuCallbackHandler and MenuCallbackHandler.leave_safehouse then
-						MenuCallbackHandler:leave_safehouse()
-					end
+			if is_offline and self._values.enabled and self._values.state == "success" and managers.platform and managers.platform:presence() == "Playing" then
+				local num_winners = 0
+				if managers.network and managers.network:session() then
+					num_winners = managers.network:session():amount_of_alive_players()
 				end
-			elseif Application:editor() and managers.editor then
-				managers.editor:output_error("Cant change to state " .. tostring(self._values.state) .. " in mission end element " .. tostring(self._editor_name) .. ".")
-			end
-			if ElementMissionEnd.super and ElementMissionEnd.super.on_executed then
-				ElementMissionEnd.super.on_executed(self, instigator)
+				if managers.groupai and managers.groupai:state() then
+					num_winners = num_winners + managers.groupai:state():amount_of_winning_ai_criminals()
+				end
+
+				if managers.network and managers.network:session() then
+					managers.network:session():send_to_peers("mission_ended", true, num_winners)
+				end
+				if game_state_machine and managers.player and managers.player:player_unit() then
+					game_state_machine:change_state_by_name("victoryscreen", {
+						num_winners = num_winners,
+						personal_win = alive(managers.player:player_unit())
+					})
+				end
+
+				if ElementMissionEnd.super and ElementMissionEnd.super.on_executed then
+					ElementMissionEnd.super.on_executed(self, instigator)
+				end
+			else
+				return old_ElementMissionEnd_on_executed(self, instigator)
 			end
 		end
 	end
@@ -2363,6 +2346,9 @@ end
 
 if RequiredScript == "lib/units/player_team/teamaibrain" then
     Hooks:PostHook(TeamAIBrain, "_reset_logic_data", "BB_reset_logic_data", function(self)
-        self._logic_data.enemy_slotmask = self._logic_data.enemy_slotmask + World:make_slot_mask(SLOTS.TURRETS)
+        if self._logic_data and self._logic_data.enemy_slotmask and SLOTS and SLOTS.TURRETS then
+            local turrets_mask = World:make_slot_mask(SLOTS.TURRETS)
+            self._logic_data.enemy_slotmask = self._logic_data.enemy_slotmask + turrets_mask
+        end
     end)
 end
