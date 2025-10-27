@@ -33,7 +33,6 @@ local THREAT_WEIGHTS = {
 	TASER_ACTIVE = 200,
 	SHIELD = 60,
 	DOZER = 80,
-	MEDIC_DOZER = 120,
 	MEDIC = 70,
 	SNIPER = 75,
 	SPECIAL = 65,
@@ -716,7 +715,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 								if alive(bot_record.unit) then
 									safe_say(bot_record.unit, "f32x_any", true, true)
 								end
-								safe_call(contour.add, contour, "mark_enemy", true)
+                                safe_call(contour.add, contour, mark_id, true)
 							end
 						end
 					end
@@ -768,11 +767,19 @@ if RequiredScript == "lib/units/player_team/teamaibase" then
 			end
 		end)
 
-		function TeamAIBase:set_upgrade_value(category, upgrade, level)
-			if HuskPlayerBase and HuskPlayerBase.set_upgrade_value then
-				HuskPlayerBase.set_upgrade_value(self, category, upgrade, level)
-			end
-		end
+        function TeamAIBase:set_upgrade_value(category, upgrade, level)
+            self._upgrades = self._upgrades or {}
+            self._upgrades[category] = self._upgrades[category] or {}
+            self._upgrades[category][upgrade] = level or 1
+
+            self._upgrade_levels = self._upgrade_levels or {}
+            self._upgrade_levels[category] = self._upgrade_levels[category] or {}
+            self._upgrade_levels[category][upgrade] = level or 1
+
+            if HuskPlayerBase and HuskPlayerBase.set_upgrade_value then
+                safe_call(HuskPlayerBase.set_upgrade_value, self, category, upgrade, level)
+            end
+        end
 
 		function TeamAIBase:upgrade_value(category, upgrade)
 			return self._upgrades and self._upgrades[category] and self._upgrades[category][upgrade]
@@ -1038,14 +1045,14 @@ if RequiredScript == "lib/tweak_data/playertweakdata" then
 	end
 end
 
-local function remove_ai_and_players_from_bullet_mask(setup_data)
-	local user_unit = setup_data and setup_data._setup and setup_data._setup.user_unit
-
-	if alive(user_unit) and (is_unit_in_slot(user_unit, SLOTS.PLAYERS) or is_unit_in_slot(user_unit, SLOTS.CRIMINALS_NO_DEPLOYABLES)) and setup_data._bullet_slotmask then
-		local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
-
-		setup_data._bullet_slotmask = setup_data._bullet_slotmask - ai_friends_mask
-	end
+local function remove_ai_and_players_from_bullet_mask(self)
+    local user_unit = self._setup and self._setup.user_unit
+    if alive(user_unit)
+            and (is_unit_in_slot(user_unit, SLOTS.PLAYERS) or is_unit_in_slot(user_unit, SLOTS.CRIMINALS_NO_DEPLOYABLES))
+            and self._bullet_slotmask then
+        local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
+        self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
+    end
 end
 
 if RequiredScript == "lib/units/weapons/newnpcraycastweaponbase" then
@@ -1670,66 +1677,81 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             data._ai_last_mark_t = t
         end
 
-		function TeamAILogicAssault.check_smart_reload(data)
-			local unit = data.unit
-			if not alive(unit) then return end
+        function TeamAILogicAssault.check_smart_reload(data)
+            local unit = data.unit
+            if not alive(unit) then return end
 
-			local unit_anim = unit:anim_data()
-			local unit_movement = unit:movement()
-			local unit_inventory = unit:inventory()
+            local unit_anim = unit:anim_data()
+            local unit_movement = unit:movement()
+            local unit_inventory = unit:inventory()
 
-			if not unit_anim or unit_anim.reload then return end
-			if not (unit_movement and not unit_movement:chk_action_forbidden("reload")) then return end
-			if not unit_inventory then return end
+            if not unit_anim or unit_anim.reload then return end
+            if not (unit_movement and not unit_movement:chk_action_forbidden("reload")) then return end
+            if not unit_inventory then return end
 
-			local current_wep = unit_inventory:equipped_unit()
-			if not (current_wep and current_wep:base()) then return end
+            local current_wep = unit_inventory:equipped_unit()
+            local wep_base = current_wep and current_wep:base()
+            if not wep_base then return end
 
-			local ammo_max, ammo = current_wep:base():ammo_info()
-			if not (ammo_max and ammo_max > 0) then return end
+            local clip_max, clip_ammo, reserve_total, reserve_total_max = wep_base:ammo_info()
+            if not (clip_max and clip_max > 0) then return end
 
-			if BB:get("coop", false) then
-				local teammates_reloading = 0
-				for u_key, status in pairs(BB.coop_data.teammates_status) do
-					if u_key ~= unit:key() and status.is_reloading then
-						teammates_reloading = teammates_reloading + 1
-					end
-				end
-				if teammates_reloading >= CONSTANTS.MAX_RELOADING_TEAMMATES and ammo > 0 then
-					return
-				end
-			end
+            if clip_ammo and clip_ammo >= clip_max then
+                return
+            end
 
-			local nearby_threats = 0
-			local closest_threat = math.huge
-			for _, u_char in pairs(data.detected_attention_objects or {}) do
-				if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
-					nearby_threats = nearby_threats + 1
-					if u_char.verified_dis and u_char.verified_dis < closest_threat then
-						closest_threat = u_char.verified_dis
-					end
-				end
-			end
+            if (reserve_total or 0) <= 0 then
+                return
+            end
 
-			local reload_threshold = 0.6
-			if nearby_threats == 0 then
-				reload_threshold = 0.8
-			elseif closest_threat < 500 then
-				reload_threshold = 0.3
-			elseif nearby_threats > 3 then
-				reload_threshold = 0.4
-			end
+            if BB:get("coop", false) then
+                local teammates_reloading = 0
+                local my_key = unit:key()
+                local coop = BB.coop_data
+                if coop and coop.teammates_status then
+                    for u_key, status in pairs(coop.teammates_status) do
+                        if u_key ~= my_key and status.is_reloading then
+                            teammates_reloading = teammates_reloading + 1
+                        end
+                    end
+                end
+                if clip_ammo > 0 and teammates_reloading >= CONSTANTS.MAX_RELOADING_TEAMMATES then
+                    return
+                end
+            end
 
-			if ammo <= math_ceil(ammo_max * reload_threshold) then
-				local objective = data.objective
-				local in_cover = objective and objective.in_place
-				if in_cover or closest_threat > 1000 or ammo == 0 then
-					if unit:brain() then
-						unit:brain():action_request({type = "reload", body_part = 3})
-					end
-				end
-			end
-		end
+            local nearby_threats = 0
+            local closest_threat = math.huge
+            for _, u_char in pairs(data.detected_attention_objects or {}) do
+                if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
+                    nearby_threats = nearby_threats + 1
+                    if u_char.verified_dis and u_char.verified_dis < closest_threat then
+                        closest_threat = u_char.verified_dis
+                    end
+                end
+            end
+
+            local reload_threshold = 0.6
+            if nearby_threats == 0 then
+                reload_threshold = 0.8
+            elseif closest_threat < 500 then
+                reload_threshold = 0.3
+            elseif nearby_threats > 3 then
+                reload_threshold = 0.4
+            end
+
+            if clip_ammo <= math.ceil(clip_max * reload_threshold) then
+                local objective = data.objective
+                local in_cover = objective and objective.in_place
+
+                if in_cover or closest_threat > 1000 or clip_ammo == 0 then
+                    local brain = unit:brain()
+                    if brain then
+                        brain:action_request({ type = "reload", body_part = 3 })
+                    end
+                end
+            end
+        end
 
 		local function execute_melee_attack(data, criminal)
 			if not alive(criminal) then return end
