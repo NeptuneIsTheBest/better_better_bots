@@ -185,6 +185,64 @@ local function is_team_ai(unit)
 	return state and state:is_unit_team_AI(unit) or false
 end
 
+local function unit_has_tag(unit, tag)
+	if not alive(unit) then return false end
+	local base = unit:base()
+	return base and base.has_tag and base:has_tag(tag) or false
+end
+
+local function is_turret_unit(unit, att_obj)
+	if unit_has_tag(unit, "turret") then
+		return true
+	end
+	local base = alive(unit) and unit:base()
+	if base and base.sentry_gun then
+		return true
+	end
+	if att_obj and att_obj.is_deployable then
+		return true
+	end
+	if unit and SLOTS and SLOTS.TURRETS and unit:in_slot(SLOTS.TURRETS) then
+		return true
+	end
+	return false
+end
+
+local function is_shield_unit(unit, att_obj)
+	if unit_has_tag(unit, "shield") then
+		return true
+	end
+	if att_obj and att_obj.is_shield then
+		return true
+	end
+	return false
+end
+
+local function is_special_unit(unit, att_obj)
+	if unit_has_tag(unit, "special") then
+		return true
+	end
+	if att_obj and att_obj.char_tweak and att_obj.char_tweak.priority_shout then
+		return true
+	end
+	local base = alive(unit) and unit:base()
+	if base and base.char_tweak then
+		local ct = base:char_tweak()
+		if ct and ct.priority_shout then
+			return true
+		end
+	end
+	return false
+end
+
+local function is_dozer_unit(unit)
+	return unit_has_tag(unit, "tank")
+end
+
+local function is_sniper_unit(unit)
+	return unit_has_tag(unit, "sniper")
+end
+
 local function is_unit_in_slot(unit, slots_table)
     if not unit or not slots_table then
         return false
@@ -586,7 +644,6 @@ Hooks:Add("MenuManagerInitialize", "MenuManagerInitialize_BB", function(menu_man
 	register_choice("callback_dodge_choice", "dodge", 4)
 	register_choice("callback_dmgmul_choice", "dmgmul", 5)
 
-	register_toggle("callback_firemode_toggle", "firemode")
 	register_toggle("callback_dwn_toggle", "instadwn")
 	register_toggle("callback_clk_toggle", "clkarrest")
 	register_toggle("callback_chat_toggle", "chat")
@@ -1183,41 +1240,41 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
 
-            local is_turret = base_unit and base_unit.sentry_gun
+            local is_turret = is_turret_unit(target_unit, target_data)
 
             if is_turret then
                 threat = threat * (THREAT_WEIGHTS.TURRET / 10)
-            elseif base_unit and base_unit.has_tag then
-                if base_unit:has_tag("tank") then
+            else
+                if unit_has_tag(target_unit, "tank") then
                     threat = threat * (THREAT_WEIGHTS.DOZER / 10)
                     local health_ratio = get_unit_health_ratio(target_unit)
                     if health_ratio < 0.3 then
                         threat = threat * 1.3
                     end
-                elseif base_unit:has_tag("spooc") then
+                elseif unit_has_tag(target_unit, "spooc") then
                     threat = threat * (THREAT_WEIGHTS.CLOAKER / 10)
                     if dist < 1000 then
                         threat = threat * 2.0
                     end
-                elseif base_unit:has_tag("taser") then
+                elseif unit_has_tag(target_unit, "taser") then
                     local state = target_data.state or "normal"
                     if state == "tasing_teammate" then
                         threat = threat * (THREAT_WEIGHTS.TASER_ACTIVE / 10)
                     else
                         threat = threat * (THREAT_WEIGHTS.TASER / 10)
                     end
-                elseif base_unit:has_tag("medic") then
+                elseif unit_has_tag(target_unit, "medic") then
                     threat = threat * (THREAT_WEIGHTS.MEDIC / 10)
-                elseif base_unit:has_tag("sniper") then
+                elseif unit_has_tag(target_unit, "sniper") then
                     threat = threat * (THREAT_WEIGHTS.SNIPER / 10)
                 end
             end
 
-            if target_data.is_shield then
+            if is_shield_unit(target_unit, target_data) then
                 threat = threat * (THREAT_WEIGHTS.SHIELD / 10)
             end
 
-            if target_data.char_tweak and target_data.char_tweak.priority_shout then
+            if is_special_unit(target_unit, target_data) then
                 threat = threat * (THREAT_WEIGHTS.SPECIAL / 10)
             end
 
@@ -1249,10 +1306,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local weapon_type = get_weapon_archetype(bot_unit)
             local target_unit = target_data.unit
-            local base_unit = target_unit:base()
-            local is_turret = base_unit and base_unit.sentry_gun
-            local is_sniper = base_unit and base_unit.has_tag and base_unit:has_tag("sniper")
-            local is_shield = target_data.is_shield
+            local is_turret = is_turret_unit(target_unit, target_data)
+            local is_sniper = is_sniper_unit(target_unit)
+            local is_shield = is_shield_unit(target_unit, target_data)
 
             if is_turret then
                 score = score + 40
@@ -1361,9 +1417,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                         dynamic_prio = dynamic_prio * 3
                     end
 
-                    local target_base = global_target.unit:base()
-                    local is_turret = target_base and target_base.sentry_gun
-                    local is_dozer = target_base and target_base.has_tag and target_base:has_tag("tank")
+                    local target_unit = global_target.unit
+                    local is_turret = is_turret_unit(target_unit)
+                    local is_dozer = is_dozer_unit(target_unit)
 
                     if is_dozer and not is_turret then
                         local current_attackers = BB:count_dozer_attackers(u_key)
@@ -1402,9 +1458,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 best_coop_target.targeted_by = data.key
                 best_coop_target.claimed_at = t
 
-                local target_base = best_coop_target.unit:base()
-                local is_turret = target_base and target_base.sentry_gun
-                local is_dozer = target_base and target_base.has_tag and target_base:has_tag("tank")
+                local target_unit = best_coop_target.unit
+                local is_turret = is_turret_unit(target_unit)
+                local is_dozer = is_dozer_unit(target_unit)
 
                 if is_dozer and not is_turret then
                     BB.coop_data.dozer_attackers[data.key] = best_coop_target.u_key
@@ -1421,9 +1477,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local best_local_target, max_score = nil, 0
             for u_key, target in pairs(potential_targets_map) do
                 local g = global_priority_targets[u_key]
-                local target_base = target.data.unit:base()
-                local is_turret = target_base and target_base.sentry_gun
-                local is_dozer = target_base and target_base.has_tag and target_base:has_tag("tank")
+                local target_unit = target.data.unit
+                local is_turret = is_turret_unit(target_unit)
+                local is_dozer = is_dozer_unit(target_unit)
 
                 local penalty = 1
                 if g and g.targeted_by and g.targeted_by ~= data.key then
@@ -1446,9 +1502,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
 
             if best_local_target then
-                local target_base = best_local_target.data.unit:base()
-                local is_turret = target_base and target_base.sentry_gun
-                local is_dozer = target_base and target_base.has_tag and target_base:has_tag("tank")
+                local target_unit = best_local_target.data.unit
+                local is_turret = is_turret_unit(target_unit)
+                local is_dozer = is_dozer_unit(target_unit)
 
                 if is_dozer and not is_turret then
                     BB.coop_data.dozer_attackers[data.key] = best_local_target.data.u_key
@@ -1514,11 +1570,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 						if reaction >= REACT_COMBAT then
 							local att_base = att_unit:base()
 
-							local is_turret = attention_info.is_deployable
-							local is_special =
-								(att_base and att_base.has_tag and att_base:has_tag("special"))
-								or (attention_info.char_tweak and attention_info.char_tweak.priority_shout)
-								or attention_info.is_shield
+							local is_turret = is_turret_unit(att_unit, attention_info)
+							local shieldish = is_shield_unit(att_unit, attention_info)
+							local specialish = unit_has_tag(att_unit, "special")
+
+							local is_special = specialish or shieldish
 
 							if is_special or is_turret then
 								local target_head = attention_info.m_head_pos
@@ -1543,10 +1599,10 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 										end
 
 										local can_hit = has_ap or dis <= CONSTANTS.MELEE_DISTANCE or not shield_blocked
-										if (not attention_info.is_shield) or can_hit then
+										if (not shieldish) or can_hit then
 											local score = dis
 											if attention_info.verified then score = score - 150 end
-											if attention_info.is_shield then score = score - 200 end
+											if shieldish then score = score - 200 end
 
 											if (not best_score) or score < best_score then
 												best_score = score
@@ -1581,8 +1637,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             end
 
             local char_tweak = mark_base.char_tweak and mark_base:char_tweak()
-            local is_turret = mark_base.sentry_gun
-            local is_special_enemy = (mark_base.has_tag and mark_base:has_tag("special")) or (char_tweak and char_tweak.priority_shout)
+            local is_turret = is_turret_unit(to_mark)
+            local is_special_enemy = unit_has_tag(to_mark, "special")
 
             if not is_special_enemy and not is_turret then
                 return
@@ -1709,9 +1765,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 							if mvec3_angle(vec, look_vec) <= CONSTANTS.MELEE_ANGLE then
 								local melee_priority = 0
 
-								if u_char.is_shield then
+								if is_shield_unit(u_char.unit, u_char) then
 									melee_priority = 10
-								elseif not (u_char.char_tweak and u_char.char_tweak.priority_shout) then
+								elseif not is_special_unit(u_char.unit, u_char) then
 									local unit = u_char.unit
 									local unit_inventory = unit:inventory()
 									local unit_anim = unit:anim_data()
@@ -1742,16 +1798,17 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 			if not unit_body then return end
 
 			local col_ray = {ray = -vec, body = unit_body, position = best_melee_target.m_head_pos}
+			local target_is_shield = is_shield_unit(unit, best_melee_target)
 			local damage_info = {
 				attacker_unit = criminal,
 				weapon_unit = current_wep,
-				variant = best_melee_target.is_shield and "melee" or "bullet",
-				damage = best_melee_target.is_shield and 0 or health_damage,
+				variant = target_is_shield and "melee" or "bullet",
+				damage = target_is_shield and 0 or health_damage,
 				col_ray = col_ray,
 				origin = my_pos
 			}
 
-			if best_melee_target.is_shield then
+			if target_is_shield then
 				damage_info.shield_knock = true
 				safe_call(damage.damage_melee, damage, damage_info)
 			else
@@ -1787,21 +1844,21 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     local unit = u_char.unit
                     if alive(unit) and are_units_foes(criminal, unit) then
                         local unit_base = unit:base()
-                        local is_turret = unit_base and unit_base.sentry_gun
+                        local is_turret = is_turret_unit(unit, u_char)
                         local unit_brain = not is_turret and unit:brain()
 
                         if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
                             local vec = u_char.m_head_pos - from_pos
                             if vec and mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
-                                local is_dozer = unit_base and unit_base.has_tag and unit_base:has_tag("tank")
+                                local is_dozer = is_dozer_unit(unit)
 
                                 if not is_dozer then
                                     close_enemies = close_enemies + 1
 
-                                    if u_char.is_shield then
+                                    if is_shield_unit(unit, u_char) then
                                         shield_count = shield_count + 1
                                     end
-                                    if u_char.char_tweak and u_char.char_tweak.priority_shout then
+                                    if is_special_unit(unit, u_char) then
                                         special_count = special_count + 1
                                     end
 
@@ -2197,7 +2254,11 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
 				if alive(unit) and is_team_ai(unit) then
 					local t = data.t
 					local my_key = data.key
-					local detected_obj = data.detected_attention_objects or {}
+                    local detected_obj = data.detected_attention_objects
+                    if not detected_obj then
+                        detected_obj = {}
+                        data.detected_attention_objects = detected_obj
+                    end
 					local unit_mov = unit:movement()
 					if not unit_mov then
 						return
