@@ -33,6 +33,7 @@ local THREAT_WEIGHTS = {
 	TASER_ACTIVE = 200,
 	SHIELD = 60,
 	DOZER = 80,
+	MEDIC_DOZER = 120,
 	MEDIC = 70,
 	SNIPER = 75,
 	SPECIAL = 65,
@@ -1333,7 +1334,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
 
             if not BB:get("coop", false) then
-                local best_local_target, max_score = nil, -1
+                local best_local_target, max_score = nil, 0
                 for _, target in pairs(potential_targets_map) do
                     if target.score > max_score then
                         max_score = target.score
@@ -1344,7 +1345,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 if best_local_target then
                     data._last_target_u_key = best_local_target.data.u_key
                     data._last_target_t = t
-                    return best_local_target.data, best_local_target.score, best_local_target.reaction
+                    return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
                 end
                 return nil, nil, nil
             end
@@ -1414,10 +1415,10 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 local local_data = potential_targets_map[best_coop_target.u_key]
                 data._last_target_u_key = best_coop_target.u_key
                 data._last_target_t = t
-                return local_data.data, local_data.score, local_data.reaction
+                return local_data.data, 300 / math.max(best_coop_score, 1), local_data.reaction
             end
 
-            local best_local_target, max_score = nil, -1
+            local best_local_target, max_score = nil, 0
             for u_key, target in pairs(potential_targets_map) do
                 local g = global_priority_targets[u_key]
                 local target_base = target.data.unit:base()
@@ -1457,7 +1458,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
                 data._last_target_u_key = best_local_target.data.u_key
                 data._last_target_t = t
-                return best_local_target.data, best_local_target.score, best_local_target.reaction
+                return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
             end
 
             BB.coop_data.dozer_attackers[data.key] = nil
@@ -1792,9 +1793,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                         if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
                             local vec = u_char.m_head_pos - from_pos
                             if vec and mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
-                                local tweak_table = unit_base and unit_base._tweak_table
+                                local is_dozer = unit_base and unit_base.has_tag and unit_base:has_tag("tank")
 
-                                if tweak_table and tweak_table ~= "tank" then
+                                if not is_dozer then
                                     close_enemies = close_enemies + 1
 
                                     if u_char.is_shield then
