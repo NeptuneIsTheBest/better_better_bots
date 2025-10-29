@@ -132,8 +132,8 @@ local function play_net_redirect(unit, variant)
 	if mov and mov.play_redirect then
 		safe_call(mov.play_redirect, mov, variant)
 		local sess = managers.network and managers.network:session()
-		if sess and sess.send_to_peers then
-			safe_call(sess.send_to_peers, sess, "play_distance_interact_redirect", unit, variant)
+		if sess and sess.send_to_peers_synched then
+			safe_call(sess.send_to_peers_synched, sess, "play_distance_interact_redirect", unit, variant)
 		end
 	end
 end
@@ -166,7 +166,7 @@ local function ensure_dyn_unit_loaded(unit_path)
 	if not dyn_res or not unit_path then return end
 	local unit_id = Idstring(unit_path)
 	if not dyn_res:is_resource_ready(Idstring("unit"), unit_id, dyn_res.DYN_RESOURCES_PACKAGE) then
-		safe_call(dyn_res.load, dyn_res, Idstring("unit"), unit_id, dyn_res.DYN_RESOURCES_PACKAGE)
+		safe_call(dyn_res.load, dyn_res, Idstring("unit"), unit_id, dyn_res.DYN_RESOURCES_PACKAGE, false)
 	end
 end
 
@@ -190,21 +190,10 @@ local function unit_has_tag(unit, tag)
 	return base and base.has_tag and base:has_tag(tag) or false
 end
 
-local function is_turret_unit(unit, att_obj)
-	if unit_has_tag(unit, "turret") then
-		return true
-	end
-	local base = alive(unit) and unit:base()
-	if base and base.sentry_gun then
-		return true
-	end
-	if att_obj and att_obj.is_deployable then
-		return true
-	end
-	if unit and SLOTS and SLOTS.TURRETS and unit:in_slot(SLOTS.TURRETS) then
-		return true
-	end
-	return false
+local function is_turret_unit(unit)
+    if not unit then return false end
+    local base = unit.base and unit:base()
+    return base and base.sentry_gun
 end
 
 local function is_shield_unit(unit, att_obj)
@@ -398,7 +387,7 @@ function BB:add_cop_to_intimidation_list(unit_key)
 		local att_obj = brain._logic_data.attention_obj
 		if att_obj and att_obj.u_key == unit_key then
 			if CopLogicBase and CopLogicBase._set_attention_obj then
-				CopLogicBase._set_attention_obj(brain._logic_data)
+				CopLogicBase._set_attention_obj(brain._logic_data, nil, nil)
 			end
 		end
 	end
@@ -1247,7 +1236,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
 
-            local is_turret = is_turret_unit(target_unit, target_data)
+            local is_turret = is_turret_unit(target_unit)
 
             if is_turret then
                 threat = threat * (THREAT_WEIGHTS.TURRET / 10)
@@ -1313,7 +1302,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local weapon_type = get_weapon_archetype(bot_unit)
             local target_unit = target_data.unit
-            local is_turret = is_turret_unit(target_unit, target_data)
+            local is_turret = is_turret_unit(target_unit)
             local is_sniper = is_sniper_unit(target_unit)
             local is_shield = is_shield_unit(target_unit, target_data)
 
@@ -1577,7 +1566,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 						if reaction >= REACT_COMBAT then
 							local att_base = att_unit:base()
 
-							local is_turret = is_turret_unit(att_unit, attention_info)
+							local is_turret = is_turret_unit(att_unit)
 							local shieldish = is_shield_unit(att_unit, attention_info)
 							local specialish = unit_has_tag(att_unit, "special")
 
@@ -1866,7 +1855,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     local unit = u_char.unit
                     if alive(unit) and are_units_foes(criminal, unit) then
                         local unit_base = unit:base()
-                        local is_turret = is_turret_unit(unit, u_char)
+                        local is_turret = is_turret_unit(unit)
                         local unit_brain = not is_turret and unit:brain()
 
                         if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
