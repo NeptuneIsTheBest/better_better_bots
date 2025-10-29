@@ -2150,7 +2150,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
                         if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
                             local vec = u_char.m_head_pos - from_pos
-                            if vec and mvec3_angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
+                            if vec and mvector3.angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
                                 local is_dozer = is_dozer_unit(unit)
 
                                 if not is_dozer then
@@ -2183,7 +2183,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
                 for j, u_char2 in ipairs(enemy_cluster) do
                     if i ~= j and u_char2.m_head_pos then
-                        local dist = mvec3_distance(u_char1.m_head_pos, u_char2.m_head_pos)
+                        local dist = mvector3.distance(u_char1.m_head_pos, u_char2.m_head_pos)
                         if dist <= CONSTANTS.CLUSTER_DISTANCE then
                             cluster_count = cluster_count + 1
                         end
@@ -2207,7 +2207,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 if success and cc_unit then
                     local base_ext = cc_unit:base()
                     if base_ext then
-                        mvec3_norm(mvec_spread_direction)
+                        mvector3.normalize(mvec_spread_direction)
                         play_net_redirect(criminal, "throw_grenade")
                         safe_say(criminal, "g43", true, true)
                         safe_call(base_ext.throw, base_ext, { dir = mvec_spread_direction, owner = criminal })
@@ -2262,66 +2262,185 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
     if TeamAILogicBase then
         local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
         local mvec3_angle = mvector3.angle
+        local mvec3_distance = mvector3.distance
+
+        local function _get_intimidate_range()
+            local ldi = tweak_data and tweak_data.player and tweak_data.player.long_dis_interaction
+            return (ldi and ldi.intimidate_range_enemies) or CONSTANTS.INTIMIDATE_DISTANCE
+        end
+
+        local function _get_char_tweak(unit)
+            if not alive(unit) then
+                return nil
+            end
+            local base = unit:base()
+            if base and base.char_tweak and base:char_tweak() then
+                return base:char_tweak()
+            end
+            local tbl = base and base._tweak_table
+            return tweak_data and tweak_data.character and tbl and tweak_data.character[tbl]
+        end
+
+        function BB.is_valid_intimidation_target(target_unit, data, distance, allow_new_attempts)
+            if not (alive(target_unit) and data) then
+                return false
+            end
+
+            local u_key = target_unit:key()
+            if BB:is_blacklisted_cop(u_key) then
+                return false
+            end
+
+            local ud = type(target_unit and target_unit.unit_data) == "function" and target_unit:unit_data() or nil
+            if ud and ud.disable_shout then
+                return false
+            end
+
+            local anim = target_unit:anim_data() or {}
+            local char_tweak = _get_char_tweak(target_unit)
+            local surrender = char_tweak and char_tweak.surrender
+
+            local preset = tweak_data and tweak_data.character and tweak_data.character.presets
+            local surrender_special = preset and preset.surrender and preset.surrender.special
+            if not surrender or (surrender_special and surrender == surrender_special) or anim.hands_tied then
+                return false
+            end
+
+            local t = data.t or game_time()
+            local brain = target_unit:brain()
+            local ldata = brain and brain._logic_data
+            local sw = ldata and ldata.surrender_window
+
+            if sw and t > sw.window_expire_t then
+                return false
+            end
+
+            local intimidate_range = _get_intimidate_range()
+            if distance and distance > intimidate_range then
+                return false
+            end
+
+            if anim.hands_back or anim.surrender then
+                return true
+            end
+
+            local gstate = managers.groupai and managers.groupai:state()
+            if not (gstate and gstate:has_room_for_police_hostage()) then
+                return false
+            end
+
+            if sw and t > (sw.window_expire_t - sw.window_duration + 0.75) then
+                return true
+            end
+
+            if not allow_new_attempts then
+                return false
+            end
+
+            if distance and distance > intimidate_range * 0.75 then
+                return false
+            end
+
+            local health_max = 0
+            local surrender_health = (surrender and surrender.reasons and surrender.reasons.health) or (surrender and surrender.factors and surrender.factors.health) or {}
+            for k, _ in pairs(surrender_health) do
+                if k > health_max then
+                    health_max = k
+                end
+            end
+            local dmg = target_unit:character_damage()
+            local hr = (dmg and dmg.health_ratio and dmg:health_ratio()) or 1
+            if health_max > 0 and hr > (health_max / 2) then
+                return false
+            end
+
+            local num = 0
+            local max = 2
+            if gstate then
+                for _, u_data in pairs(gstate:all_char_criminals() or {}) do
+                    if u_data and u_data.status == "dead" then
+                        max = max + 2
+                    end
+                end
+            end
+            local dis_th = intimidate_range * 1.5
+            for _, v in pairs(data.detected_attention_objects or {}) do
+                if v and v.verified and v.unit ~= target_unit then
+                    local vunit = v.unit
+                    local vdamage = vunit and vunit.character_damage and vunit:character_damage()
+                    local vdis = v.verified_dis or v.dis
+                    if vdis and vdis < dis_th and vdamage and not vdamage:dead() then
+                        num = num + 1
+                        if num > max then
+                            return false
+                        end
+                    end
+                end
+            end
+
+            return true
+        end
 
         local function find_enemy_to_intimidate(data)
             if not (alive(data.unit) and data.unit:movement()) then
                 return nil
             end
 
-            local look_vec = data.unit:movement():m_rot():y()
-            local has_room = managers.groupai and managers.groupai:state() and managers.groupai:state():has_room_for_police_hostage()
-            local consider_all = BB:get("dom", false)
+            local unit = data.unit
+            local my_mov = unit:movement()
+            local my_pos = data.m_pos or (my_mov and (my_mov:m_pos() or my_mov:m_head_pos()))
+            local look_vec = my_mov and my_mov:m_rot():y()
+            if not (my_pos and look_vec) then
+                return nil
+            end
 
-            local targets = {}
+            local consider_all = BB:get("dom", false) -- dom=false 仅协助；dom=true 可发起
+            local intimidate_range = _get_intimidate_range()
+
+            local candidates = {}
             if consider_all then
-                targets = data.detected_attention_objects or {}
+                candidates = data.detected_attention_objects or {}
             else
-                for u_key, t in pairs(BB.cops_to_intimidate or {}) do
-                    if data.t - t < BB.grace_period then
+                for u_key, t0 in pairs(BB.cops_to_intimidate or {}) do
+                    if data.t - t0 < BB.grace_period then
                         local att_obj = data.detected_attention_objects and data.detected_attention_objects[u_key]
                         if att_obj then
-                            targets[u_key] = att_obj
+                            candidates[u_key] = att_obj
                         end
                     end
                 end
             end
 
-            local best_nmy, best_dis
+            local best_unit, best_score = nil, math.huge
 
-            for _, u_char in pairs(targets) do
-                if u_char and u_char.identified and u_char.verified then
-                    local unit = u_char.unit
-                    if alive(unit) then
-                        if not BB:is_blacklisted_cop(unit:key()) then
-                            local anim_data = unit:anim_data()
-                            local is_surrender_state = anim_data and (anim_data.hands_back or anim_data.surrender)
+            for _, u_char in pairs(candidates) do
+                if u_char and u_char.identified and alive(u_char.unit) then
+                    local cop = u_char.unit
+                    if not BB:is_blacklisted_cop(cop:key()) then
+                        local anim_data = cop:anim_data() or {}
+                        local is_surrender_state = anim_data.hands_back or anim_data.surrender
 
-                            if are_units_foes(data.unit, unit) or is_surrender_state then
-                                local intim_dis = u_char.verified_dis
-                                if intim_dis and intim_dis <= CONSTANTS.INTIMIDATE_DISTANCE and u_char.m_pos then
-                                    local vec = u_char.m_pos - data.m_pos
-                                    if mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
-                                        local char_tweak = u_char.char_tweak
-                                        if char_tweak and char_tweak.surrender and not char_tweak.priority_shout then
-                                            local unit_inventory = unit:inventory()
-                                            if unit_inventory and unit_inventory:get_weapon() and anim_data then
-                                                if has_room or is_surrender_state then
-                                                    local health_ratio = get_unit_health_ratio(unit)
-                                                    local is_hurt = health_ratio < 1
+                        if are_units_foes(unit, cop) or is_surrender_state then
+                            local dis = u_char.verified_dis
+                            if not dis and u_char.m_head_pos then
+                                dis = my_pos and mvec3_distance(my_pos, u_char.m_head_pos) or nil
+                            end
 
-                                                    local intim_priority = anim_data.hands_back and 3
-                                                            or anim_data.surrender and 2
-                                                            or (is_hurt and 1)
-
-                                                    if intim_priority then
-                                                        intim_dis = intim_dis / intim_priority
-                                                        if (not best_dis) or best_dis > intim_dis then
-                                                            best_nmy = unit
-                                                            best_dis = intim_dis
-                                                        end
-                                                    end
-                                                end
-                                            end
+                            if dis and dis <= intimidate_range and u_char.m_pos then
+                                local vec = u_char.m_pos - my_pos
+                                if mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
+                                    local valid = BB.is_valid_intimidation_target(cop, data, dis, consider_all)
+                                    if valid then
+                                        -- “已举手 > 已投降 > 受伤”的距离折算优先
+                                        local health_ratio = get_unit_health_ratio(cop)
+                                        local is_hurt = health_ratio < 1
+                                        local priority = anim_data.hands_back and 3
+                                                or anim_data.surrender and 2
+                                                or (is_hurt and 1) or 0.5
+                                        local score = dis / priority
+                                        if score < best_score then
+                                            best_score = score
+                                            best_unit = cop
                                         end
                                     end
                                 end
@@ -2331,7 +2450,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
                 end
             end
 
-            return best_nmy
+            return best_unit
         end
 
         local function intimidate_law_enforcement(data, intim_unit, play_action)
@@ -2340,6 +2459,14 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
             end
 
             if BB:is_blacklisted_cop(intim_unit:key()) then
+                return
+            end
+
+            local my_pos = data.m_pos or (data.unit:movement() and (data.unit:movement():m_pos() or data.unit:movement():m_head_pos()))
+            local tgt_pos = intim_unit:movement() and intim_unit:movement():m_head_pos()
+            local dis = (my_pos and tgt_pos) and mvector3.distance(my_pos, tgt_pos) or nil
+            local allow_new = BB:get("dom", false)
+            if not BB.is_valid_intimidation_target(intim_unit, data, dis, allow_new) then
                 return
             end
 
@@ -2413,7 +2540,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
             local allow_actions = (not anim_data.reload) and (not carrying)
 
             local civ = TeamAILogicIdle and TeamAILogicIdle.find_civilian_to_intimidate
-                    and TeamAILogicIdle.find_civilian_to_intimidate(unit, CONSTANTS.INTIMIDATE_ANGLE, CONSTANTS.INTIMIDATE_DISTANCE)
+                    and TeamAILogicIdle.find_civilian_to_intimidate(unit, CONSTANTS.INTIMIDATE_ANGLE, _get_intimidate_range())
             local dom = find_enemy_to_intimidate(data)
             local nmy = TeamAILogicAssault and TeamAILogicAssault.find_enemy_to_mark
                     and TeamAILogicAssault.find_enemy_to_mark(data.detected_attention_objects, unit)
