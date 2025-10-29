@@ -41,6 +41,10 @@ local THREAT_WEIGHTS = {
     TARGETING_ME_BONUS = 60,
     SAME_TARGET_PENALTY = 0.35,
     DIRECTION_BONUS = 30,
+    CAPTAIN_MINION = 110,
+    CAPTAIN_VIP_SUPPRESSED = 5,
+    DOZER_MEDIC_SYNERGY = 25,
+    SHIELD_BLOCKED_PENALTY = 0.2,
 }
 
 local SLOTS = {
@@ -1475,6 +1479,35 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end
         end
 
+        local function _bb_get_tweak_name(u)
+            local base = alive(u) and u:base()
+            return base and base._tweak_table
+        end
+
+        local PHALANX_VIP_SET = { phalanx_vip = true, phalanx_vip_test = true }
+        local PHALANX_MINION_SET = { phalanx_minion = true }
+
+        local function _bb_count_alive_with_tweak(tweak_set)
+            local gstate = managers.groupai and managers.groupai:state()
+            if not (gstate and gstate._police) then
+                return 0
+            end
+            local n = 0
+            for _, rec in pairs(gstate._police) do
+                local u = rec and rec.unit
+                if alive(u) then
+                    local tn = _bb_get_tweak_name(u)
+                    if tn and tweak_set[tn] then
+                        local dmg = u:character_damage()
+                        if dmg and not (dmg:dead() or dmg._dead) then
+                            n = n + 1
+                        end
+                    end
+                end
+            end
+            return n
+        end
+
         local function calculate_threat_value(bot_unit, target_data, data)
             if not (alive(bot_unit) and target_data and target_data.unit) then
                 return 0
@@ -1482,44 +1515,73 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             local target_unit = target_data.unit
             local bot_head = bot_unit:movement():m_head_pos()
-            local dist = target_data.verified_dis or (bot_head and target_data.m_head_pos and mvec3_distance(bot_head, target_data.m_head_pos)) or 1000
+            local dist = target_data.verified_dis
+                    or (bot_head and target_data.m_head_pos and mvec3_distance(bot_head, target_data.m_head_pos))
+                    or 1000
+
+            local flags = BB.classify_enemy(target_unit, target_data)
+            local tweak_name = _bb_get_tweak_name(target_unit)
+            local role_map = tweak_name and ENEMY_TWEAK_MAP[tweak_name]
 
             local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
 
-            local flags = BB.classify_enemy(target_unit, target_data)
-
-            if flags.turret then
-                threat = threat * (THREAT_WEIGHTS.TURRET / 10)
-            else
-                if flags.dozer then
-                    threat = threat * (THREAT_WEIGHTS.DOZER / 10)
-                    local hr = get_unit_health_ratio(target_unit)
-                    if hr < 0.3 then
-                        threat = threat * 1.3
+            if role_map and role_map.captain then
+                if PHALANX_VIP_SET[tweak_name] then
+                    local minions_alive = _bb_count_alive_with_tweak(PHALANX_MINION_SET)
+                    if minions_alive > 0 then
+                        return threat * (THREAT_WEIGHTS.CAPTAIN_VIP_SUPPRESSED / 10)
                     end
-                elseif flags.cloaker then
-                    threat = threat * (THREAT_WEIGHTS.CLOAKER / 10)
-                    if dist < 1000 then
-                        threat = threat * 2.0
-                    end
-                elseif flags.taser then
-                    local state = target_data.state or "normal"
-                    if state == "tasing_teammate" then
-                        threat = threat * (THREAT_WEIGHTS.TASER_ACTIVE / 10)
-                    else
-                        threat = threat * (THREAT_WEIGHTS.TASER / 10)
-                    end
-                elseif flags.medic then
-                    threat = threat * (THREAT_WEIGHTS.MEDIC / 10)
-                elseif flags.sniper then
-                    threat = threat * (THREAT_WEIGHTS.SNIPER / 10)
-                elseif flags.special then
                     threat = threat * (THREAT_WEIGHTS.SPECIAL / 10)
+                else
+                    threat = threat * (THREAT_WEIGHTS.CAPTAIN_MINION / 10)
                 end
             end
 
-            if flags.shield then
-                threat = threat * (THREAT_WEIGHTS.SHIELD / 10)
+            if flags.turret then
+                threat = threat * (THREAT_WEIGHTS.TURRET / 10)
+            end
+
+            if flags.dozer then
+                threat = threat * (THREAT_WEIGHTS.DOZER / 10)
+                if flags.medic then
+                    threat = threat * (1 + (THREAT_WEIGHTS.DOZER_MEDIC_SYNERGY / 100))
+                end
+                local hr = get_unit_health_ratio(target_unit)
+                if hr < 0.3 then
+                    threat = threat * 1.3
+                end
+            end
+
+            if flags.taser then
+                local state = target_data.state or "normal"
+                if state == "tasing_teammate" then
+                    threat = threat * (THREAT_WEIGHTS.TASER_ACTIVE / 10)
+                else
+                    threat = threat * (THREAT_WEIGHTS.TASER / 10)
+                end
+            end
+            if flags.cloaker then
+                threat = threat * (THREAT_WEIGHTS.CLOAKER / 10)
+                if dist < 1200 then
+                    threat = threat * 2.0
+                end
+            end
+
+            if flags.medic then
+                threat = threat * (THREAT_WEIGHTS.MEDIC / 10)
+            end
+            if flags.sniper then
+                threat = threat * (THREAT_WEIGHTS.SNIPER / 10)
+            end
+
+            if flags.shield and not flags.turret then
+                local ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
+                local blocked = target_data.m_head_pos and shield_blocks(bot_unit, target_data.m_head_pos)
+                if blocked and (not ap) and dist > CONSTANTS.MELEE_DISTANCE then
+                    threat = threat * THREAT_WEIGHTS.SHIELD_BLOCKED_PENALTY
+                else
+                    threat = threat * (THREAT_WEIGHTS.SHIELD / 10)
+                end
             end
 
             if not flags.turret then
@@ -1535,10 +1597,14 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 end
             end
 
-            if dist > 3000 then
-                threat = threat * 0.7
-            elseif dist < 500 then
-                threat = threat * 1.5
+            if not flags.sniper and not flags.turret then
+                if dist > 3000 then
+                    threat = threat * 0.7
+                elseif dist < 500 then
+                    threat = threat * 1.5
+                end
+            elseif flags.sniper and dist > 3000 then
+                threat = threat * 1.1
             end
 
             return threat
@@ -1548,10 +1614,15 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local score = 100.0
             local bot_mov = bot_unit:movement()
             local bot_head = bot_mov:m_head_pos()
-            local dist = target_data.verified_dis or (bot_head and target_data.m_head_pos and mvec3_distance(bot_head, target_data.m_head_pos)) or 1000
+            local dist = target_data.verified_dis
+                    or (bot_head and target_data.m_head_pos and mvec3_distance(bot_head, target_data.m_head_pos))
+                    or 1000
 
             local weapon_type = get_weapon_archetype(bot_unit)
-            local flags = BB.classify_enemy(target_data.unit, target_data)
+            local target_unit = target_data.unit
+            local flags = BB.classify_enemy(target_unit, target_data)
+            local tweak_name = _bb_get_tweak_name(target_unit)
+
             local is_shield = flags.shield
             local is_turret = flags.turret
             local is_sniper = flags.sniper
@@ -1561,7 +1632,17 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 if dist < 1500 then
                     score = score + 20
                 end
-            elseif weapon_type == "sniper" then
+            end
+
+            if tweak_name and ENEMY_TWEAK_MAP[tweak_name] and ENEMY_TWEAK_MAP[tweak_name].captain then
+                if PHALANX_VIP_SET[tweak_name] and _bb_count_alive_with_tweak(PHALANX_MINION_SET) > 0 then
+                    score = score - 200
+                elseif PHALANX_MINION_SET[tweak_name] then
+                    score = score + 80
+                end
+            end
+
+            if weapon_type == "sniper" then
                 score = score + (is_sniper and 50 or 20)
                 if dist < 800 then
                     score = score - 30
@@ -1577,8 +1658,12 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 end
             end
 
+            if flags.dozer and flags.medic and weapon_type ~= "shotgun" then
+                score = score + 20
+            end
+
             local bot_fwd = bot_mov:m_head_rot():y()
-            local dir_to_target = target_data.m_head_pos - bot_head
+            local dir_to_target = (target_data.m_head_pos or (target_unit:movement() and target_unit:movement():m_head_pos()) or bot_head) - bot_head
             mvec3_norm(dir_to_target)
 
             local angle = mvec3_dot(dir_to_target, bot_fwd)
@@ -1590,7 +1675,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
             if is_shield then
                 local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-                if has_ap or not shield_blocks(bot_unit, target_data.m_head_pos) then
+                if target_data.m_head_pos and (has_ap or not shield_blocks(bot_unit, target_data.m_head_pos)) then
                     score = score + 30
                 else
                     score = score - 80
@@ -2394,7 +2479,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
                 return nil
             end
 
-            local consider_all = BB:get("dom", false) -- dom=false 仅协助；dom=true 可发起
+            local consider_all = BB:get("dom", false)
             local intimidate_range = _get_intimidate_range()
 
             local candidates = {}
@@ -2431,7 +2516,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
                                 if mvec3_angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
                                     local valid = BB.is_valid_intimidation_target(cop, data, dis, consider_all)
                                     if valid then
-                                        -- “已举手 > 已投降 > 受伤”的距离折算优先
                                         local health_ratio = get_unit_health_ratio(cop)
                                         local is_hurt = health_ratio < 1
                                         local priority = anim_data.hands_back and 3
