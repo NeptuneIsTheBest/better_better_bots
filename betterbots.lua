@@ -1,5 +1,4 @@
 _G.BB = _G.BB or {}
-
 local BB = _G.BB
 
 local CONSTANTS = {
@@ -54,6 +53,24 @@ local SLOTS = {
     TURRETS = 25
 }
 
+local ENEMY_TWEAK_MAP = {
+    shield = { shield = true },
+    fbi_shield = { shield = true },
+    heavy_swat_shield = { shield = true },
+    tank = { dozer = true },
+    tank_medic = { dozer = true, medic = true },
+    tank_hw = { dozer = true },
+    tank_mini = { dozer = true },
+    taser = { taser = true },
+    spooc = { cloaker = true },
+    medic = { medic = true },
+    sniper = { sniper = true },
+    phalanx_vip = { captain = true },
+    phalanx_minion = { captain = true },
+    phalanx_vip_test = { captain = true },
+    swat_turret_gun = { turret = true }
+}
+
 local function bb_log(msg, level)
     log(string.format("[Better Bots][%s] %s", level or "INFO", tostring(msg)))
 end
@@ -64,8 +81,30 @@ local function safe_call(func, ...)
         bb_log(err_msg, "ERROR")
         return false, err_msg
     end
-
     return pcall(func, ...)
+end
+
+local function clamp(x, a, b)
+    return math.min(math.max(x, a), b)
+end
+
+local function as_bool_from_item(item)
+    return item and item:value() == "on"
+end
+
+local function as_number_from_item(item, fallback)
+    return item and tonumber(item:value()) or fallback
+end
+
+local function game_time()
+    local tm = TimerManager
+    if tm then
+        local game_timer = tm:game()
+        if game_timer then
+            return game_timer:time()
+        end
+    end
+    return 0
 end
 
 local function _get_mask(name, fallback_slots)
@@ -95,32 +134,73 @@ local MASK = {
     criminals_no_deployables = _get_mask("criminals_no_deployables", SLOTS.CRIMINALS_NO_DEPLOYABLES)
 }
 
-local function clamp(x, a, b)
-    return math.min(math.max(x, a), b)
-end
-
-local function as_bool_from_item(item)
-    return item and item:value() == "on"
-end
-
-local function as_number_from_item(item, fallback)
-    return item and tonumber(item:value()) or fallback
-end
-
-local function game_time()
-    local tm = TimerManager
-    if tm then
-        local game_timer = tm:game()
-        if game_timer then
-            return game_timer:time()
-        end
-    end
-    return 0
-end
-
 local function head_pos(unit)
     local m = alive(unit) and unit:movement()
     return m and m:m_head_pos() or nil
+end
+
+local function unit_team(unit)
+    if not alive(unit) then
+        return nil
+    end
+    local mov = unit:movement()
+    return mov and mov.team and mov:team()
+end
+
+local function is_team_ai(unit)
+    if not alive(unit) then
+        return false
+    end
+    local groupai = managers.groupai
+    if not groupai then
+        return false
+    end
+    local state = groupai:state()
+    return state and state:is_unit_team_AI(unit) or false
+end
+
+local function unit_has_tag(unit, tag)
+    if not alive(unit) then
+        return false
+    end
+    local base = unit:base()
+    return base and base.has_tag and base:has_tag(tag) or false
+end
+
+local function are_units_foes(a, b)
+    local ta, tb = unit_team(a), unit_team(b)
+    if not (ta and tb) then
+        return false
+    end
+    return ta.foes and ta.foes[tb.id] or false
+end
+
+local function is_law_unit(unit)
+    local t = unit_team(unit)
+    return t and t.id == "law1"
+end
+
+local function get_unit_health_ratio(unit)
+    if not alive(unit) then
+        return 0
+    end
+    local damage = unit:character_damage()
+    if not damage then
+        return 0
+    end
+    return damage.health_ratio and damage:health_ratio() or 0
+end
+
+local function is_unit_in_slot(unit, slots_table)
+    if not unit or not slots_table then
+        return false
+    end
+    for _, slot in ipairs(slots_table) do
+        if unit:in_slot(slot) then
+            return true
+        end
+    end
+    return false
 end
 
 local function safe_say(unit, line, important, skip_forced)
@@ -157,7 +237,6 @@ local function request_act(unit, variant, data)
     if not success then
         return false
     end
-
     if ok and data and data.internal_data then
         data.internal_data.gesture_arrest = true
     end
@@ -190,53 +269,7 @@ local function ensure_dyn_unit_loaded(unit_path)
     end
 end
 
-local function unit_team(unit)
-    if not alive(unit) then
-        return nil
-    end
-    local mov = unit:movement()
-    return mov and mov.team and mov:team()
-end
-
-local function is_team_ai(unit)
-    if not alive(unit) then
-        return false
-    end
-    local groupai = managers.groupai
-    if not groupai then
-        return false
-    end
-    local state = groupai:state()
-    return state and state:is_unit_team_AI(unit) or false
-end
-
-local function unit_has_tag(unit, tag)
-    if not alive(unit) then
-        return false
-    end
-    local base = unit:base()
-    return base and base.has_tag and base:has_tag(tag) or false
-end
-
 BB._enemy_flag_cache = BB._enemy_flag_cache or {}
-
-local ENEMY_TWEAK_MAP = {
-    shield = { shield = true },
-    fbi_shield = { shield = true },
-    heavy_swat_shield = { shield = true },
-    tank = { dozer = true },
-    tank_medic = { dozer = true, medic = true },
-    tank_hw = { dozer = true },
-    tank_mini = { dozer = true },
-    taser = { taser = true },
-    spooc = { cloaker = true },
-    medic = { medic = true },
-    sniper = { sniper = true },
-    phalanx_vip = { captain = true },
-    phalanx_minion = { captain = true },
-    phalanx_vip_test = { captain = true },
-    swat_turret_gun = { turret = true }
-}
 
 local function _infer_flags_from_name(name)
     local f = {}
@@ -244,30 +277,14 @@ local function _infer_flags_from_name(name)
         return f
     end
     name = tostring(name):lower()
-    if name:find("turret") then
-        f.turret = true
-    end
-    if name:find("shield") then
-        f.shield = true
-    end
-    if name:find("tank") or name:find("dozer") then
-        f.dozer = true
-    end
-    if name:find("taser") then
-        f.taser = true
-    end
-    if name:find("spooc") or name:find("cloaker") then
-        f.cloaker = true
-    end
-    if name:find("medic") then
-        f.medic = true
-    end
-    if name:find("sniper") then
-        f.sniper = true
-    end
-    if name:find("phalanx") or name:find("captain") then
-        f.captain = true
-    end
+    if name:find("turret") then f.turret = true end
+    if name:find("shield") then f.shield = true end
+    if name:find("tank") or name:find("dozer") then f.dozer = true end
+    if name:find("taser") then f.taser = true end
+    if name:find("spooc") or name:find("cloaker") then f.cloaker = true end
+    if name:find("medic") then f.medic = true end
+    if name:find("sniper") then f.sniper = true end
+    if name:find("phalanx") or name:find("captain") then f.captain = true end
     return f
 end
 
@@ -303,36 +320,18 @@ function BB.classify_enemy(unit, att_obj)
     }
 
     if att_obj then
-        if att_obj.is_shield then
-            flags.shield = true
-        end
-        if att_obj.is_very_dangerous then
-            flags.special = true
-        end
+        if att_obj.is_shield then flags.shield = true end
+        if att_obj.is_very_dangerous then flags.special = true end
     end
 
     if base and base.has_tag then
-        if base:has_tag("shield") then
-            flags.shield = true
-        end
-        if base:has_tag("tank") then
-            flags.dozer = true
-        end
-        if base:has_tag("taser") then
-            flags.taser = true
-        end
-        if base:has_tag("spooc") then
-            flags.cloaker = true
-        end
-        if base:has_tag("sniper") then
-            flags.sniper = true
-        end
-        if base:has_tag("medic") then
-            flags.medic = true
-        end
-        if base:has_tag("phalanx") then
-            flags.captain = true
-        end
+        if base:has_tag("shield") then flags.shield = true end
+        if base:has_tag("tank") then flags.dozer = true end
+        if base:has_tag("taser") then flags.taser = true end
+        if base:has_tag("spooc") then flags.cloaker = true end
+        if base:has_tag("sniper") then flags.sniper = true end
+        if base:has_tag("medic") then flags.medic = true end
+        if base:has_tag("phalanx") then flags.captain = true end
     end
 
     local tweak_name = base and base._tweak_table
@@ -349,31 +348,23 @@ function BB.classify_enemy(unit, att_obj)
         end
     end
 
-    if char_tweak then
-        if char_tweak.priority_shout then
-            flags.special = true
-        end
-        if char_tweak.tags then
-            for tag, on in pairs(char_tweak.tags) do
-                if on then
-                    if tag == "shield" then
-                        flags.shield = true
-                    elseif tag == "tank" then
-                        flags.dozer = true
-                    elseif tag == "taser" then
-                        flags.taser = true
-                    elseif tag == "spooc" then
-                        flags.cloaker = true
-                    elseif tag == "sniper" then
-                        flags.sniper = true
-                    elseif tag == "medic" then
-                        flags.medic = true
-                    elseif tag == "phalanx" then
-                        flags.captain = true
-                    end
+    if char_tweak and char_tweak.tags then
+        for tag, on in pairs(char_tweak.tags) do
+            if on then
+                if tag == "shield" then flags.shield = true
+                elseif tag == "tank" then flags.dozer = true
+                elseif tag == "taser" then flags.taser = true
+                elseif tag == "spooc" then flags.cloaker = true
+                elseif tag == "sniper" then flags.sniper = true
+                elseif tag == "medic" then flags.medic = true
+                elseif tag == "phalanx" then flags.captain = true
                 end
             end
         end
+    end
+
+    if char_tweak and char_tweak.priority_shout then
+        flags.special = true
     end
 
     if flags.shield or flags.dozer or flags.taser or flags.cloaker or flags.sniper or flags.medic or flags.captain then
@@ -385,10 +376,7 @@ function BB.classify_enemy(unit, att_obj)
 end
 
 local function is_turret_unit(unit)
-    if not unit then
-        return false
-    end
-    return BB.classify_enemy(unit).turret or false
+    return unit and BB.classify_enemy(unit).turret or false
 end
 
 local function is_shield_unit(unit, att_obj)
@@ -419,44 +407,6 @@ local function is_medic_unit(unit)
     return BB.classify_enemy(unit).medic or false
 end
 
-local function is_unit_in_slot(unit, slots_table)
-    if not unit or not slots_table then
-        return false
-    end
-
-    for _, slot in ipairs(slots_table) do
-        if unit:in_slot(slot) then
-            return true
-        end
-    end
-
-    return false
-end
-
-local function are_units_foes(a, b)
-    local ta, tb = unit_team(a), unit_team(b)
-    if not (ta and tb) then
-        return false
-    end
-    return ta.foes and ta.foes[tb.id] or false
-end
-
-local function is_law_unit(unit)
-    local t = unit_team(unit)
-    return t and t.id == "law1"
-end
-
-local function get_unit_health_ratio(unit)
-    if not alive(unit) then
-        return 0
-    end
-    local damage = unit:character_damage()
-    if not damage then
-        return 0
-    end
-    return damage.health_ratio and damage:health_ratio() or 0
-end
-
 BB._path = ModPath
 BB._data_path = SavePath .. "bb_data.txt"
 BB._data = BB._data or {}
@@ -478,7 +428,6 @@ function BB:Save()
         bb_log("Failed to encode save data", "ERROR")
         return
     end
-
     local file = io.open(self._data_path, "w")
     if file then
         file:write(encoded)
@@ -495,15 +444,12 @@ function BB:Load()
         bb_log("No save file found, using defaults")
         return
     end
-
     local raw = file:read("*all")
     file:close()
-
     if not raw or raw == "" then
         bb_log("Save file is empty")
         return
     end
-
     local ok, decoded = safe_call(json.decode, raw)
     if ok and type(decoded) == "table" then
         self._data = decoded
@@ -525,9 +471,7 @@ function BB:is_blacklisted_cop(u_key)
 end
 
 function BB:clear_cop_state(u_key)
-    if not u_key then
-        return
-    end
+    if not u_key then return end
     self.cops_to_intimidate[u_key] = nil
     self.dom_failures[u_key] = nil
     self.dom_blacklist[u_key] = nil
@@ -542,9 +486,7 @@ function BB:on_intimidation_attempt(u_key)
 end
 
 function BB:on_intimidation_result(u_key, success)
-    if not u_key then
-        return
-    end
+    if not u_key then return end
     self.dom_pending[u_key] = nil
 
     if success then
@@ -555,7 +497,6 @@ function BB:on_intimidation_result(u_key, success)
 
     local rec = self.dom_failures[u_key] or { attempts = 0 }
     rec.attempts = (rec.attempts or 0) + 1
-
     rec.last_t = game_time()
     self.dom_failures[u_key] = rec
 
@@ -566,36 +507,22 @@ function BB:on_intimidation_result(u_key, success)
 end
 
 function BB:add_cop_to_intimidation_list(unit_key)
-    if not unit_key then
-        return
-    end
-
-    if self:is_blacklisted_cop(unit_key) then
-        return
-    end
+    if not unit_key then return end
+    if self:is_blacklisted_cop(unit_key) then return end
 
     local t = game_time()
     local prev_t = self.cops_to_intimidate[unit_key]
     self.cops_to_intimidate[unit_key] = t
 
-    if not Network:is_server() then
-        return
-    end
+    if not Network:is_server() then return end
 
     local is_new = not prev_t or (t - prev_t) > self.grace_period
-    if not is_new then
-        return
-    end
+    if not is_new then return end
 
     local function clear_attention_for_unit(unit)
-        if not alive(unit) then
-            return
-        end
+        if not alive(unit) then return end
         local brain = unit:brain()
-        if not (brain and brain._logic_data) then
-            return
-        end
-
+        if not (brain and brain._logic_data) then return end
         local att_obj = brain._logic_data.attention_obj
         if att_obj and att_obj.u_key == unit_key then
             if CopLogicBase and CopLogicBase._set_attention_obj then
@@ -605,9 +532,7 @@ function BB:add_cop_to_intimidation_list(unit_key)
     end
 
     local gstate = managers.groupai and managers.groupai:state()
-    if not gstate then
-        return
-    end
+    if not gstate then return end
 
     if gstate._ai_criminals then
         for _, sighting in pairs(gstate._ai_criminals) do
@@ -625,22 +550,16 @@ function BB:add_cop_to_intimidation_list(unit_key)
 end
 
 function BB:update_teammate_status(unit)
-    if not alive(unit) then
-        return
-    end
-    if not self:get("coop", false) then
-        return
-    end
+    if not alive(unit) then return end
+    if not self:get("coop", false) then return end
 
     local u_key = unit:key()
     local health_ratio = get_unit_health_ratio(unit)
     local unit_movement = unit:movement()
     local pos = unit_movement and unit_movement:m_head_pos()
     local t = game_time()
-
     local anim_data = unit:anim_data()
     local is_reloading = anim_data and anim_data.reload
-
     local head_rot = unit_movement and unit_movement:m_head_rot()
     local facing_dir = head_rot and head_rot:y()
 
@@ -657,10 +576,7 @@ function BB:update_teammate_status(unit)
 end
 
 function BB:count_active_teammates()
-    if not self:get("coop", false) then
-        return 0
-    end
-
+    if not self:get("coop", false) then return 0 end
     local count = 0
     local t = game_time()
     for u_key, status in pairs(self.coop_data.teammates_status) do
@@ -672,14 +588,11 @@ function BB:count_active_teammates()
 end
 
 function BB:get_dozer_attacker_limit(dozer_unit, dozer_distance)
-    if not alive(dozer_unit) then
-        return 1
-    end
-
+    if not alive(dozer_unit) then return 1 end
     local team_size = self:count_active_teammates()
     local health_ratio = get_unit_health_ratio(dozer_unit)
-
     local base_limit = 1
+
     if team_size >= 4 then
         base_limit = 2
     elseif team_size >= 3 then
@@ -702,10 +615,7 @@ function BB:get_dozer_attacker_limit(dozer_unit, dozer_distance)
 end
 
 function BB:count_dozer_attackers(dozer_u_key)
-    if not dozer_u_key then
-        return 0
-    end
-
+    if not dozer_u_key then return 0 end
     local count = 0
     local t = game_time()
 
@@ -719,49 +629,40 @@ function BB:count_dozer_attackers(dozer_u_key)
             end
         end
     end
-
     return count
 end
 
 function BB:is_direction_covered(target_pos, my_unit)
-    if not (target_pos and alive(my_unit)) then
-        return false
-    end
-
+    if not (target_pos and alive(my_unit)) then return false end
     local my_pos = my_unit:movement() and my_unit:movement():m_head_pos()
-    if not my_pos then
-        return false
-    end
+    if not my_pos then return false end
 
     local my_dir = target_pos - my_pos
     mvector3.normalize(my_dir)
 
-    local threshold = 0.7
+    local same_dir_threshold = 0.75
+    local face_target_threshold = 0.75
 
     for u_key, status in pairs(self.coop_data.teammates_status) do
         if u_key ~= my_unit:key() and status.position and status.facing_direction then
             local other_to_target = target_pos - status.position
             mvector3.normalize(other_to_target)
-
-            local dot = mvector3.dot(my_dir, other_to_target)
-            if dot > threshold then
+            local same_dir = mvector3.dot(my_dir, other_to_target)
+            local facing_ok = mvector3.dot(status.facing_direction, other_to_target)
+            if same_dir > same_dir_threshold and facing_ok > face_target_threshold then
                 return true
             end
         end
     end
-
     return false
 end
 
 function BB:update_priority_target(unit, priority, state_info)
-    if not (alive(unit) and self:get("coop", false)) then
-        return
-    end
-
+    if not (alive(unit) and self:get("coop", false)) then return end
     local u_key = unit:key()
     local t = game_time()
-
     local existing_target = self.coop_data.priority_targets[u_key]
+
     if existing_target then
         existing_target.priority = math.max(existing_target.priority, priority)
         existing_target.last_seen = t
@@ -783,10 +684,7 @@ function BB:update_priority_target(unit, priority, state_info)
 end
 
 function BB:get_priority_targets()
-    if not self:get("coop", false) then
-        return {}
-    end
-
+    if not self:get("coop", false) then return {} end
     local t = game_time()
     local active_targets = {}
 
@@ -794,9 +692,9 @@ function BB:get_priority_targets()
         if alive(target_data.unit) and (t - target_data.last_seen) < CONSTANTS.PRIORITY_TARGET_DURATION then
             if target_data.targeted_by then
                 local targeting = self.coop_data.teammates_status[target_data.targeted_by]
-
                 local claim_timed_out = (t - (target_data.claimed_at or 0)) > CONSTANTS.PRIORITY_TARGET_CLAIM_TIMEOUT
                 local claim_stale = true
+
                 if targeting and alive(targeting.unit) then
                     local lu = targeting.last_update or 0
                     claim_stale = (t - lu) > CONSTANTS.PRIORITY_TARGET_CLAIM_TIMEOUT
@@ -812,7 +710,6 @@ function BB:get_priority_targets()
             self.coop_data.priority_targets[u_key] = nil
         end
     end
-
     return active_targets
 end
 
@@ -821,7 +718,6 @@ Hooks:Add("LocalizationManagerPostInit", "LocalizationManagerPostInit_BB", funct
         bb_log("LocalizationManager is nil", "WARN")
         return
     end
-
     local loc_dir = BB._path .. "loc/"
     local files_ok, files = safe_call(file.GetFiles, loc_dir)
 
@@ -835,7 +731,6 @@ Hooks:Add("LocalizationManagerPostInit", "LocalizationManagerPostInit_BB", funct
             end
         end
     end
-
     safe_call(loc.load_localization_file, loc, BB._path .. "loc/english.txt", false)
 end)
 
@@ -2172,7 +2067,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             end
 
             local col_ray = { ray = -vec, body = unit_body, position = best_melee_target.m_head_pos }
-            variant = nil
             local target_is_shield = is_shield_unit(unit, best_melee_target)
             local damage_info = {
                 attacker_unit = criminal,
@@ -2292,7 +2186,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 if success and cc_unit then
                     local base_ext = cc_unit:base()
                     if base_ext then
-                        mvector3.normalize(mvec_spread_direction)
+                        mvec3_norm(mvec_spread_direction)
                         play_net_redirect(criminal, "throw_grenade")
                         safe_say(criminal, "g43", true, true)
                         safe_call(base_ext.throw, base_ext, { dir = mvec_spread_direction, owner = criminal })
