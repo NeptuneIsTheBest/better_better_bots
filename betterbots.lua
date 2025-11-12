@@ -109,7 +109,7 @@ local function game_time()
     return 0
 end
 
-local function _get_mask(name, fallback_slots)
+local function get_safe_mask(name, default_slots)
     if name and managers and managers.slot and managers.slot.get_mask then
         local ok, m = safe_call(managers.slot.get_mask, managers.slot, name)
         if ok and m then
@@ -117,23 +117,23 @@ local function _get_mask(name, fallback_slots)
         end
     end
 
-    if fallback_slots == nil then
+    if default_slots == nil then
         return World:make_slot_mask()
-    elseif type(fallback_slots) == "table" then
-        return World:make_slot_mask(unpack(fallback_slots))
-    elseif type(fallback_slots) == "number" then
-        return World:make_slot_mask(fallback_slots)
+    elseif type(default_slots) == "table" then
+        return World:make_slot_mask(unpack(default_slots))
+    elseif type(default_slots) == "number" then
+        return World:make_slot_mask(default_slots)
     else
         return World:make_slot_mask()
     end
 end
 
 local MASK = {
-    AI_visibility = _get_mask("AI_visibility", { 1, 11, 38, 39 }),
-    enemy_shield_check = _get_mask("enemy_shield_check", 8),
-    hostages = _get_mask("hostages", 22),
-    players = _get_mask("players", SLOTS.PLAYERS),
-    criminals_no_deployables = _get_mask("criminals_no_deployables", SLOTS.CRIMINALS_NO_DEPLOYABLES)
+    AI_visibility = get_safe_mask("AI_visibility", { 1, 11, 38, 39 }),
+    enemy_shield_check = get_safe_mask("enemy_shield_check", 8),
+    hostages = get_safe_mask("hostages", 22),
+    players = get_safe_mask("players", SLOTS.PLAYERS),
+    criminals_no_deployables = get_safe_mask("criminals_no_deployables", SLOTS.CRIMINALS_NO_DEPLOYABLES)
 }
 
 local function head_pos(unit)
@@ -220,7 +220,7 @@ local function play_net_redirect(unit, variant)
     if mov and mov.play_redirect then
         safe_call(mov.play_redirect, mov, variant)
         local sess = managers.network and managers.network:session()
-        if sess and sess.send_to_peers_synched then
+        if sess and sess.send_to_peers_synched and Network:is_server() then
             safe_call(sess.send_to_peers_synched, sess, "play_distance_interact_redirect", unit, variant)
         end
     end
@@ -414,6 +414,12 @@ function BB.classify_enemy(unit, att_obj)
         flags.special = true
     end
 
+    for cache_key, entry in pairs(BB._enemy_flag_cache) do
+        if now - entry.t > 5 then
+            BB._enemy_flag_cache[cache_key] = nil
+        end
+    end
+
     BB._enemy_flag_cache[u_key] = { flags = flags, t = now }
     return flags
 end
@@ -475,7 +481,6 @@ function BB:Save()
     if file then
         file:write(encoded)
         file:close()
-        bb_log("Data saved")
     else
         bb_log("Failed to open save file", "ERROR")
     end
@@ -619,6 +624,10 @@ function BB:update_teammate_status(unit)
     end
 
     local u_key = unit:key()
+    if self.coop_data.teammates_status[u_key] and not alive(self.coop_data.teammates_status[u_key].unit) then
+        self.coop_data.teammates_status[u_key] = nil
+    end
+
     local health_ratio = get_unit_health_ratio(unit)
     local unit_movement = unit:movement()
     local pos = unit_movement and unit_movement:m_head_pos()
@@ -647,8 +656,10 @@ function BB:count_active_teammates()
     local count = 0
     local t = game_time()
     for u_key, status in pairs(self.coop_data.teammates_status) do
-        if alive(status.unit) and (t - status.last_update) < 2 then
+        if status and status.unit and alive(status.unit) and (t - (status.last_update or 0)) < 2 then
             count = count + 1
+        else
+            self.coop_data.teammates_status[u_key] = nil
         end
     end
     return count
@@ -693,7 +704,7 @@ function BB:count_dozer_attackers(dozer_u_key)
     for u_key, target_u_key in pairs(self.coop_data.dozer_attackers) do
         if target_u_key == dozer_u_key then
             local teammate = self.coop_data.teammates_status[u_key]
-            if teammate and alive(teammate.unit) and (t - teammate.last_update) < CONSTANTS.DOZER_FOCUS_REFRESH then
+            if teammate and teammate.unit and alive(teammate.unit) and (t - (teammate.last_update or 0)) < CONSTANTS.DOZER_FOCUS_REFRESH then
                 count = count + 1
             else
                 self.coop_data.dozer_attackers[u_key] = nil
@@ -772,13 +783,13 @@ function BB:get_priority_targets()
     local active_targets = {}
 
     for u_key, target_data in pairs(self.coop_data.priority_targets) do
-        if alive(target_data.unit) and (t - target_data.last_seen) < CONSTANTS.PRIORITY_TARGET_DURATION then
+        if target_data.unit and alive(target_data.unit) and (t - target_data.last_seen) < CONSTANTS.PRIORITY_TARGET_DURATION then
             if target_data.targeted_by then
                 local targeting = self.coop_data.teammates_status[target_data.targeted_by]
                 local claim_timed_out = (t - (target_data.claimed_at or 0)) > CONSTANTS.PRIORITY_TARGET_CLAIM_TIMEOUT
                 local claim_stale = true
 
-                if targeting and alive(targeting.unit) then
+                if targeting and targeting.unit and alive(targeting.unit) then
                     local lu = targeting.last_update or 0
                     claim_stale = (t - lu) > CONSTANTS.PRIORITY_TARGET_CLAIM_TIMEOUT
                 end
@@ -807,7 +818,7 @@ local function _bb_closest_teammate_info(pos)
     local t = game_time()
     local min_dist, in_danger_any, who = math.huge, false, nil
     for _, st in pairs(BB.coop_data.teammates_status) do
-        if st and alive(st.unit) and st.position and (t - (st.last_update or 0)) < 2 then
+        if st and st.unit and alive(st.unit) and st.position and (t - (st.last_update or 0)) < 2 then
             local d = mvector3.distance(pos, st.position)
             if d < min_dist then
                 min_dist = d
@@ -823,7 +834,7 @@ local function _bb_closest_teammate_info(pos)
 end
 
 function BB:compute_dynamic_priority(my_unit, att_obj, data)
-    if not (alive(my_unit) and att_obj and alive(att_obj.unit)) then
+    if not (alive(my_unit) and att_obj and att_obj.unit and alive(att_obj.unit)) then
         return 0, "normal"
     end
 
@@ -881,7 +892,7 @@ function BB:compute_dynamic_priority(my_unit, att_obj, data)
     if pos then
         local cluster = 0
         for _, v in pairs(data.detected_attention_objects or {}) do
-            if v ~= att_obj and v.identified and alive(v.unit) and are_units_foes(my_unit, v.unit) and v.m_head_pos then
+            if v ~= att_obj and v.identified and v.unit and alive(v.unit) and are_units_foes(my_unit, v.unit) and v.m_head_pos then
                 local d = mvector3.distance(pos, v.m_head_pos)
                 if d <= CONSTANTS.CLUSTER_DISTANCE then
                     cluster = cluster + 1
@@ -909,7 +920,7 @@ function BB:compute_dynamic_priority(my_unit, att_obj, data)
 end
 
 function BB:scan_and_update_priorities(data)
-    if not (self:get("coop", false) and data and alive(data.unit)) then
+    if not (self:get("coop", false) and data and data.unit and alive(data.unit)) then
         return
     end
     local t = data.t or game_time()
@@ -921,7 +932,7 @@ function BB:scan_and_update_priorities(data)
     BB._last_coop_scan[my_key] = t
 
     for _, att_obj in pairs(data.detected_attention_objects or {}) do
-        if att_obj.identified and att_obj.reaction and att_obj.reaction >= AIAttentionObject.REACT_COMBAT and alive(att_obj.unit) then
+        if att_obj.identified and att_obj.reaction and att_obj.reaction >= AIAttentionObject.REACT_COMBAT and att_obj.unit and alive(att_obj.unit) then
             local prio, st = self:compute_dynamic_priority(data.unit, att_obj, data)
             if prio and prio > 0 then
                 self:update_priority_target(att_obj.unit, prio, st)
@@ -998,6 +1009,21 @@ Hooks:Add("MenuManagerInitialize", "MenuManagerInitialize_BB", function(menu_man
     end
 end)
 
+Hooks:Add("GameSetup:destroy", "BB_ResetGameState", function()
+    BB.cops_to_intimidate = {}
+    BB.dom_failures = {}
+    BB.dom_blacklist = {}
+    BB.dom_pending = {}
+    BB.coop_data = {
+        priority_targets = {},
+        teammates_status = {},
+        dozer_attackers = {},
+        target_directions = {}
+    }
+    BB._enemy_flag_cache = {}
+    BB._last_coop_scan = {}
+end)
+
 if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
     if GroupAIStateBase then
         local is_server = Network:is_server()
@@ -1013,25 +1039,13 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             end
         end)
 
-        if GroupAIStateBase.upd_team_AI_distance then
-            local old_upd_team_AI_distance = GroupAIStateBase.upd_team_AI_distance
-            function GroupAIStateBase:upd_team_AI_distance(...)
-                if BB:get("keepstaying", false) then
-                    return
-                end
-                return old_upd_team_AI_distance(self, ...)
-            end
-        end
+        Hooks:PreHook(GroupAIStateBase, "upd_team_AI_distance", "BB_disable_stay", function(self)
+            return BB:get("keepstaying", false)
+        end)
 
-        if GroupAIStateBase.chk_say_teamAI_combat_chatter then
-            local old_chatter = GroupAIStateBase.chk_say_teamAI_combat_chatter
-            function GroupAIStateBase:chk_say_teamAI_combat_chatter(...)
-                if BB:get("chat", false) then
-                    return
-                end
-                return old_chatter(self, ...)
-            end
-        end
+        Hooks:PreHook(GroupAIStateBase, "chk_say_teamAI_combat_chatter", "BB_disable_chat", function(self)
+            return BB:get("chat", false)
+        end)
 
         Hooks:PostHook(GroupAIStateBase, "on_tase_start", "BB_GAISB_on_tase_start_mark", function(self, cop_key, criminal_key, ...)
             if self._ai_criminals then
