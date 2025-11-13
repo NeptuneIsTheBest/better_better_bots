@@ -39,7 +39,7 @@ local THREAT_WEIGHTS = {
     SPECIAL = 65,
     TURRET = 85,
     LOW_HEALTH_BONUS = 50,
-    TARGETING_ME_BONAL = 60,
+    TARGETING_ME_BONUS = 60,
     SAME_TARGET_PENALTY = 0.35,
     DIRECTION_BONUS = 30,
     CAPTAIN_MINION = 110,
@@ -89,7 +89,7 @@ function Utils.safe_call(func, ...)
 end
 
 function Utils.clamp(x, a, b)
-    return math.min(math.max(x, a, b))
+    return math.min(math.max(x, a), b)
 end
 
 function Utils.game_time()
