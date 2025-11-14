@@ -2172,13 +2172,22 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             end
         end)
 
-        Hooks:PreHook(GroupAIStateBase, "upd_team_AI_distance", "BB_disable_stay", function(self)
-            return BB:get("keepstaying", false)
-        end)
+        local _bb_old_upd_team_AI_distance = GroupAIStateBase.upd_team_AI_distance
+        function GroupAIStateBase:upd_team_AI_distance(...)
+            if BB:get("keepstaying", false) then
+                return
+            end
+            return _bb_old_upd_team_AI_distance(self, ...)
+        end
 
-        Hooks:PreHook(GroupAIStateBase, "chk_say_teamAI_combat_chatter", "BB_disable_chat", function(self)
-            return BB:get("chat", false)
-        end)
+
+        local _bb_old_chk_say_teamAI_combat_chatter = GroupAIStateBase.chk_say_teamAI_combat_chatter
+        function GroupAIStateBase:chk_say_teamAI_combat_chatter(...)
+            if BB:get("chat", false) then
+                return
+            end
+            return _bb_old_chk_say_teamAI_combat_chatter(self, ...)
+        end
 
         Hooks:PostHook(GroupAIStateBase, "on_tase_start", "BB_GAISB_on_tase_start_mark", function(self, cop_key, criminal_key, ...)
             if self._ai_criminals then
