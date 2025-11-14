@@ -261,8 +261,256 @@ function UnitOps.request_act(unit, variant, data)
     return ok
 end
 
+local CacheManager = {}
+CacheManager.__index = CacheManager
+
+function CacheManager.new(options)
+    local self = setmetatable({}, CacheManager)
+    options = options or {}
+
+    self._cache = {}
+    self._ttl = options.ttl or 5
+    self._max_size = options.max_size or 1000
+    self._last_cleanup = 0
+    self._cleanup_interval = options.cleanup_interval or 10
+    self._name = options.name or "UnnamedCache"
+
+    return self
+end
+
+function CacheManager:get(key)
+    if not key then
+        return nil
+    end
+
+    local entry = self._cache[key]
+    if not entry then
+        return nil
+    end
+
+    local now = Utils.game_time()
+    local ttl = entry.ttl or self._ttl
+
+    if now - entry.t > ttl then
+        self._cache[key] = nil
+        return nil
+    end
+
+    entry.last_access = now
+    return entry.value
+end
+
+function CacheManager:set(key, value, ttl)
+    if not key then
+        return
+    end
+
+    local now = Utils.game_time()
+
+    self._cache[key] = {
+        value = value,
+        t = now,
+        last_access = now,
+        ttl = ttl
+    }
+
+    self:_maybe_cleanup(now)
+end
+
+function CacheManager:clear(key)
+    if key then
+        self._cache[key] = nil
+    else
+        self._cache = {}
+        Utils.log(string.format("[%s] Cache cleared", self._name), "DEBUG")
+    end
+end
+
+function CacheManager:has(key)
+    return self:get(key) ~= nil
+end
+
+function CacheManager:size()
+    local count = 0
+    for _ in pairs(self._cache) do
+        count = count + 1
+    end
+    return count
+end
+
+function CacheManager:cleanup(force)
+    local now = Utils.game_time()
+
+    if not force and now - self._last_cleanup < self._cleanup_interval then
+        return
+    end
+
+    self._last_cleanup = now
+
+    local removed = 0
+    local remaining = 0
+
+    for k, entry in pairs(self._cache) do
+        local ttl = entry.ttl or self._ttl
+        if now - entry.t > ttl then
+            self._cache[k] = nil
+            removed = removed + 1
+        else
+            remaining = remaining + 1
+        end
+    end
+
+    if remaining > self._max_size then
+        local entries = {}
+        for k, entry in pairs(self._cache) do
+            table.insert(entries, {
+                key = k,
+                last_access = entry.last_access or entry.t
+            })
+        end
+
+        table.sort(entries, function(a, b)
+            return a.last_access < b.last_access
+        end)
+
+        local to_remove = remaining - self._max_size
+        for i = 1, to_remove do
+            if entries[i] then
+                self._cache[entries[i].key] = nil
+                removed = removed + 1
+            end
+        end
+    end
+
+    if removed > 0 then
+        Utils.log(string.format("[%s] Cleaned %d entries, %d remaining", self._name, removed, self:size()), "DEBUG")
+    end
+end
+
+function CacheManager:_maybe_cleanup(now)
+    now = now or Utils.game_time()
+
+    if now - self._last_cleanup >= self._cleanup_interval then
+        self:cleanup(false)
+    end
+end
+
+function CacheManager:keys()
+    local result = {}
+    for k, _ in pairs(self._cache) do
+        table.insert(result, k)
+    end
+    return result
+end
+
+function CacheManager:stats()
+    local now = Utils.game_time()
+    local total = 0
+    local expired = 0
+
+    for _, entry in pairs(self._cache) do
+        total = total + 1
+        local ttl = entry.ttl or self._ttl
+        if now - entry.t > ttl then
+            expired = expired + 1
+        end
+    end
+
+    return {
+        name = self._name,
+        total = total,
+        expired = expired,
+        valid = total - expired,
+        max_size = self._max_size,
+        ttl = self._ttl,
+        last_cleanup = self._last_cleanup
+    }
+end
+
+local CoopCacheManager = {}
+
+function CoopCacheManager.init()
+    CoopCacheManager.teammate_status = CacheManager.new({
+        ttl = 0.5,
+        max_size = 20,
+        cleanup_interval = 2,
+        name = "TeammateStatus"
+    })
+
+    CoopCacheManager.priority_target = CacheManager.new({
+        ttl = 2,
+        max_size = 100,
+        cleanup_interval = 5,
+        name = "PriorityTarget"
+    })
+
+    CoopCacheManager.threat_value = CacheManager.new({
+        ttl = 0.3,
+        max_size = 200,
+        cleanup_interval = 3,
+        name = "ThreatValue"
+    })
+
+    CoopCacheManager.suitability = CacheManager.new({
+        ttl = 0.3,
+        max_size = 200,
+        cleanup_interval = 3,
+        name = "Suitability"
+    })
+
+    CoopCacheManager.teammate_distance = CacheManager.new({
+        ttl = 0.2,
+        max_size = 50,
+        cleanup_interval = 2,
+        name = "TeammateDistance"
+    })
+end
+
+function CoopCacheManager.cleanup_all()
+    if CoopCacheManager.teammate_status then
+        CoopCacheManager.teammate_status:cleanup(true)
+    end
+    if CoopCacheManager.priority_target then
+        CoopCacheManager.priority_target:cleanup(true)
+    end
+    if CoopCacheManager.threat_value then
+        CoopCacheManager.threat_value:cleanup(true)
+    end
+    if CoopCacheManager.suitability then
+        CoopCacheManager.suitability:cleanup(true)
+    end
+    if CoopCacheManager.teammate_distance then
+        CoopCacheManager.teammate_distance:cleanup(true)
+    end
+end
+
+function CoopCacheManager.clear_all()
+    if CoopCacheManager.teammate_status then
+        CoopCacheManager.teammate_status:clear()
+    end
+    if CoopCacheManager.priority_target then
+        CoopCacheManager.priority_target:clear()
+    end
+    if CoopCacheManager.threat_value then
+        CoopCacheManager.threat_value:clear()
+    end
+    if CoopCacheManager.suitability then
+        CoopCacheManager.suitability:clear()
+    end
+    if CoopCacheManager.teammate_distance then
+        CoopCacheManager.teammate_distance:clear()
+    end
+end
+
+CoopCacheManager.init()
+
 local EnemyClassifier = {}
-EnemyClassifier._cache = {}
+EnemyClassifier._cache_manager = CacheManager.new({
+    ttl = 0.5,
+    max_size = 500,
+    cleanup_interval = 5,
+    name = "EnemyClassifier"
+})
 
 function EnemyClassifier._infer_flags_from_name(name)
     local f = {}
@@ -316,11 +564,10 @@ function EnemyClassifier.classify(unit, att_obj)
     end
 
     local u_key = unit:key()
-    local now = Utils.game_time()
-    local cache = EnemyClassifier._cache[u_key]
 
-    if cache and cache.t and (now - cache.t) < 0.5 then
-        return cache.flags
+    local cached = EnemyClassifier._cache_manager:get(u_key)
+    if cached then
+        return cached
     end
 
     local base = unit:base()
@@ -408,13 +655,7 @@ function EnemyClassifier.classify(unit, att_obj)
         flags.special = true
     end
 
-    for cache_key, entry in pairs(EnemyClassifier._cache) do
-        if now - entry.t > 5 then
-            EnemyClassifier._cache[cache_key] = nil
-        end
-    end
-
-    EnemyClassifier._cache[u_key] = { flags = flags, t = now }
+    EnemyClassifier._cache_manager:set(u_key, flags)
 
     return flags
 end
@@ -683,21 +924,23 @@ function BB:update_teammate_status(unit)
         return
     end
 
-    local u_key = unit:key()
-    if self.coop_data.teammates_status[u_key] and not alive(self.coop_data.teammates_status[u_key].unit) then
-        self.coop_data.teammates_status[u_key] = nil
+    local u_key = tostring(unit:key())
+    local t = game_time()
+
+    local cached = CoopCacheManager.teammate_status:get(u_key)
+    if cached and (t - cached.last_update) < 0.3 then
+        return cached
     end
 
     local health_ratio = get_unit_health_ratio(unit)
     local unit_movement = unit:movement()
     local pos = unit_movement and unit_movement:m_head_pos()
-    local t = game_time()
     local anim_data = unit:anim_data()
     local is_reloading = anim_data and anim_data.reload
     local head_rot = unit_movement and unit_movement:m_head_rot()
     local facing_dir = head_rot and head_rot:y()
 
-    self.coop_data.teammates_status[u_key] = {
+    local status = {
         unit = unit,
         health_ratio = health_ratio,
         position = pos,
@@ -707,6 +950,13 @@ function BB:update_teammate_status(unit)
         is_reloading = is_reloading,
         last_update = t,
     }
+
+    CoopCacheManager.teammate_status:set(u_key, status, 1)
+
+    local original_u_key = unit:key()
+    self.coop_data.teammates_status[original_u_key] = status
+
+    return status
 end
 
 function BB:count_active_teammates()
@@ -716,11 +966,14 @@ function BB:count_active_teammates()
 
     local count = 0
     local t = game_time()
+    local keys = CoopCacheManager.teammate_status:keys()
 
-    for u_key, status in pairs(self.coop_data.teammates_status) do
-        if status and status.unit and alive(status.unit) and (t - (status.last_update or 0)) < 2 then
+    for _, u_key in ipairs(keys) do
+        local status = CoopCacheManager.teammate_status:get(u_key)
+        if status and status.unit and alive(status.unit) then
             count = count + 1
         else
+            CoopCacheManager.teammate_status:clear(u_key)
             self.coop_data.teammates_status[u_key] = nil
         end
     end
@@ -816,9 +1069,11 @@ function BB:update_priority_target(unit, priority, state_info)
         return
     end
 
+    local u_key_str = tostring(unit:key())
     local u_key = unit:key()
     local t = game_time()
-    local existing_target = self.coop_data.priority_targets[u_key]
+
+    local existing_target = CoopCacheManager.priority_target:get(u_key_str)
 
     if existing_target then
         existing_target.priority = math.max(existing_target.priority, priority)
@@ -826,8 +1081,9 @@ function BB:update_priority_target(unit, priority, state_info)
         if state_info then
             existing_target.state = state_info
         end
+        CoopCacheManager.priority_target:set(u_key_str, existing_target, CONSTANTS.PRIORITY_TARGET_DURATION)
     else
-        self.coop_data.priority_targets[u_key] = {
+        local new_target = {
             unit = unit,
             u_key = u_key,
             priority = priority,
@@ -837,7 +1093,10 @@ function BB:update_priority_target(unit, priority, state_info)
             claimed_at = 0,
             state = state_info or "normal",
         }
+        CoopCacheManager.priority_target:set(u_key_str, new_target, CONSTANTS.PRIORITY_TARGET_DURATION)
     end
+
+    self.coop_data.priority_targets[u_key] = CoopCacheManager.priority_target:get(u_key_str)
 end
 
 function BB:get_priority_targets()
@@ -847,14 +1106,15 @@ function BB:get_priority_targets()
 
     local t = game_time()
     local active_targets = {}
+    local keys = CoopCacheManager.priority_target:keys()
 
-    for u_key, target_data in pairs(self.coop_data.priority_targets) do
-        if target_data.unit
-                and alive(target_data.unit)
-                and (t - target_data.last_seen) < CONSTANTS.PRIORITY_TARGET_DURATION
-        then
+    for _, u_key_str in ipairs(keys) do
+        local target_data = CoopCacheManager.priority_target:get(u_key_str)
+
+        if target_data and target_data.unit and alive(target_data.unit) then
             if target_data.targeted_by then
-                local targeting = self.coop_data.teammates_status[target_data.targeted_by]
+                local targeting_str = tostring(target_data.targeted_by)
+                local targeting = CoopCacheManager.teammate_status:get(targeting_str)
                 local claim_timed_out = (t - (target_data.claimed_at or 0)) > CONSTANTS.PRIORITY_TARGET_CLAIM_TIMEOUT
                 local claim_stale = true
 
@@ -866,30 +1126,44 @@ function BB:get_priority_targets()
                 if claim_timed_out or claim_stale then
                     target_data.targeted_by = nil
                     target_data.claimed_at = 0
+                    CoopCacheManager.priority_target:set(u_key_str, target_data, CONSTANTS.PRIORITY_TARGET_DURATION)
                 end
             end
 
-            active_targets[u_key] = target_data
+            local original_key = target_data.u_key
+            active_targets[original_key] = target_data
         else
-            self.coop_data.priority_targets[u_key] = nil
+            CoopCacheManager.priority_target:clear(u_key_str)
+            if target_data and target_data.u_key then
+                self.coop_data.priority_targets[target_data.u_key] = nil
+            end
         end
     end
 
     return active_targets
 end
 
+
 local function _bb_closest_teammate_info(pos)
-    if not (pos and BB.coop_data and BB.coop_data.teammates_status) then
+    if not (pos and BB.coop_data) then
         return nil, false, nil
+    end
+
+    local cache_key = string.format("%.0f_%.0f_%.0f", pos.x, pos.y, pos.z)
+    local cached = CoopCacheManager.teammate_distance:get(cache_key)
+    if cached then
+        return cached.min_dist, cached.in_danger_any, cached.who
     end
 
     local t = game_time()
     local min_dist = math.huge
     local in_danger_any = false
     local who = nil
+    local keys = CoopCacheManager.teammate_status:keys()
 
-    for _, st in pairs(BB.coop_data.teammates_status) do
-        if st and st.unit and alive(st.unit) and st.position and (t - (st.last_update or 0)) < 2 then
+    for _, u_key in ipairs(keys) do
+        local st = CoopCacheManager.teammate_status:get(u_key)
+        if st and st.unit and alive(st.unit) and st.position then
             local d = mvector3.distance(pos, st.position)
             if d < min_dist then
                 min_dist = d
@@ -902,6 +1176,12 @@ local function _bb_closest_teammate_info(pos)
     if min_dist == math.huge then
         return nil, false, nil
     end
+
+    CoopCacheManager.teammate_distance:set(cache_key, {
+        min_dist = min_dist,
+        in_danger_any = in_danger_any,
+        who = who
+    }, 0.2)
 
     return min_dist, in_danger_any, who
 end
@@ -1097,6 +1377,15 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
         return 0
     end
 
+    local bot_key = tostring(bot_unit:key())
+    local target_key = tostring(target_data.unit:key())
+    local cache_key = bot_key .. "_" .. target_key
+
+    local cached = CoopCacheManager.threat_value:get(cache_key)
+    if cached then
+        return cached
+    end
+
     local target_unit = target_data.unit
     local bot_head = bot_unit:movement():m_head_pos()
     local dist = target_data.verified_dis
@@ -1185,10 +1474,25 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
         threat = threat * 1.1
     end
 
+    CoopCacheManager.threat_value:set(cache_key, threat, 0.3)
+
     return threat
 end
 
 function ThreatAssessment.calculate_suitability(bot_unit, target_data)
+    if not (alive(bot_unit) and target_data and target_data.unit and alive(target_data.unit)) then
+        return 0
+    end
+
+    local bot_key = tostring(bot_unit:key())
+    local target_key = tostring(target_data.unit:key())
+    local cache_key = bot_key .. "_" .. target_key
+
+    local cached = CoopCacheManager.suitability:get(cache_key)
+    if cached then
+        return cached
+    end
+
     local score = 100.0
     local bot_mov = bot_unit:movement()
     local bot_head = bot_mov:m_head_pos()
@@ -1271,6 +1575,8 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
             score = score - 80
         end
     end
+
+    CoopCacheManager.suitability:set(cache_key, score, 0.3)
 
     return score
 end
@@ -2180,7 +2486,6 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             return _bb_old_upd_team_AI_distance(self, ...)
         end
 
-
         local _bb_old_chk_say_teamAI_combat_chatter = GroupAIStateBase.chk_say_teamAI_combat_chatter
         function GroupAIStateBase:chk_say_teamAI_combat_chatter(...)
             if BB:get("chat", false) then
@@ -3087,6 +3392,22 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                         safe_call(BB.scan_and_update_priorities, BB, data)
                     end
             )
+
+            Hooks:PostHook(
+                    TeamAILogicAssault,
+                    "update",
+                    "BB_TeamAILogicAssault_cache_cleanup",
+                    function(data, ...)
+                        local t = game_time()
+                        local my_data = data.internal_data or {}
+
+                        my_data._next_cache_cleanup_t = my_data._next_cache_cleanup_t or 0
+                        if t >= my_data._next_cache_cleanup_t then
+                            my_data._next_cache_cleanup_t = t + 10
+                            CoopCacheManager.cleanup_all()
+                        end
+                    end
+            )
         end
 
         Hooks:PostHook(TeamAILogicAssault, "exit", "BB_TeamAILogicAssault_exit_reload", function(data, ...)
@@ -3272,11 +3593,15 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                     local u_key = alive(unit) and unit:key()
 
                     if u_key then
+                        local u_key_str = tostring(u_key)
+
                         BB:clear_cop_state(u_key)
 
-                        if EnemyClassifier._cache then
-                            EnemyClassifier._cache[u_key] = nil
+                        if EnemyClassifier._cache_manager then
+                            EnemyClassifier._cache_manager:clear(u_key_str)
                         end
+
+                        CoopCacheManager.priority_target:clear(u_key_str)
 
                         if BB.coop_data and BB.coop_data.priority_targets then
                             BB.coop_data.priority_targets[u_key] = nil
