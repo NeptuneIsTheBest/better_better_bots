@@ -751,7 +751,7 @@ function BB:get_dozer_attacker_limit(dozer_unit, dozer_distance)
         end
     end
 
-    return math.min(base_limit, math.max(1, math.floor(team_size / 2)))
+    return math.min(base_limit, math.max(1, math.ceil(team_size / 2)))
 end
 
 function BB:count_dozer_attackers(dozer_u_key)
