@@ -1,4 +1,3 @@
-_G.BB = _G.BB or {}
 local BB = _G.BB
 
 local Utils = BB.Utils
