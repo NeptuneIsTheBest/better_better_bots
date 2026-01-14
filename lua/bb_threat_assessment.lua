@@ -1,0 +1,285 @@
+_G.BB = _G.BB or {}
+local BB = _G.BB
+
+local CONSTANTS = BB.CONSTANTS
+local THREAT_WEIGHTS = BB.THREAT_WEIGHTS
+local ENEMY_TWEAK_MAP = BB.ENEMY_TWEAK_MAP
+local CoopCacheManager = BB.CoopCacheManager
+local UnitOps = BB.UnitOps
+local EnemyClassifier = BB.EnemyClassifier
+
+local ThreatAssessment = {}
+
+local function _get_tweak_name(u)
+    local base = alive(u) and u:base()
+    return base and base._tweak_table
+end
+
+local PHALANX_VIP_SET = { phalanx_vip = true, phalanx_vip_test = true }
+local PHALANX_MINION_SET = { phalanx_minion = true }
+
+local function _shield_blocks(attacker, target_head_pos)
+    local CombatHelper = BB.CombatHelper
+    local Utils = BB.Utils
+    local MASK = Utils.get_safe_mask("enemy_shield_check", 8)
+    return CombatHelper.shield_blocks(attacker, target_head_pos, MASK)
+end
+
+function ThreatAssessment.get_weapon_archetype(unit)
+    local equipped_wep = unit:inventory() and unit:inventory():equipped_unit()
+    if not equipped_wep then
+        return "unknown"
+    end
+
+    local wep_tweak = equipped_wep:base() and equipped_wep:base()._tweak_data
+    if not wep_tweak or not wep_tweak.categories then
+        return "unknown"
+    end
+
+    local weapon_types = {
+        sniper = "sniper",
+        shotgun = "shotgun",
+    }
+
+    for category, weapon_type in pairs(weapon_types) do
+        if table.contains(wep_tweak.categories, category) then
+            return weapon_type
+        end
+    end
+
+    return "rifle"
+end
+
+function ThreatAssessment.count_alive_with_tweak(tweak_set)
+    local gstate = managers.groupai and managers.groupai:state()
+    if not (gstate and gstate._police) then
+        return 0
+    end
+
+    local n = 0
+    for _, rec in pairs(gstate._police) do
+        local u = rec and rec.unit
+        if alive(u) then
+            local tn = _get_tweak_name(u)
+            if tn and tweak_set[tn] then
+                local dmg = u:character_damage()
+                if dmg and not (dmg:dead() or dmg._dead) then
+                    n = n + 1
+                end
+            end
+        end
+    end
+
+    return n
+end
+
+function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
+    if not (alive(bot_unit) and target_data and target_data.unit) then
+        return 0
+    end
+
+    local bot_key = tostring(bot_unit:key())
+    local target_key = tostring(target_data.unit:key())
+    local cache_key = bot_key .. "_" .. target_key
+
+    local cached = CoopCacheManager.threat_value:get(cache_key)
+    if cached then
+        return cached
+    end
+
+    local target_unit = target_data.unit
+    local bot_head = bot_unit:movement():m_head_pos()
+    local dist = target_data.verified_dis
+            or (bot_head and target_data.m_head_pos and mvector3.distance(bot_head, target_data.m_head_pos))
+            or 1000
+
+    local flags = EnemyClassifier.classify(target_unit, target_data)
+    local tweak_name = _get_tweak_name(target_unit)
+    local role_map = tweak_name and ENEMY_TWEAK_MAP[tweak_name]
+
+    local threat = THREAT_WEIGHTS.DISTANCE_BASE / math.max(dist, 100)
+
+    if role_map and role_map.captain then
+        if PHALANX_VIP_SET[tweak_name] then
+            local minions_alive = ThreatAssessment.count_alive_with_tweak(PHALANX_MINION_SET)
+            if minions_alive > 0 then
+                return threat * (THREAT_WEIGHTS.CAPTAIN_VIP_SUPPRESSED / 10)
+            end
+
+            threat = threat * (THREAT_WEIGHTS.SPECIAL / 10)
+        else
+            threat = threat * (THREAT_WEIGHTS.CAPTAIN_MINION / 10)
+        end
+    end
+
+    local threat_modifiers = {
+        { flag = flags.turret, weight = THREAT_WEIGHTS.TURRET },
+        { flag = flags.dozer, weight = THREAT_WEIGHTS.DOZER },
+        { flag = flags.taser, weight = THREAT_WEIGHTS.TASER },
+        { flag = flags.cloaker, weight = THREAT_WEIGHTS.CLOAKER, distance_bonus = dist < 1200 and 2.0 },
+        { flag = flags.medic, weight = THREAT_WEIGHTS.MEDIC },
+        { flag = flags.sniper, weight = THREAT_WEIGHTS.SNIPER },
+    }
+
+    for _, modifier in ipairs(threat_modifiers) do
+        if modifier.flag then
+            threat = threat * (modifier.weight / 10)
+            if modifier.distance_bonus then
+                threat = threat * modifier.distance_bonus
+            end
+        end
+    end
+
+    if flags.dozer and flags.medic then
+        threat = threat * (1 + (THREAT_WEIGHTS.DOZER_MEDIC_SYNERGY / 100))
+    end
+
+    if flags.dozer then
+        local hr = UnitOps.health_ratio(target_unit)
+        if hr < 0.3 then
+            threat = threat * 1.3
+        end
+    end
+
+    if flags.shield and not flags.turret then
+        local ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
+        local blocked = target_data.m_head_pos and _shield_blocks(bot_unit, target_data.m_head_pos)
+
+        if blocked and (not ap) and dist > CONSTANTS.MELEE_DISTANCE then
+            threat = threat * THREAT_WEIGHTS.SHIELD_BLOCKED_PENALTY
+        else
+            threat = threat * (THREAT_WEIGHTS.SHIELD / 10)
+        end
+    end
+
+    if not flags.turret then
+        local hr2 = UnitOps.health_ratio(target_unit)
+        if hr2 < 0.3 then
+            threat = threat + THREAT_WEIGHTS.LOW_HEALTH_BONUS
+        end
+
+        local enemy_brain = target_unit:brain()
+        local enemy_data = enemy_brain and enemy_brain._logic_data
+        if enemy_data and enemy_data.attention_obj and enemy_data.attention_obj.u_key == data.key then
+            threat = threat + THREAT_WEIGHTS.TARGETING_ME_BONUS
+        end
+    end
+
+    if not flags.sniper and not flags.turret then
+        if dist > 3000 then
+            threat = threat * 0.7
+        elseif dist < 500 then
+            threat = threat * 1.5
+        end
+    elseif flags.sniper and dist > 3000 then
+        threat = threat * 1.1
+    end
+
+    CoopCacheManager.threat_value:set(cache_key, threat, 0.3)
+
+    return threat
+end
+
+function ThreatAssessment.calculate_suitability(bot_unit, target_data)
+    if not (alive(bot_unit) and target_data and target_data.unit and alive(target_data.unit)) then
+        return 0
+    end
+
+    local bot_key = tostring(bot_unit:key())
+    local target_key = tostring(target_data.unit:key())
+    local cache_key = bot_key .. "_" .. target_key
+
+    local cached = CoopCacheManager.suitability:get(cache_key)
+    if cached then
+        return cached
+    end
+
+    local score = 100.0
+    local bot_mov = bot_unit:movement()
+    local bot_head = bot_mov:m_head_pos()
+    local dist = target_data.verified_dis
+            or (bot_head and target_data.m_head_pos and mvector3.distance(bot_head, target_data.m_head_pos))
+            or 1000
+
+    local weapon_type = ThreatAssessment.get_weapon_archetype(bot_unit)
+    local target_unit = target_data.unit
+    local flags = EnemyClassifier.classify(target_unit, target_data)
+    local tweak_name = _get_tweak_name(target_unit)
+
+    if flags.turret then
+        score = score + 40
+        if dist < 1500 then
+            score = score + 20
+        end
+    end
+
+    if tweak_name
+            and ENEMY_TWEAK_MAP[tweak_name]
+            and ENEMY_TWEAK_MAP[tweak_name].captain
+    then
+        if PHALANX_VIP_SET[tweak_name]
+                and ThreatAssessment.count_alive_with_tweak(PHALANX_MINION_SET) > 0
+        then
+            score = score - 200
+        elseif PHALANX_MINION_SET[tweak_name] then
+            score = score + 80
+        end
+    end
+
+    local weapon_scores = {
+        sniper = function()
+            score = score + (flags.sniper and 50 or 20)
+            if dist < 800 then
+                score = score - 30
+            end
+        end,
+        shotgun = function()
+            score = score + math.max(0, 100 - dist / 10)
+            if flags.shield then
+                score = score + 40
+            end
+        end,
+        rifle = function()
+            if dist > 4000 then
+                score = score - 50
+            end
+        end,
+    }
+
+    local weapon_handler = weapon_scores[weapon_type]
+    if weapon_handler then
+        weapon_handler()
+    end
+
+    if flags.dozer and flags.medic and weapon_type ~= "shotgun" then
+        score = score + 20
+    end
+
+    local bot_fwd = bot_mov:m_head_rot():y()
+    local dir_to_target = (target_data.m_head_pos
+            or (target_unit:movement() and target_unit:movement():m_head_pos())
+            or bot_head) - bot_head
+
+    mvector3.normalize(dir_to_target)
+    local angle = mvector3.dot(dir_to_target, bot_fwd)
+    score = score + (angle * 50)
+
+    if not target_data.verified then
+        score = score * 0.7
+    end
+
+    if flags.shield then
+        local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
+        if target_data.m_head_pos and (has_ap or not _shield_blocks(bot_unit, target_data.m_head_pos)) then
+            score = score + 30
+        else
+            score = score - 80
+        end
+    end
+
+    CoopCacheManager.suitability:set(cache_key, score, 0.3)
+
+    return score
+end
+
+BB.ThreatAssessment = ThreatAssessment
