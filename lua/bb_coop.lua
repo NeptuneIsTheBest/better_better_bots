@@ -330,6 +330,19 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
     end
     if flags.dozer then
         prio = prio + 13
+        
+        if pos and my_head then
+            local e_mov = enemy:movement()
+            local e_fwd = e_mov and e_mov:m_head_rot() and e_mov:m_head_rot():y()
+            if e_fwd then
+                local to_me = my_head - pos
+                mvector3.normalize(to_me)
+                if mvector3.dot(e_fwd, to_me) > 0.7 then
+                    prio = prio + 20
+                    state = "dozer_facing"
+                end
+            end
+        end
     end
     if flags.taser then
         prio = prio + 14
