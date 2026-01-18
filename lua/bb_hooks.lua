@@ -177,7 +177,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             if alive(taser_unit) then
                 local criminal_data = self:all_char_criminals() and self:all_char_criminals()[criminal_key]
                 if criminal_data and criminal_data.unit then
-                    BB:update_priority_target(taser_unit, 25.0, "tasing_teammate")
+                    BB.CoopSystem.update_priority_target(taser_unit, 25.0, "tasing_teammate")
                 end
             end
         end
@@ -742,8 +742,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
         local is_team_ai_unit = is_team_ai(unit)
 
         if BB:get("coop", false) and is_team_ai_unit then
-            BB:update_teammate_status(unit)
-            safe_call(BB.scan_and_update_priorities, BB, data)
+            BB.CoopSystem.update_teammate_status(unit)
+            safe_call(BB.CoopSystem.scan_and_update_priorities, data)
         end
 
         local old_target_u_key = data._last_target_u_key
@@ -820,7 +820,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             return nil, nil, nil
         end
 
-        local global_priority_targets = BB:get_priority_targets()
+        local global_priority_targets = BB.CoopSystem.get_priority_targets()
         local best_coop_target
         local best_coop_score = -1
 
@@ -837,8 +837,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 local is_dozer = EnemyClassifier.is_dozer(target_unit)
 
                 if is_dozer and not is_turret then
-                    local current_attackers = BB:count_dozer_attackers(u_key)
-                    local attacker_limit = BB:get_dozer_attacker_limit(
+                    local current_attackers = BB.CoopSystem.count_dozer_attackers(u_key)
+                    local attacker_limit = BB.CoopSystem.get_dozer_attacker_limit(
                             global_target.unit,
                             local_target_info.data.verified_dis
                     )
@@ -863,7 +863,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 if allow_target then
                     local suitability = ThreatAssessment.calculate_suitability(unit, local_target_info.data)
 
-                    if not BB:is_direction_covered(local_target_info.data.m_head_pos, unit) then
+                    if not BB.CoopSystem.is_direction_covered(local_target_info.data.m_head_pos, unit) then
                         suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
                     end
 
@@ -913,8 +913,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             local penalty = 1
             if g and g.targeted_by and g.targeted_by ~= data.key then
                 if is_dozer and not is_turret then
-                    local current_attackers = BB:count_dozer_attackers(u_key)
-                    local attacker_limit = BB:get_dozer_attacker_limit(
+                    local current_attackers = BB.CoopSystem.count_dozer_attackers(u_key)
+                    local attacker_limit = BB.CoopSystem.get_dozer_attacker_limit(
                             target.data.unit,
                             target.data.verified_dis
                     )
@@ -999,7 +999,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     local unit = data.unit
 
                     if BB:get("coop", false) and is_team_ai(unit) then
-                        BB:update_teammate_status(unit)
+                        BB.CoopSystem.update_teammate_status(unit)
                     end
 
                     my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0

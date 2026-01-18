@@ -196,7 +196,7 @@ function CombatBehavior.check_smart_reload(data)
     if BB:get("coop", false) then
         local teammates_reloading = 0
         local my_key = unit:key()
-        local coop = BB.coop_data
+        local coop = BB.CoopSystem and BB.CoopSystem.data
 
         if coop and coop.teammates_status then
             for u_key, status in pairs(coop.teammates_status) do
