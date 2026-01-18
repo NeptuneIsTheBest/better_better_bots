@@ -129,6 +129,17 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
         end
     end
 
+    if flags.tasing then
+        threat = threat * 3.0
+    end
+
+    if flags.spooc_attack then
+        threat = threat * 3.5
+        if dist < 1500 then
+            threat = threat * 1.5
+        end
+    end
+
     if flags.dozer and flags.medic then
         threat = threat * (1 + (THREAT_WEIGHTS.DOZER_MEDIC_SYNERGY / 100))
     end

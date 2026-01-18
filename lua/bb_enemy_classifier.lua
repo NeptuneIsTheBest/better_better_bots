@@ -89,7 +89,21 @@ function EnemyClassifier.classify(unit, att_obj)
         sniper = false,
         captain = false,
         special = false,
+        tasing = false,
+        spooc_attack = false,
     }
+
+    local brain = unit:brain()
+    local logic_data = brain and brain._logic_data
+    local internal_data = logic_data and logic_data.internal_data
+    if internal_data then
+        if internal_data.tasing then
+            flags.tasing = true
+        end
+        if internal_data.spooc_attack then
+            flags.spooc_attack = true
+        end
+    end
 
     if att_obj then
         if att_obj.is_shield then

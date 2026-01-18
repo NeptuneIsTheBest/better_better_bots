@@ -347,6 +347,16 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
         prio = prio + 10
     end
 
+    if flags.tasing then
+        prio = prio + 25
+        state = "tasing_teammate"
+    end
+
+    if flags.spooc_attack then
+        prio = prio + 28
+        state = "spooc_attacking"
+    end
+
     if flags.shield then
         local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
         local blocked = pos and shield_blocks(my_unit, pos)
@@ -422,6 +432,25 @@ function CoopSystem.scan_and_update_priorities(data)
             if prio and prio > 0 then
                 CoopSystem.update_priority_target(att_obj.unit, prio, st)
             end
+
+            if st == "tasing_teammate" or st == "spooc_attacking" then
+                CoopSystem.mark_dangerous_special(att_obj.unit, data.unit)
+            end
+        end
+    end
+end
+
+function CoopSystem.mark_dangerous_special(enemy_unit, bot_unit)
+    if not (alive(enemy_unit) and alive(bot_unit)) then
+        return
+    end
+
+    local contour = enemy_unit:contour()
+    if contour and managers.player then
+        local mark_id = managers.player:get_contour_for_marked_enemy()
+        if mark_id and (not contour._contour_list or not contour:has_id(mark_id)) then
+            UnitOps.say(bot_unit, "f32x_any", true, true)
+            Utils.safe_call(contour.add, contour, mark_id, true)
         end
     end
 end

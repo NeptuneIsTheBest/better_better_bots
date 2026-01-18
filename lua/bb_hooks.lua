@@ -148,41 +148,6 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
         return _bb_old_chk_say_teamAI_combat_chatter(self, ...)
     end
 
-    Hooks:PostHook(GroupAIStateBase, "on_tase_start", "BB_GAISB_on_tase_start_mark", function(self, cop_key, criminal_key, ...)
-        if self._ai_criminals then
-            local bot_record = self._ai_criminals[criminal_key]
-            if bot_record and bot_record.unit then
-                local cop_data = self._police and self._police[cop_key]
-                local taser_unit = cop_data and cop_data.unit
-
-                if alive(taser_unit) then
-                    local contour = taser_unit:contour()
-                    if contour and managers.player then
-                        local mark_id = managers.player:get_contour_for_marked_enemy()
-                        if mark_id and (not contour._contour_list or not contour:has_id(mark_id)) then
-                            if alive(bot_record.unit) then
-                                safe_say(bot_record.unit, "f32x_any", true, true)
-                            end
-                            safe_call(contour.add, contour, mark_id, true)
-                        end
-                    end
-                end
-            end
-        end
-
-        if BB:get("coop", false) then
-            local cop_data = self._police and self._police[cop_key]
-            local taser_unit = cop_data and cop_data.unit
-
-            if alive(taser_unit) then
-                local criminal_data = self:all_char_criminals() and self:all_char_criminals()[criminal_key]
-                if criminal_data and criminal_data.unit then
-                    BB.CoopSystem.update_priority_target(taser_unit, 25.0, "tasing_teammate")
-                end
-            end
-        end
-    end)
-
     function GroupAIStateBase:_get_balancing_multiplier(balance_multipliers, ...)
         local nr_crim = 0
         for _, u_data in pairs(self:all_char_criminals() or {}) do
@@ -768,6 +733,16 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
                     if not dom_active then
                         local threat = ThreatAssessment.calculate_threat_value(unit, attention_data, data)
+
+                        local flags = BB.classify_enemy(attention_data.unit, attention_data)
+                        if flags.tasing then
+                            threat = threat + THREAT_WEIGHTS.TASING_BONUS
+                            BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
+                        end
+                        if flags.spooc_attack then
+                            threat = threat + THREAT_WEIGHTS.SPOOC_ATTACK_BONUS
+                            BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
+                        end
 
                         if old_target_u_key
                                 and old_target_u_key == u_key
