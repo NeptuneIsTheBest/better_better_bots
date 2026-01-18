@@ -40,7 +40,7 @@ local function remove_ai_and_players_from_bullet_mask(self)
     end
 end
 
-Hooks:Add("LocalizationManagerPostInit", "LocalizationManagerPostInit_BB", function(loc)
+Hooks:Add("LocalizationManagerPostInit", "BB_LocalizationManager_PostInit", function(loc)
     if not loc then
         bb_log("LocalizationManager is nil", "WARN")
         return
@@ -63,7 +63,7 @@ Hooks:Add("LocalizationManagerPostInit", "LocalizationManagerPostInit_BB", funct
     safe_call(loc.load_localization_file, loc, BB._path .. "loc/english.txt", false)
 end)
 
-Hooks:Add("MenuManagerInitialize", "MenuManagerInitialize_BB", function(menu_manager)
+Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_manager)
     if not menu_manager then
         bb_log("MenuManager is nil", "WARN")
         return
@@ -121,7 +121,7 @@ end)
 if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
     local is_server = Network:is_server()
 
-    Hooks:PostHook(GroupAIStateBase, "init", "BB_GAISB_init_conc_preload", function(self, ...)
+    Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_PreloadConcussion", function(self, ...)
         if is_server and BB:get("conc", false) then
             if tweak_data.blackmarket and tweak_data.blackmarket.projectiles then
                 local conc_data = tweak_data.blackmarket.projectiles.concussion
@@ -164,7 +164,7 @@ end
 if RequiredScript == "lib/units/player_team/teamaibase" then
     local is_server = Network:is_server()
 
-    Hooks:PostHook(TeamAIBase, "post_init", "BB_TeamAIBase_post_init_upgrades", function(self, ...)
+    Hooks:PostHook(TeamAIBase, "post_init", "BB_TeamAIBase_postInit_SetupUpgrades", function(self, ...)
         self._upgrades = self._upgrades or {}
         self._upgrade_levels = self._upgrade_levels or {}
 
@@ -212,7 +212,7 @@ if RequiredScript == "lib/units/player_team/teamaibase" then
 end
 
 if RequiredScript == "lib/units/player_team/teamaidamage" then
-    Hooks:PostHook(TeamAIDamage, "_apply_damage", "BB_TeamAIDamage_apply_damage_say", function(self, ...)
+    Hooks:PostHook(TeamAIDamage, "_apply_damage", "BB_TeamAIDamage_applyDamage_SayHurt", function(self, ...)
         if not BB:get("doc", false) then
             return
         end
@@ -237,7 +237,7 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
         end
     end)
 
-    Hooks:PostHook(TeamAIDamage, "_regenerated", "BB_TeamAIDamage_regenerated_reset", function(self)
+    Hooks:PostHook(TeamAIDamage, "_regenerated", "BB_TeamAIDamage_regenerated_ResetSaidHurt", function(self)
         if not BB:get("doc", false) then
             return
         end
@@ -318,7 +318,7 @@ if RequiredScript == "lib/units/interactions/interactionext" then
         Hooks:PostHook(
                 ReviveInteractionExt,
                 "_at_interact_start",
-                "BB_Revive_cancel_others",
+                "BB_ReviveInteractionExt_atInteractStart_CancelOthers",
                 function(self, player, ...)
                     if self.tweak_data == "revive" or self.tweak_data == "free" then
                         cancel_other_rescue_objectives(self._unit, player)
@@ -330,7 +330,7 @@ end
 
 if RequiredScript == "lib/tweak_data/weapontweakdata" then
     if BB:get("combat", false) then
-        Hooks:PostHook(WeaponTweakData, "init", "BB_WeaponTweak_bot_weapons", function(self, ...)
+        Hooks:PostHook(WeaponTweakData, "init", "BB_WeaponTweakData_init_SetBotWeapons", function(self, ...)
             for k, v in pairs(self) do
                 if type(v) == "table" and k:match("_crew$") then
                     v.DAMAGE = 3
@@ -512,11 +512,11 @@ if RequiredScript == "lib/tweak_data/playertweakdata" then
 end
 
 if RequiredScript == "lib/units/weapons/newnpcraycastweaponbase" then
-    Hooks:PostHook(NewNPCRaycastWeaponBase, "setup", "BB_NewNPCRaycastWeaponBase", remove_ai_and_players_from_bullet_mask)
+    Hooks:PostHook(NewNPCRaycastWeaponBase, "setup", "BB_NewNPCRaycastWeaponBase_setup_RemoveFriendlyMask", remove_ai_and_players_from_bullet_mask)
 end
 
 if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
-    Hooks:PostHook(NPCRaycastWeaponBase, "setup", "BB_NPCRaycastWeaponBase", remove_ai_and_players_from_bullet_mask)
+    Hooks:PostHook(NPCRaycastWeaponBase, "setup", "BB_NPCRaycastWeaponBase_setup_RemoveFriendlyMask", remove_ai_and_players_from_bullet_mask)
 end
 
 if RequiredScript == "lib/units/player_team/teamaimovement" then
@@ -580,7 +580,7 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
             Hooks:PostHook(
                     TeamAIMovement,
                     "set_carrying_bag",
-                    "BB_TeamAIMovement_set_carrying_bag_label",
+                    "BB_TeamAIMovement_setCarryingBag_UpdateLabel",
                     function(self, unit, ...)
                         if not managers.hud then
                             return
@@ -936,7 +936,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
     Hooks:PreHook(
             TeamAILogicIdle,
             "on_alert",
-            "BB_TeamAILogicIdle_on_alert_maskup",
+            "BB_TeamAILogicIdle_onAlert_MaskUp",
             function(data, alert_data, ...)
                 if not BB:get("maskup", false) then
                     return
@@ -967,7 +967,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
         Hooks:PostHook(
                 TeamAILogicAssault,
                 "update",
-                "BB_TeamAILogicAssault_extra_update",
+                "BB_TeamAILogicAssault_update_CombatActions",
                 function(data, ...)
                     local t = game_time()
                     local my_data = data.internal_data or {}
@@ -1005,7 +1005,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
         Hooks:PostHook(
                 TeamAILogicAssault,
                 "update",
-                "BB_TeamAILogicAssault_cache_cleanup",
+                "BB_TeamAILogicAssault_update_CacheCleanup",
                 function(data, ...)
                     local t = game_time()
                     local my_data = data.internal_data or {}
@@ -1019,7 +1019,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
         )
     end
 
-    Hooks:PostHook(TeamAILogicAssault, "exit", "BB_TeamAILogicAssault_exit_reload", function(data, ...)
+    Hooks:PostHook(TeamAILogicAssault, "exit", "BB_TeamAILogicAssault_exit_SmartReload", function(data, ...)
         safe_call(CombatBehavior.check_smart_reload, data)
     end)
 end
@@ -1030,7 +1030,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
     Hooks:PostHook(
             TeamAILogicBase,
             "_set_attention_obj",
-            "BB_TeamAILogicBase_post_set_attention",
+            "BB_TeamAILogicBase_setAttentionObj_CheckIntimidation",
             function(data, new_att_obj, new_reaction)
                 safe_call(IntimidationSystem.perform_interaction_check, data)
             end
@@ -1088,7 +1088,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
 end
 
 if RequiredScript == "lib/units/enemies/cop/copbrain" then
-    Hooks:PostHook(CopBrain, "convert_to_criminal", "BB_CopBrain_post_convert_tweak", function(self, ...)
+    Hooks:PostHook(CopBrain, "convert_to_criminal", "BB_CopBrain_convertToCriminal_SetCharTweak", function(self, ...)
         if self._logic_data and self._logic_data.char_tweak then
             local char_tweak = deep_clone(self._logic_data.char_tweak)
             char_tweak.access = "teamAI1"
@@ -1114,7 +1114,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
         Hooks:PostHook(
                 CopDamage,
                 "damage_melee",
-                "BB_CopDamage_PostDamageMelee_IntimList",
+                "BB_CopDamage_damageMelee_AddToIntimList",
                 function(self, attack_data, ...)
                     if attack_data then
                         handle_taser_damage(self, attack_data.variant)
@@ -1127,7 +1127,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
         Hooks:PostHook(
                 CopDamage,
                 "sync_damage_melee",
-                "BB_CopDamage_PostSyncDamageMelee_IntimList",
+                "BB_CopDamage_syncDamageMelee_AddToIntimList",
                 function(self, variant, ...)
                     handle_taser_damage(self, variant)
                 end
@@ -1138,7 +1138,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
         Hooks:PreHook(
                 CopDamage,
                 "damage_bullet",
-                "BB_CopDamage_damage_bullet_combat",
+                "BB_CopDamage_damageBullet_SniperInstakill",
                 function(self, attack_data, ...)
                     if BB:get("combat", false) and self._unit and alive(self._unit) then
                         if UnitOps.has_tag(self._unit, "sniper") then
@@ -1171,7 +1171,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
     Hooks:PreHook(
             CopDamage,
             "die",
-            "BB_CopDamage_die_pre_pickup",
+            "BB_CopDamage_die_PreClearPickup",
             function(self, attack_data, ...)
                 if BB:get("ammo", false) and attack_data then
                     local attacker_unit = attack_data.attacker_unit
@@ -1188,7 +1188,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
     Hooks:PostHook(
             CopDamage,
             "die",
-            "BB_CopDamage_die_post_cleanup",
+            "BB_CopDamage_die_PostCleanupState",
             function(self, attack_data, ...)
                 local unit = self._unit
                 local u_key = alive(unit) and unit:key()
@@ -1226,7 +1226,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
     Hooks:PreHook(
             CopLogicBase,
             "_upd_attention_obj_detection",
-            "BB_CopLogicBase_pre_fast_detect",
+            "BB_CopLogicBase_updAttentionObjDetection_FastDetect",
             function(data, min_reaction, max_reaction, ...)
                 if not BB:get("reflex", false) then
                     return
@@ -1332,7 +1332,7 @@ end
 
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
     if Network:is_server() then
-        Hooks:PostHook(CopLogicIdle, "enter", "BB_CopLogicIdle_enter_check_reload", function(data, ...)
+        Hooks:PostHook(CopLogicIdle, "enter", "BB_CopLogicIdle_enter_CheckSmartReload", function(data, ...)
             if data.is_converted then
                 safe_call(CombatBehavior.check_smart_reload, data)
             end
@@ -1418,7 +1418,7 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 end
 
 if RequiredScript == "lib/units/player_team/teamaibrain" then
-    Hooks:PostHook(TeamAIBrain, "_reset_logic_data", "BB_reset_logic_data", function(self)
+    Hooks:PostHook(TeamAIBrain, "_reset_logic_data", "BB_TeamAIBrain_resetLogicData_AddTurretMask", function(self)
         if self._logic_data and self._logic_data.enemy_slotmask and SLOTS and SLOTS.TURRETS then
             local turrets_mask = World:make_slot_mask(SLOTS.TURRETS)
             self._logic_data.enemy_slotmask = self._logic_data.enemy_slotmask + turrets_mask
