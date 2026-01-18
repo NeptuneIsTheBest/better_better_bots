@@ -217,9 +217,9 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
     local tweak_name = _get_tweak_name(target_unit)
 
     if flags.turret then
-        score = score + 40
+        score = score + 10
         if dist < 1500 then
-            score = score + 20
+            score = score + 10
         end
     end
 
