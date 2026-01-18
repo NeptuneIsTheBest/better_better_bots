@@ -50,7 +50,7 @@
   "conc_toggle_title": "Bots Throw Concussion Grenades",
   "conc_toggle_desc": "If checked, bots will throw concussion grenades when encountering groups of nearby enemies.",
   "coop_toggle_title": "Coordinated Combat",
-  "coop_toggle_desc": "If checked, bots will coordinate to focus fire on high-threat targets, provide covering fire for reloading teammates, and cover different angles of attack, fighting much like human players."
+  "coop_toggle_desc": "If checked, bots will coordinate to focus fire on high-threat targets, provide covering fire for reloading teammates, and cover different angles of attack, fighting much like human players.",
   "keepstaying_toggle_title": "Keep Staying",
   "keepstaying_toggle_desc": "If checked, bots will stay in place at all times, regardless of their distance from the player. \nNote: If you use the Keepers mod, it is better to leave this disabled."
 }
