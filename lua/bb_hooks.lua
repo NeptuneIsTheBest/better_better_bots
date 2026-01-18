@@ -1425,3 +1425,9 @@ if RequiredScript == "lib/units/player_team/teamaibrain" then
         end
     end)
 end
+
+if RequiredScript == "lib/units/equipment/sentry_gun/sentrygunbase" then
+    Hooks:PostHook(SentryGunBase, "activate_as_module", "BB_SentryGunBase_FixTurretTargeting", function(self)
+        self._unit:movement():set_team(self._unit:movement():team())
+    end)
+end
