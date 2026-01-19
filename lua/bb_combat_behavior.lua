@@ -27,20 +27,14 @@ end
 local CombatBehavior = {}
 
 function CombatBehavior.find_enemy_to_mark(enemies, my_unit)
-    if not (alive(my_unit) and managers.player) then
-        return nil
+    if not alive(my_unit) then
+        return
     end
 
     local unit_movement = my_unit:movement()
-    if not unit_movement then
-        return nil
-    end
-
     local player_manager = managers.player
-    local contour_id = player_manager.get_contour_for_marked_enemy
-            and player_manager:get_contour_for_marked_enemy()
-            or "mark_enemy"
-    local has_ap = player_manager:has_category_upgrade("team", "crew_ai_ap_ammo") or false
+    local contour_id = player_manager:get_contour_for_marked_enemy()
+    local has_ap = player_manager:has_category_upgrade("team", "crew_ai_ap_ammo")
 
     local my_head = unit_movement:m_head_pos()
     local best_unit
@@ -110,12 +104,7 @@ function CombatBehavior.mark_enemy(data, criminal, to_mark, play_sound, play_act
         return
     end
 
-    local mark_base = to_mark:base()
-    if not mark_base then
-        return
-    end
-
-    local char_tweak = mark_base.char_tweak and mark_base:char_tweak()
+    local char_tweak = to_mark:base():char_tweak()
     local is_turret = EnemyClassifier.is_turret(to_mark)
     local is_special_enemy = EnemyClassifier.is_special(to_mark)
 
@@ -136,11 +125,7 @@ function CombatBehavior.mark_enemy(data, criminal, to_mark, play_sound, play_act
 
     local contour = to_mark:contour()
     if contour then
-        local player_manager = managers.player
-        local prefer_id = player_manager
-                and player_manager.get_contour_for_marked_enemy
-                and player_manager:get_contour_for_marked_enemy()
-                or "mark_enemy"
+        local prefer_id = managers.player:get_contour_for_marked_enemy()
 
         local c_id = is_turret and "mark_unit_dangerous" or prefer_id
 
@@ -159,21 +144,11 @@ function CombatBehavior.check_smart_reload(data)
     end
 
     local unit_movement = unit:movement()
-    local unit_inventory = unit:inventory()
-
-    if not unit_movement then
+    if unit_movement:chk_action_forbidden("reload") or unit:anim_data().reload then
         return
     end
 
-    if unit_movement:chk_action_forbidden("reload") or (unit:anim_data() and unit:anim_data().reload) then
-        return
-    end
-
-    if not unit_inventory then
-        return
-    end
-
-    local current_wep = unit_inventory:equipped_unit()
+    local current_wep = unit:inventory():equipped_unit()
     local wep_base = current_wep and current_wep:base()
     if not wep_base then
         return
@@ -253,16 +228,8 @@ function CombatBehavior.execute_melee_attack(data, criminal)
         return
     end
 
-    local criminal_inventory = criminal:inventory()
-    if not criminal_inventory then
-        return
-    end
-
-    local current_wep = criminal_inventory:equipped_unit()
+    local current_wep = criminal:inventory():equipped_unit()
     local crim_mov = criminal:movement()
-    if not crim_mov then
-        return
-    end
 
     local my_pos = crim_mov:m_head_pos()
     local look_vec = crim_mov:m_rot():y()
@@ -367,23 +334,12 @@ function CombatBehavior.execute_melee_attack(data, criminal)
 end
 
 function CombatBehavior.throw_concussion_grenade(data, criminal)
-    if not (BB:get("conc", false) and alive(criminal)) then
-        return false
-    end
-
-    if not (tweak_data.blackmarket and tweak_data.blackmarket.projectiles) then
+    if not (alive(criminal) and BB:get("conc", false)) then
         return false
     end
 
     local conc_tweak = tweak_data.blackmarket.projectiles.concussion
-    if not (conc_tweak and conc_tweak.unit) then
-        return false
-    end
-
-    if not managers.dyn_resource then
-        return false
-    end
-
+    
     local pkg_ready = managers.dyn_resource:is_resource_ready(
             Idstring("unit"),
             Idstring(conc_tweak.unit),
