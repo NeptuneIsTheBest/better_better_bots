@@ -176,8 +176,10 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
     end
 
     if not flags.sniper and not flags.turret then
-        if dist > 3000 then
+        if dist > 4000 then
             threat = threat * 0.7
+        elseif dist > 3000 then
+            threat = threat * 0.85
         elseif dist < 500 then
             threat = threat * 1.5
         end

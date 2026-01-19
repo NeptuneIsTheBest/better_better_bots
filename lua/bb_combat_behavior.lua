@@ -159,27 +159,25 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
                 end
             end
 
-            local allow_target = true
+            local claimed_penalty = 1
             if not is_dozer
                     and not is_turret
                     and global_target.targeted_by
                     and global_target.targeted_by ~= data.key
             then
-                allow_target = false
+                claimed_penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
             end
 
-            if allow_target then
-                local suitability = ThreatAssessment.calculate_suitability(unit, local_target_info.data)
+            local suitability = ThreatAssessment.calculate_suitability(unit, local_target_info.data)
 
-                if not BB.CoopSystem.is_direction_covered(local_target_info.data.m_head_pos, unit) then
-                    suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
-                end
+            if not BB.CoopSystem.is_direction_covered(local_target_info.data.m_head_pos, unit) then
+                suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
+            end
 
-                local final_score = dynamic_prio * suitability
-                if final_score > best_coop_score then
-                    best_coop_target = global_target
-                    best_coop_score = final_score
-                end
+            local final_score = dynamic_prio * suitability * claimed_penalty
+            if final_score > best_coop_score then
+                best_coop_target = global_target
+                best_coop_score = final_score
             end
         end
     end

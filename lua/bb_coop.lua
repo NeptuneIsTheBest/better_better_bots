@@ -58,8 +58,8 @@ function CoopSystem.update_teammate_status(unit)
         health_ratio = health_ratio,
         position = pos,
         facing_direction = facing_dir,
-        in_danger = health_ratio < 0.4,
-        needs_cover = health_ratio < 0.25,
+        in_danger = health_ratio < 0.3,
+        needs_cover = health_ratio < 0.15,
         is_reloading = is_reloading,
         last_update = t,
     }
@@ -123,7 +123,7 @@ function CoopSystem.get_dozer_attacker_limit(dozer_unit, dozer_distance)
 
     local team_size = CoopSystem.count_active_teammates()
     local health_ratio = get_unit_health_ratio(dozer_unit)
-    local base_limit = team_size >= 4 and 2 or (team_size >= 3 and 1 or 1)
+    local base_limit = team_size >= 4 and 3 or (team_size >= 3 and 2 or 1)
 
     if health_ratio < 0.3 then
         base_limit = math.max(1, base_limit - 1)
@@ -179,8 +179,8 @@ function CoopSystem.is_direction_covered(target_pos, my_unit)
     local my_dir = target_pos - my_pos
     mvector3.normalize(my_dir)
 
-    local same_dir_threshold = 0.75
-    local face_target_threshold = 0.75
+    local same_dir_threshold = 0.6
+    local face_target_threshold = 0.6
 
     for u_key, status in pairs(CoopSystem.data.teammates_status) do
         if u_key ~= my_unit:key() and status.position and status.facing_direction then
@@ -398,7 +398,7 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
     end
 
     if flags.tasing then
-        prio = prio + 25
+        prio = prio + 30
         state = "tasing_teammate"
     end
 
@@ -448,8 +448,12 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
         prio = prio + 2
     end
 
-    if dis > 3500 and not flags.sniper and not flags.turret then
-        prio = prio * 0.8
+    if not flags.sniper and not flags.turret then
+        if dis > 4000 then
+            prio = prio * 0.7
+        elseif dis > 3000 then
+            prio = prio * 0.85
+        end
     end
 
     prio = prio * team_factor
