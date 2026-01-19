@@ -381,9 +381,7 @@ end
 
 function CombatBehavior.check_smart_reload(data)
     local unit = data.unit
-    if not alive(unit) then
-        return
-    end
+    if not alive(unit) then return end
 
     local unit_movement = unit:movement()
     if unit_movement:chk_action_forbidden("reload") or unit:anim_data().reload then
@@ -392,76 +390,104 @@ function CombatBehavior.check_smart_reload(data)
 
     local current_wep = unit:inventory():equipped_unit()
     local wep_base = current_wep and current_wep:base()
-    if not wep_base then
-        return
-    end
+    if not wep_base then return end
 
-    local clip_max, clip_ammo, reserve_total, reserve_total_max = wep_base:ammo_info()
-    if not (clip_max and clip_max > 0) then
-        return
-    end
+    local clip_max, clip_ammo, reserve_total, _ = wep_base:ammo_info()
+    
+    if not (clip_max and clip_max > 0) then return end
+    if clip_ammo >= clip_max then return end
+    if (reserve_total or 0) <= 0 then return end
 
-    if clip_ammo and clip_ammo >= clip_max then
-        return
-    end
+    if clip_ammo > 0 and BB:get("coop", false) then
+        local teammates_reloading = CoopCacheManager.get_reloading_teammates_count
+                and CoopCacheManager.get_reloading_teammates_count(unit:key())
+                or BB.CoopSystem.get_reloading_teammates_count(unit:key())
 
-    if (reserve_total or 0) <= 0 then
-        return
-    end
-
-    if BB:get("coop", false) then
-        local teammates_reloading = 0
-        local my_key = unit:key()
-        local coop = BB.CoopSystem and BB.CoopSystem.data
-
-        if coop and coop.teammates_status then
-            for u_key, status in pairs(coop.teammates_status) do
-                if u_key ~= my_key and status.is_reloading then
-                    teammates_reloading = teammates_reloading + 1
-                end
-            end
-        end
-
-        if clip_ammo > 0 and teammates_reloading >= CONSTANTS.MAX_RELOADING_TEAMMATES then
+        if teammates_reloading >= CONSTANTS.MAX_RELOADING_TEAMMATES then
             return
         end
     end
 
+    local t = game_time()
+    local pressure = 0
+    if BB:get("coop", false) then
+        pressure = BB.CoopSystem.calculate_team_pressure(unit, data)
+    end
+
     local nearby_threats = 0
-    local closest_threat = math.huge
+    local closest_threat_dis = math.huge
+    local active_enemy = nil
+    
+    if unit_movement:attention() and unit_movement:attention().unit then
+        active_enemy = unit_movement:attention().unit
+    end
 
     for _, u_char in pairs(data.detected_attention_objects or {}) do
-        if u_char.identified
-                and u_char.verified
-                and alive(u_char.unit)
-                and are_units_foes(unit, u_char.unit)
-        then
+        if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
             nearby_threats = nearby_threats + 1
-            if u_char.verified_dis and u_char.verified_dis < closest_threat then
-                closest_threat = u_char.verified_dis
+            if u_char.verified_dis and u_char.verified_dis < closest_threat_dis then
+                closest_threat_dis = u_char.verified_dis
             end
         end
     end
 
-    local reload_threshold = 0.6
+    if clip_ammo > 0 and closest_threat_dis < 700 then
+        return 
+    end
+
+    if clip_ammo > 0 and pressure > 0.75 then
+        return
+    end
+
+    if clip_ammo > 0 and active_enemy and alive(active_enemy) then
+        local is_dangerous_special = EnemyClassifier.is_dozer(active_enemy)
+                or EnemyClassifier.is_taser(active_enemy)
+                or EnemyClassifier.is_cloaker(active_enemy)
+        if is_dangerous_special and closest_threat_dis < 1500 then
+            return
+        end
+        
+        if unit:character_damage():is_suppressed() or unit:anim_data().fire then
+             return
+        end
+    end
+
+    local reload_threshold = 0.1
+
     if nearby_threats == 0 then
-        reload_threshold = 0.8
-    elseif closest_threat < 500 then
-        reload_threshold = 0.3
-    elseif nearby_threats > 3 then
-        reload_threshold = 0.4
+        reload_threshold = 0.9
+    elseif closest_threat_dis > 1500 then
+        reload_threshold = 0.5
+    elseif closest_threat_dis > 800 then
+        reload_threshold = 0.2
+    else
+        reload_threshold = 0.05
     end
 
-    if clip_ammo <= math.ceil(clip_max * reload_threshold) then
-        local objective = data.objective
-        local in_cover = objective and objective.in_place
+    if BB:get("coop", false) then
+        reload_threshold = BB.CoopSystem.get_pressure_adjusted_reload_threshold(unit, data, reload_threshold)
+    end
 
-        if in_cover or closest_threat > 1000 or clip_ammo == 0 then
-            local brain = unit:brain()
-            if brain then
-                brain:action_request({ type = "reload", body_part = 3 })
+    local is_empty = clip_ammo == 0
+    
+    local want_tactical_reload = clip_ammo <= math.ceil(clip_max * reload_threshold)
+
+    if is_empty or want_tactical_reload then
+        local action_type = "reload"
+        local brain = unit:brain()
+        
+        if not brain then return end
+
+        if not is_empty then
+            local objective = data.objective
+            local in_cover = objective and objective.in_place
+            
+            if not in_cover and closest_threat_dis < 1200 then
+                return
             end
         end
+
+        brain:action_request({ type = "reload", body_part = 3 })
     end
 end
 

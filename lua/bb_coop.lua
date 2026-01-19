@@ -20,6 +20,8 @@ CoopSystem.data = BB.coop_data or {
     teammates_status = {},
     dozer_attackers = {},
     target_directions = {},
+    team_pressure_cache = {},
+    reloading_count_cache = { count = 0, last_update = 0 },
 }
 BB.coop_data = CoopSystem.data
 
@@ -68,6 +70,29 @@ function CoopSystem.update_teammate_status(unit)
     CoopSystem.data.teammates_status[original_u_key] = status
 
     return status
+end
+
+function CoopSystem.get_reloading_teammates_count(exclude_key)
+    if not CoopSystem.is_enabled() then
+        return 0
+    end
+
+    local t = game_time()
+    local cache = CoopSystem.data.reloading_count_cache
+
+    if cache and (t - cache.last_update) < 0.3 then
+        return cache.count
+    end
+
+    local count = 0
+    for u_key, status in pairs(CoopSystem.data.teammates_status) do
+        if u_key ~= exclude_key and status.is_reloading then
+            count = count + 1
+        end
+    end
+
+    CoopSystem.data.reloading_count_cache = { count = count, last_update = t }
+    return count
 end
 
 function CoopSystem.count_active_teammates()
@@ -174,6 +199,14 @@ function CoopSystem.is_direction_covered(target_pos, my_unit)
     return false
 end
 
+CoopSystem.STATE_PRIORITY = {
+    normal = 0,
+    near_teammate = 1,
+    dozer_facing = 2,
+    tasing_teammate = 3,
+    spooc_attacking = 4,
+}
+
 function CoopSystem.update_priority_target(unit, priority, state_info)
     if not (alive(unit) and CoopSystem.is_enabled()) then
         return
@@ -189,7 +222,11 @@ function CoopSystem.update_priority_target(unit, priority, state_info)
         existing_target.priority = math.max(existing_target.priority, priority)
         existing_target.last_seen = t
         if state_info then
-            existing_target.state = state_info
+            local old_prio = CoopSystem.STATE_PRIORITY[existing_target.state] or 0
+            local new_prio = CoopSystem.STATE_PRIORITY[state_info] or 0
+            if new_prio >= old_prio then
+                existing_target.state = state_info
+            end
         end
         CoopCacheManager.priority_target:set(u_key_str, existing_target, CONSTANTS.PRIORITY_TARGET_DURATION)
     else
@@ -466,6 +503,104 @@ function CoopSystem.mark_dangerous_special(enemy_unit, bot_unit)
             Utils.safe_call(contour.add, contour, mark_id, true)
         end
     end
+end
+
+function CoopSystem.calculate_team_pressure(unit, data)
+    if not (alive(unit) and CoopSystem.is_enabled()) then
+        return 0
+    end
+
+    local t = game_time()
+    local u_key = unit:key()
+    local cache = CoopSystem.data.team_pressure_cache[u_key]
+
+    if cache and (t - cache.last_update) < 0.2 then
+        return cache.pressure
+    end
+
+    local my_pos = unit:movement() and unit:movement():m_head_pos()
+    if not my_pos then
+        return 0
+    end
+
+    local pressure = 0
+    local enemy_count = 0
+    local special_count = 0
+    local close_enemy_count = 0
+
+    for _, att_obj in pairs(data.detected_attention_objects or {}) do
+        if att_obj.identified
+                and att_obj.verified
+                and att_obj.unit
+                and alive(att_obj.unit)
+                and are_units_foes(unit, att_obj.unit)
+        then
+            local dis = att_obj.verified_dis
+            if dis and dis <= CONSTANTS.PRESSURE_SCAN_RANGE then
+                enemy_count = enemy_count + 1
+                pressure = pressure + CONSTANTS.PRESSURE_ENEMY_WEIGHT
+
+                if dis < 800 then
+                    close_enemy_count = close_enemy_count + 1
+                    pressure = pressure + CONSTANTS.PRESSURE_ENEMY_WEIGHT
+                end
+
+                local flags = BB.classify_enemy(att_obj.unit, att_obj)
+                if flags.special or flags.dozer or flags.taser or flags.cloaker then
+                    special_count = special_count + 1
+                    pressure = pressure + CONSTANTS.PRESSURE_SPECIAL_WEIGHT
+                end
+
+                if flags.tasing or flags.spooc_attack then
+                    pressure = pressure + 0.25
+                end
+            end
+        end
+    end
+
+    local teammates_in_danger = 0
+    for u_key, status in pairs(CoopSystem.data.teammates_status) do
+        if u_key ~= unit:key() and status.unit and alive(status.unit) then
+            if status.in_danger then
+                teammates_in_danger = teammates_in_danger + 1
+                pressure = pressure + CONSTANTS.PRESSURE_TEAMMATE_LOW_HEALTH_WEIGHT
+            end
+            if status.needs_cover then
+                pressure = pressure + CONSTANTS.PRESSURE_TEAMMATE_LOW_HEALTH_WEIGHT * 0.5
+            end
+        end
+    end
+
+    local my_health = get_unit_health_ratio(unit)
+    if my_health < 0.25 then
+        pressure = pressure + 0.2
+    elseif my_health < 0.5 then
+        pressure = pressure + 0.1
+    end
+
+    pressure = clamp(pressure, 0, 1)
+    CoopSystem.data.team_pressure_cache[u_key] = { pressure = pressure, last_update = t }
+    return pressure
+end
+
+function CoopSystem.get_pressure_adjusted_reload_threshold(unit, data, base_threshold)
+    if not CoopSystem.is_enabled() then
+        return base_threshold
+    end
+
+    local pressure = CoopSystem.calculate_team_pressure(unit, data)
+    
+    local threshold = base_threshold
+
+    if pressure >= CONSTANTS.PRESSURE_HIGH_THRESHOLD then
+        local factor = (pressure - CONSTANTS.PRESSURE_HIGH_THRESHOLD) / (1 - CONSTANTS.PRESSURE_HIGH_THRESHOLD)
+        threshold = math.lerp(base_threshold, 0.0, factor)
+    elseif pressure <= CONSTANTS.PRESSURE_LOW_THRESHOLD then
+        local factor = (CONSTANTS.PRESSURE_LOW_THRESHOLD - pressure) / CONSTANTS.PRESSURE_LOW_THRESHOLD
+        threshold = math.lerp(base_threshold, CONSTANTS.PRESSURE_RELOAD_MAX, factor)
+    end
+
+    return clamp(threshold, 0, 1)
 end
 
 BB.CoopSystem = CoopSystem
