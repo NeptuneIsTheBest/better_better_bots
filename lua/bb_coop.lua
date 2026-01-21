@@ -22,15 +22,26 @@ CoopSystem.data = BB.coop_data or {
     target_directions = {},
     team_pressure_cache = {},
     reloading_count_cache = { count = 0, last_update = 0 },
+    reloading_count_cache = { count = 0, last_update = 0 },
+    enemy_clusters = {},
+    bot_assignments = {},
+    previous_centroids = nil,
+    last_cluster_update = 0,
 }
 BB.coop_data = CoopSystem.data
 
 CoopSystem._last_scan = BB._last_coop_scan or {}
 BB._last_coop_scan = CoopSystem._last_scan
 
+
 function CoopSystem.is_enabled()
     return BB:get("coop", false)
 end
+
+function CoopSystem.is_clustering_enabled()
+    return BB:get("coop", false) and BB:get("coop_cluster", false)
+end
+
 
 function CoopSystem.update_teammate_status(unit)
     if not alive(unit) or not CoopSystem.is_enabled() then
@@ -197,6 +208,192 @@ function CoopSystem.is_direction_covered(target_pos, my_unit)
     end
 
     return false
+end
+
+
+function CoopSystem.update_clusters()
+    local t = game_time()
+    
+    if CoopSystem.data.last_cluster_update and (t - CoopSystem.data.last_cluster_update) < CONSTANTS.CLUSTER_UPDATE_INTERVAL then
+        return
+    end
+    CoopSystem.data.last_cluster_update = t
+
+    local active_bots = {}
+    for u_key, status in pairs(CoopSystem.data.teammates_status) do
+        if status.unit and alive(status.unit) then
+            table.insert(active_bots, { key = u_key, unit = status.unit, pos = status.position, fwd = status.facing_direction })
+        end
+    end
+    
+    local k_count = #active_bots
+    if k_count < 1 then return end
+
+    local valid_enemies = {}
+    local targets = CoopSystem.get_priority_targets()
+
+    for k, v in pairs(targets) do
+        if v.unit and alive(v.unit) then
+            local pos = v.unit:movement() and v.unit:movement():m_head_pos()
+            if pos then
+                table.insert(valid_enemies, { key = k, pos = pos })
+            end
+        end
+    end
+
+    local n_enemies = #valid_enemies
+    if n_enemies == 0 then 
+        CoopSystem.data.enemy_clusters = {}
+        CoopSystem.data.bot_assignments = {}
+        return 
+    end
+
+    local effective_k = math.min(k_count, n_enemies)
+
+    local centroids = {}
+    
+    if CoopSystem.data.previous_centroids and #CoopSystem.data.previous_centroids == effective_k then
+        for i, c in ipairs(CoopSystem.data.previous_centroids) do
+            centroids[i] = mvector3.copy(c)
+        end
+    else
+        for i = 1, effective_k do
+            centroids[i] = mvector3.copy(valid_enemies[math.random(1, n_enemies)].pos)
+        end
+    end
+
+    local assignments = {} 
+    
+    for iter = 1, CONSTANTS.KMEANS_MAX_ITERATIONS do
+        local clusters = {}
+        for i = 1, effective_k do clusters[i] = {} end
+        local changed = false
+
+        for _, enemy in ipairs(valid_enemies) do
+            local best_dist = math.huge
+            local best_c = 1
+            
+            for c_idx, c_pos in ipairs(centroids) do
+                local d = mvector3.distance_sq(enemy.pos, c_pos)
+                if d < best_dist then
+                    best_dist = d
+                    best_c = c_idx
+                end
+            end
+            
+            table.insert(clusters[best_c], enemy)
+            if assignments[enemy.key] ~= best_c then
+                assignments[enemy.key] = best_c
+                changed = true
+            end
+        end
+
+        for c_idx, cluster_points in ipairs(clusters) do
+            if #cluster_points > 0 then
+                local new_pos = Vector3(0, 0, 0)
+                for _, p in ipairs(cluster_points) do
+                    mvector3.add(new_pos, p.pos)
+                end
+                mvector3.divide(new_pos, #cluster_points)
+                centroids[c_idx] = new_pos
+            end
+        end
+        
+        if not changed then break end
+    end
+
+    CoopSystem.data.previous_centroids = centroids
+    CoopSystem.data.enemy_clusters = assignments
+
+    local bot_assignments = {}
+    local used_clusters = {}
+    
+    local suitability_list = {}
+    
+    for _, bot in ipairs(active_bots) do
+        for c_idx, c_pos in ipairs(centroids) do
+            local cache_key = tostring(bot.key) .. "_cluster_" .. c_idx
+            local score = nil
+            
+            if BB.CoopCacheManager.suitability then
+                score = BB.CoopCacheManager.suitability:get(cache_key)
+            end
+
+            if not score then
+                local dist = mvector3.distance(bot.pos, c_pos)
+                local angle_penalty = 0
+                
+                if bot.fwd then
+                    local to_cluster = c_pos - bot.pos
+                    mvector3.normalize(to_cluster)
+                    local dot = mvector3.dot(bot.fwd, to_cluster)
+                    angle_penalty = (1 - dot) * CONSTANTS.ALLOCATION_ANGLE_WEIGHT
+                end
+                
+                score = dist * (1 + angle_penalty)
+                
+                if BB.CoopCacheManager.suitability then
+                    BB.CoopCacheManager.suitability:set(cache_key, score, 0.5)
+                end
+            end
+            
+            table.insert(suitability_list, { 
+                bot_key = bot.key, 
+                cluster_idx = c_idx, 
+                score = score 
+            })
+        end
+    end
+
+    table.sort(suitability_list, function(a, b) return a.score < b.score end)
+
+    local bots_assigned_count = 0
+    local assigned_bots_set = {}
+
+    for _, entry in ipairs(suitability_list) do
+        if not assigned_bots_set[entry.bot_key] and not used_clusters[entry.cluster_idx] then
+            bot_assignments[entry.bot_key] = entry.cluster_idx
+            used_clusters[entry.cluster_idx] = true
+            assigned_bots_set[entry.bot_key] = true
+            bots_assigned_count = bots_assigned_count + 1
+        end
+        
+        if bots_assigned_count >= effective_k or bots_assigned_count >= k_count then
+            break
+        end
+    end
+
+    CoopSystem.data.bot_assignments = bot_assignments
+end
+
+function CoopSystem.is_my_assigned_cluster(target_u_key, my_key)
+    local t_cluster = CoopSystem.data.enemy_clusters and CoopSystem.data.enemy_clusters[target_u_key]
+    local my_cluster = CoopSystem.data.bot_assignments and CoopSystem.data.bot_assignments[my_key]
+    
+    if t_cluster and my_cluster then
+        return t_cluster == my_cluster
+    end
+    return false
+end
+
+function CoopSystem.get_cluster_owner(target_u_key)
+    local t_cluster = CoopSystem.data.enemy_clusters and CoopSystem.data.enemy_clusters[target_u_key]
+    if not t_cluster then return nil end
+    
+    for b_key, c_idx in pairs(CoopSystem.data.bot_assignments or {}) do
+        if c_idx == t_cluster then
+            return b_key
+        end
+    end
+    return nil
+end
+
+function CoopSystem.is_cluster_covered(target_key, except_my_key, check_special)
+   local owner = CoopSystem.get_cluster_owner(target_key)
+   if owner and owner ~= except_my_key then
+       return true
+   end
+   return false
 end
 
 CoopSystem.STATE_PRIORITY = {
@@ -474,6 +671,10 @@ function CoopSystem.scan_and_update_priorities(data)
     end
 
     CoopSystem._last_scan[my_key] = t
+
+    if CoopSystem.is_clustering_enabled() then
+        CoopSystem.update_clusters()
+    end
 
     for _, att_obj in pairs(data.detected_attention_objects or {}) do
         if att_obj.identified

@@ -183,6 +183,15 @@
         },
         {
             "type" : "toggle",
+            "id" : "coop_cluster_toggle",
+            "title" : "coop_cluster_toggle_title",
+            "description" : "coop_cluster_toggle_desc",
+            "callback" : "callback_coop_cluster_toggle",
+            "value" : "coop_cluster",
+            "default_value" : false
+        },
+        {
+            "type" : "toggle",
             "id" : "keepstaying_toggle",
             "title" : "keepstaying_toggle_title",
             "description" : "keepstaying_toggle_desc",

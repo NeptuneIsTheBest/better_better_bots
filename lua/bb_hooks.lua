@@ -102,6 +102,7 @@ Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_ma
         "ammo",
         "conc",
         "coop",
+        "coop_cluster",
         "keepstaying",
     }
 

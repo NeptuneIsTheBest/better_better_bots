@@ -80,6 +80,7 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
                     if old_target_u_key
                             and old_target_u_key == u_key
                             and (t - last_target_t) <= CONSTANTS.TARGET_SWITCH_DELAY
+                            and not flags.turret
                     then
                         threat = threat * 1.3
                     end
@@ -170,7 +171,32 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
 
             local suitability = ThreatAssessment.calculate_suitability(unit, local_target_info.data)
 
-            if not BB.CoopSystem.is_direction_covered(local_target_info.data.m_head_pos, unit) then
+            if BB.CoopSystem.is_clustering_enabled() then
+                local is_special = EnemyClassifier.is_special(local_target_info.data.unit)
+
+                if BB.CoopSystem.is_my_assigned_cluster(u_key, data.key) then
+                    suitability = suitability + CONSTANTS.ASSIGNED_CLUSTER_BONUS
+                else
+                    local cluster_owner = BB.CoopSystem.get_cluster_owner(u_key)
+                    local unit = local_target_info.data.unit
+                    local is_high_threat = EnemyClassifier.is_dozer(unit) 
+                            or EnemyClassifier.is_turret(unit) 
+                            or EnemyClassifier.is_taser(unit) 
+                            or EnemyClassifier.is_cloaker(unit)
+
+                    if is_high_threat then
+                        -- Critical targets ignore cluster boundaries (No penalty)
+                    elseif not cluster_owner then
+                        suitability = suitability + CONSTANTS.UNASSIGNED_CLUSTER_BONUS
+                    elseif cluster_owner ~= data.key then
+                        suitability = suitability * CONSTANTS.OTHER_CLUSTER_PENALTY
+                    end
+                end
+
+                if is_special then
+                     suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
+                end
+            elseif not BB.CoopSystem.is_direction_covered(local_target_info.data.m_head_pos, unit) then
                 suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
             end
 
@@ -445,7 +471,7 @@ function CombatBehavior.check_smart_reload(data)
             return
         end
         
-        if unit:character_damage():is_suppressed() or unit:anim_data().fire then
+        if unit:anim_data().fire then
              return
         end
     end

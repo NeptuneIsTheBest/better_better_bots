@@ -50,7 +50,9 @@
   "conc_toggle_title": "Bottar kastar chockgranater",
   "conc_toggle_desc": "Om markerad, kommer bottar att kasta chockgranater när de möter grupper av fiender i närheten.",
   "coop_toggle_title": "Bottar samarbetar för att döda fiender",
-  "coop_toggle_desc": "Om markerad, kommer bottar att försöka koordinera sina attacker och skydda varandra.",
+  "coop_toggle_desc": "Om markerad, kommer bottar att koordinera eldgivning mot högprioriterade mål, ge understödseld för omladdande lagkamrater och täcka olika attackvinklar, och strida mycket likt mänskliga spelare.",
+  "coop_cluster_toggle_title": "Rumslig klustring",
+  "coop_cluster_toggle_desc": "Om markerad, kommer bottar att använda ett system för rumslig klustring för att prioritera fiender. Varje bot tilldelas ett specifikt kluster av fiender att rikta in sig på, vilket säkerställer att laget sprider sin eldgivning över slagfältet effektivt. Speciella fiender är undantagna från denna regel.\\nNotera: Denna funktion beror på att 'Bottar samarbetar för att döda fiender' är aktiverat och kan påverka prestandan.",
   "keepstaying_toggle_title": "Stanna Kvar",
   "keepstaying_toggle_desc": "Om markerad, kommer bottar alltid att stanna kvar på plats, oavsett avståndet till spelaren.\nNotera: Om du använder modden Keepers är det bättre att lämna detta inaktiverat."
 }
