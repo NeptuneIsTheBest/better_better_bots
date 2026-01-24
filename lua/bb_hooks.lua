@@ -578,42 +578,44 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
         end
 
         if TeamAIMovement.set_carrying_bag then
-            Hooks:PostHook(
-                    TeamAIMovement,
-                    "set_carrying_bag",
-                    "BB_TeamAIMovement_setCarryingBag_UpdateLabel",
-                    function(self, unit, ...)
-                        if not managers.hud then
-                            return
-                        end
+            
+            local orig_set_carrying_bag = TeamAIMovement.set_carrying_bag
+            
+            function TeamAIMovement:set_carrying_bag(unit, ...)
+                local old_carry_unit = self._carry_unit
 
-                        local bag_unit = unit or self._carry_unit
+                orig_set_carrying_bag(self, unit, ...)
 
-                        if unit and unit:carry_data() then
-                            self:set_visual_carry(unit:carry_data():carry_id())
-                        else
-                            self:set_visual_carry(nil)
-                        end
+                if not managers.hud then
+                    return
+                end
 
-                        if alive(bag_unit) then
-                            bag_unit:set_visible(not unit)
-                        end
+                local bag_unit = unit or old_carry_unit
 
-                        local name_label_id = self._unit
-                                and self._unit:unit_data()
-                                and self._unit:unit_data().name_label_id
+                if unit and unit:carry_data() then
+                    self:set_visual_carry(unit:carry_data():carry_id())
+                else
+                    self:set_visual_carry(nil)
+                end
 
-                        local name_label = name_label_id
-                                and managers.hud:_get_name_label(name_label_id)
+                if alive(bag_unit) then
+                    bag_unit:set_visible(not unit)
+                end
 
-                        if name_label and name_label.panel then
-                            local bag_panel = name_label.panel:child("bag")
-                            if bag_panel then
-                                bag_panel:set_visible(unit and true or false)
-                            end
-                        end
+                local name_label_id = self._unit
+                        and self._unit:unit_data()
+                        and self._unit:unit_data().name_label_id
+
+                local name_label = name_label_id
+                        and managers.hud:_get_name_label(name_label_id)
+
+                if name_label and name_label.panel then
+                    local bag_panel = name_label.panel:child("bag")
+                    if bag_panel then
+                        bag_panel:set_visible(unit and true or false)
                     end
-            )
+                end
+            end
         end
     end
 
