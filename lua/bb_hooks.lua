@@ -633,55 +633,55 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 end
 
 if RequiredScript == "lib/units/player_team/actions/lower_body/criminalactionwalk" then
-    local function get_bag_speed_modifier(ext_movement)
-        if not (ext_movement and ext_movement:carrying_bag()) then
-            return 1
-        end
+	local function get_bag_speed_modifier(ext_movement)
+		if not ext_movement or not ext_movement:carrying_bag() then
+			return 1
+		end
 
-        local carry_id = ext_movement:carry_id()
-        if not (carry_id and tweak_data.carry) then
-            return 1
-        end
+		local carry_id = ext_movement:carry_id()
+		local carry_data = carry_id and tweak_data.carry and tweak_data.carry[carry_id]
+		local carry_type = carry_data and carry_data.type
+		local type_data = carry_type and tweak_data.carry.types and tweak_data.carry.types[carry_type]
 
-        local carry_td = tweak_data.carry[carry_id]
-        if not carry_td then
-            return 1
-        end
+		if type_data then
+			return math.min(1, (type_data.move_speed_modifier or 1) * 1.5)
+		end
 
-        local carry_type = carry_td.type
-        if carry_type and tweak_data.carry.types and tweak_data.carry.types[carry_type] then
-            local move_mod = tweak_data.carry.types[carry_type].move_speed_modifier or 1
-            return math.min(1, move_mod * 1.5)
-        end
+		return 1
+	end
 
-        return 1
-    end
+	local old_get_max_walk_speed = CriminalActionWalk._get_max_walk_speed
+	function CriminalActionWalk:_get_max_walk_speed(...)
+		if not old_get_max_walk_speed then
+			return { 150 }
+		end
 
-    local old_get_max_walk_speed = CriminalActionWalk._get_max_walk_speed
-    function CriminalActionWalk:_get_max_walk_speed(...)
-        if not old_get_max_walk_speed then
-            return { 150 }
-        end
+		local speeds = old_get_max_walk_speed(self, ...)
+		local mod = get_bag_speed_modifier(self._ext_movement)
 
-        local speed = deep_clone(old_get_max_walk_speed(self, ...))
-        local mod = get_bag_speed_modifier(self._ext_movement)
+		if mod == 1 then
+			return speeds
+		end
 
-        for i = 1, #speed do
-            speed[i] = speed[i] * mod
-        end
+		if not self._ext_movement:speed_modifier() then
+			speeds = deep_clone(speeds)
+		end
 
-        return speed
-    end
+		for k, v in pairs(speeds) do
+			speeds[k] = v * mod
+		end
 
-    local old_get_current_max_walk_speed = CriminalActionWalk._get_current_max_walk_speed
-    function CriminalActionWalk:_get_current_max_walk_speed(move_dir, ...)
-        if not old_get_current_max_walk_speed then
-            return 150
-        end
+		return speeds
+	end
 
-        local speed = old_get_current_max_walk_speed(self, move_dir, ...)
-        return speed * get_bag_speed_modifier(self._ext_movement)
-    end
+	local old_get_current_max_walk_speed = CriminalActionWalk._get_current_max_walk_speed
+	function CriminalActionWalk:_get_current_max_walk_speed(move_dir, ...)
+		if not old_get_current_max_walk_speed then
+			return 150
+		end
+
+		return old_get_current_max_walk_speed(self, move_dir, ...) * get_bag_speed_modifier(self._ext_movement)
+	end
 end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
@@ -982,111 +982,73 @@ end
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
     local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
 
-    Hooks:PreHook(
-            CopLogicBase,
-            "_upd_attention_obj_detection",
-            "BB_CopLogicBase_updAttentionObjDetection_FastDetect",
-            function(data, min_reaction, max_reaction, ...)
-                if not BB:get("reflex", false) then
-                    return
-                end
+    Hooks:PreHook(CopLogicBase, "_upd_attention_obj_detection", "BB_CopLogicBase_updAttentionObjDetection_FastDetect", function(data, min_reaction, max_reaction, ...)
+        if not BB:get("reflex", false) then
+            return
+        end
 
-                local unit = data.unit
-                if alive(unit) and is_team_ai(unit) then
-                    local t = data.t
-                    local my_key = data.key
-                    local detected_obj = data.detected_attention_objects or {}
-                    data.detected_attention_objects = detected_obj
+        local unit = data.unit
+        if not alive(unit) or not is_team_ai(unit) then
+            return
+        end
 
-                    local unit_mov = unit:movement()
-                    if not unit_mov then
-                        return
-                    end
+        local unit_mov = unit:movement()
+        local my_tracker = unit_mov and unit_mov:nav_tracker()
+        local gstate = managers.groupai and managers.groupai:state()
+        if not my_tracker or not gstate then
+            return
+        end
 
-                    local my_pos = unit_mov:m_head_pos()
-                    local my_access = data.SO_access
-                    local my_team = data.team
-                    local slotmask = data.visibility_slotmask
-                    local my_tracker = unit_mov:nav_tracker()
-                    if not my_tracker then
-                        return
-                    end
+        local t = data.t
+        local my_key = data.key
+        local detected_obj = data.detected_attention_objects or {}
+        data.detected_attention_objects = detected_obj
 
-                    local chk_vis_func = my_tracker.check_visibility
-                    local gstate = managers.groupai and managers.groupai:state()
-                    if not gstate then
-                        return
-                    end
+        local my_pos = unit_mov:m_head_pos()
+        local my_access = data.SO_access
+        local my_team = data.team
+        local slotmask = data.visibility_slotmask
+        local chk_vis_func = my_tracker.check_visibility
 
-                    local all_attention_objects = gstate:get_AI_attention_objects_by_filter(
-                            data.SO_access_str,
-                            my_team
-                    )
+        local all_attention_objects = gstate:get_AI_attention_objects_by_filter(data.SO_access_str, my_team)
 
-                    for u_key, attention_info in pairs(all_attention_objects or {}) do
-                        if u_key ~= my_key and not detected_obj[u_key] then
-                            local att_tracker = attention_info.nav_tracker
-                            if (not att_tracker) or chk_vis_func(my_tracker, att_tracker) then
-                                local att_handler = attention_info.handler
-                                if att_handler and att_handler.get_attention then
-                                    local settings = att_handler:get_attention(
-                                            my_access,
-                                            min_reaction,
-                                            max_reaction,
-                                            my_team
-                                    )
-                                    if settings and att_handler.get_detection_m_pos then
-                                        local attention_pos = att_handler:get_detection_m_pos()
-                                        if attention_pos then
-                                            local vis_ray = World:raycast(
-                                                    "ray",
-                                                    my_pos,
-                                                    attention_pos,
-                                                    "slot_mask",
-                                                    slotmask,
-                                                    "ray_type",
-                                                    "ai_vision"
-                                            )
+        for u_key, attention_info in pairs(all_attention_objects or {}) do
+            if u_key ~= my_key and not detected_obj[u_key] then
+                local att_tracker = attention_info.nav_tracker
+                if not att_tracker or chk_vis_func(my_tracker, att_tracker) then
+                    local att_handler = attention_info.handler
+                    if att_handler and att_handler.get_attention and att_handler.get_detection_m_pos then
+                        local settings = att_handler:get_attention(my_access, min_reaction, max_reaction, my_team)
+                        local attention_pos = settings and att_handler:get_detection_m_pos()
 
-                                            if not vis_ray or (vis_ray.unit and vis_ray.unit:key() == u_key) then
-                                                if CopLogicBase._create_detected_attention_object_data then
-                                                    local att_obj = CopLogicBase._create_detected_attention_object_data(
-                                                            t,
-                                                            unit,
-                                                            u_key,
-                                                            attention_info,
-                                                            settings
-                                                    )
+                        if attention_pos then
+                            local vis_ray = World:raycast("ray", my_pos, attention_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
+                            if not vis_ray or (vis_ray.unit and vis_ray.unit:key() == u_key) then
+                                local att_obj = CopLogicBase._create_detected_attention_object_data(t, unit, u_key, attention_info, settings)
 
-                                                    if att_obj then
-                                                        local new_reaction = (settings and settings.reaction)
-                                                                or AIAttentionObject.REACT_IDLE
-
-                                                        if new_reaction < REACT_COMBAT then
-                                                            local their_team = attention_info.team
-                                                            local foes = my_team and my_team.foes
-                                                            if their_team and foes and foes[their_team.id] then
-                                                                new_reaction = REACT_COMBAT
-                                                            end
-                                                        end
-
-                                                        att_obj.identified = true
-                                                        att_obj.identified_t = t
-                                                        att_obj.reaction = new_reaction
-                                                        att_obj.settings.reaction = new_reaction
-                                                        detected_obj[u_key] = att_obj
-                                                    end
-                                                end
-                                            end
+                                if att_obj then
+                                    local new_reaction = (settings and settings.reaction) or AIAttentionObject.REACT_IDLE
+                                    if new_reaction < REACT_COMBAT then
+                                        local their_team = attention_info.team
+                                        local foes = my_team and my_team.foes
+                                        if their_team and foes and foes[their_team.id] then
+                                            new_reaction = REACT_COMBAT
                                         end
                                     end
+
+                                    att_obj.identified = true
+                                    att_obj.identified_t = t
+                                    att_obj.reaction = new_reaction
+                                    att_obj.settings.reaction = new_reaction
+                                    detected_obj[u_key] = att_obj
                                 end
                             end
                         end
                     end
                 end
             end
-    )
+        end
+    end)
 end
 
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
