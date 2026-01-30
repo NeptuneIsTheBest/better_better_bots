@@ -460,28 +460,18 @@ if RequiredScript == "lib/managers/criminalsmanager" then
                     end
 
                     if BB:get("combat", false) then
-                        if v.weapon.is_sniper
-                                and v.weapon.is_sniper.FALLOFF
-                                and v.weapon.is_sniper.FALLOFF[1]
-                        then
-                            v.weapon.is_sniper.FALLOFF[1].dmg_mul = damage_mul * 5
-                            v.weapon.is_sniper.FALLOFF[1].recoil = { 1, 1 }
-                        end
+                        local weapon_mods = {
+                            { key = "is_sniper", dmg_mult = 5, recoil = { 1, 1 } },
+                            { key = "is_shotgun_pump", dmg_mult = 2.5, recoil = { 0.5, 0.5 } },
+                            { key = "rifle", dmg_mult = 10, recoil = { 2, 2 } },
+                        }
 
-                        if v.weapon.is_shotgun_pump
-                                and v.weapon.is_shotgun_pump.FALLOFF
-                                and v.weapon.is_shotgun_pump.FALLOFF[1]
-                        then
-                            v.weapon.is_shotgun_pump.FALLOFF[1].dmg_mul = damage_mul * 2.5
-                            v.weapon.is_shotgun_pump.FALLOFF[1].recoil = { 0.5, 0.5 }
-                        end
-
-                        if v.weapon.rifle
-                                and v.weapon.rifle.FALLOFF
-                                and v.weapon.rifle.FALLOFF[1]
-                        then
-                            v.weapon.rifle.FALLOFF[1].dmg_mul = damage_mul * 10
-                            v.weapon.rifle.FALLOFF[1].recoil = { 2, 2 }
+                        for _, mod in ipairs(weapon_mods) do
+                            local weapon = v.weapon[mod.key]
+                            if weapon and weapon.FALLOFF and weapon.FALLOFF[1] then
+                                weapon.FALLOFF[1].dmg_mul = damage_mul * mod.dmg_mult
+                                weapon.FALLOFF[1].recoil = mod.recoil
+                            end
                         end
                     end
                 end
@@ -489,19 +479,16 @@ if RequiredScript == "lib/managers/criminalsmanager" then
         end
     end
 
-    if is_offline and not BB:get("biglob", false) then
-        if CriminalsManager.character_color_id_by_unit then
-            local old_color = CriminalsManager.character_color_id_by_unit
+    if is_offline and not BB:get("biglob", false) and CriminalsManager.character_color_id_by_unit then
+        local old_color = CriminalsManager.character_color_id_by_unit
 
-            function CriminalsManager:character_color_id_by_unit(unit, ...)
-                local char_data = self:character_data_by_unit(unit)
-                if char_data and char_data.ai then
-                    char_data.ai_id = char_data.ai_id or (self:nr_AI_criminals() + 1)
-                    return char_data.ai_id
-                end
-
-                return old_color(self, unit, ...)
+        function CriminalsManager:character_color_id_by_unit(unit, ...)
+            local char = self:character_by_unit(unit)
+            if char and char.data and char.data.ai then
+                char.ai_id = char.ai_id or (self:nr_AI_criminals() + 1)
+                return char.ai_id
             end
+            return old_color(self, unit, ...)
         end
     end
 end
