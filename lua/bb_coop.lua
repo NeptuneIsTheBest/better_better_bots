@@ -22,7 +22,6 @@ CoopSystem.data = BB.coop_data or {
     target_directions = {},
     team_pressure_cache = {},
     reloading_count_cache = { count = 0, last_update = 0 },
-    reloading_count_cache = { count = 0, last_update = 0 },
     enemy_clusters = {},
     bot_assignments = {},
     previous_centroids = nil,
