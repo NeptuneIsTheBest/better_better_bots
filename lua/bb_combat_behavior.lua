@@ -69,11 +69,14 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
 
                     local flags = BB.classify_enemy(attention_data.unit, attention_data)
                     if flags.tasing then
-                        threat = threat + THREAT_WEIGHTS.TASING_BONUS
+                        threat = threat * 3.0
                         BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
                     end
                     if flags.spooc_attack then
-                        threat = threat + THREAT_WEIGHTS.SPOOC_ATTACK_BONUS
+                        threat = threat * 3.5
+                        if attention_data.verified_dis and attention_data.verified_dis < 1500 then
+                            threat = threat * 1.5
+                        end
                         BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
                     end
 
@@ -171,25 +174,25 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
 
             local suitability = ThreatAssessment.calculate_suitability(unit, local_target_info.data)
 
-            if BB.CoopSystem.is_clustering_enabled() then
+            if BB.CoopSystem.is_assignment_enabled() then
                 local is_special = EnemyClassifier.is_special(local_target_info.data.unit)
 
-                if BB.CoopSystem.is_my_assigned_cluster(u_key, data.key) then
-                    suitability = suitability + CONSTANTS.ASSIGNED_CLUSTER_BONUS
+                if BB.CoopSystem.is_my_assigned_target(u_key, data.key) then
+                    suitability = suitability + CONSTANTS.ASSIGNED_TARGET_BONUS
                 else
-                    local cluster_owner = BB.CoopSystem.get_cluster_owner(u_key)
+                    local target_owner = BB.CoopSystem.get_target_owner(u_key)
                     local unit = local_target_info.data.unit
-                    local is_high_threat = EnemyClassifier.is_dozer(unit) 
-                            or EnemyClassifier.is_turret(unit) 
-                            or EnemyClassifier.is_taser(unit) 
+                    local is_high_threat = EnemyClassifier.is_dozer(unit)
+                            or EnemyClassifier.is_turret(unit)
+                            or EnemyClassifier.is_taser(unit)
                             or EnemyClassifier.is_cloaker(unit)
 
-                    if is_high_threat then
-                        -- Critical targets ignore cluster boundaries (No penalty)
-                    elseif not cluster_owner then
-                        suitability = suitability + CONSTANTS.UNASSIGNED_CLUSTER_BONUS
-                    elseif cluster_owner ~= data.key then
-                        suitability = suitability * CONSTANTS.OTHER_CLUSTER_PENALTY
+                    if not is_high_threat then
+                        if not target_owner then
+                            suitability = suitability + CONSTANTS.UNASSIGNED_TARGET_BONUS
+                        elseif target_owner ~= data.key then
+                            suitability = suitability * CONSTANTS.OTHER_ASSIGNMENT_PENALTY
+                        end
                     end
                 end
 

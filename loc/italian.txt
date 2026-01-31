@@ -51,8 +51,8 @@
   "conc_toggle_desc": "Se selezionato, i bot lanceranno granate stordenti quando incontrano gruppi di nemici vicini.",
   "coop_toggle_title": "I bot cooperano per uccidere i nemici",
   "coop_toggle_desc": "Se selezionato, i bot coordineranno il fuoco su bersagli ad alta priorità, forniranno fuoco di copertura per i compagni che ricaricano e copriranno diversi angoli di attacco, combattendo in modo molto simile ai giocatori umani.",
-  "coop_cluster_toggle_title": "Raggruppamento Spaziale",
-  "coop_cluster_toggle_desc": "Se selezionato, i bot useranno un sistema di raggruppamento spaziale per dare priorità ai nemici. A ogni bot viene assegnato un gruppo specifico di nemici da colpire, assicurando che la squadra distribuisca il fuoco sul campo di battaglia in modo efficace. I nemici speciali sono esenti da questa regola.\\nNota: Questa funzione richiede che 'I bot cooperano per uccidere i nemici' sia abilitato e potrebbe avere un impatto sulle prestazioni.",
+  "coop_optimal_assign_toggle_title": "Assegnazione Ottimale dei Bersagli",
+  "coop_optimal_assign_toggle_desc": "Se selezionato, i bot useranno l'Algoritmo Ungherese per assegnare i bersagli in modo ottimale. A ogni bot viene assegnato il miglior bersaglio in base a distanza, angolo e priorità della minaccia, garantendo la massima efficacia in combattimento. I nemici speciali sono esenti da questa regola.\\nNota: Questa funzione richiede che 'I bot cooperano per uccidere i nemici' sia abilitato.",
   "keepstaying_toggle_title": "Restare Fermi",
   "keepstaying_toggle_desc": "Se selezionato, i bot rimarranno sempre fermi, indipendentemente dalla distanza dal giocatore.\nNota: Se si utilizza la mod Keepers, è meglio lasciare questa opzione disabilitata."
 }

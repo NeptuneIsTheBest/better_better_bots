@@ -51,8 +51,8 @@
   "conc_toggle_desc": "If checked, bots will throw concussion grenades when encountering groups of nearby enemies.",
   "coop_toggle_title": "Coordinated Combat",
   "coop_toggle_desc": "If checked, bots will coordinate to focus fire on high-threat targets, provide covering fire for reloading teammates, and cover different angles of attack, fighting much like human players.",
-  "coop_cluster_toggle_title": "Spatial Clustering",
-  "coop_cluster_toggle_desc": "If checked, bots will use a spatial clustering system to prioritize enemies. Each bot is assigned a specific cluster of enemies to target, ensuring the team spreads their fire across the battlefield effectively. Special enemies are exempt from this rule.\\nNote: This feature depends on 'Coordinated Combat' being enabled and may have an impact on performance.",
+  "coop_optimal_assign_toggle_title": "Optimal Target Assignment",
+  "coop_optimal_assign_toggle_desc": "If checked, bots will use the Hungarian Algorithm to optimally assign targets. Each bot is assigned the best target based on distance, angle, and threat priority, ensuring the team maximizes combat effectiveness. Special enemies are exempt from this rule.\\nNote: This feature depends on 'Coordinated Combat' being enabled.",
   "keepstaying_toggle_title": "Keep Staying",
   "keepstaying_toggle_desc": "If checked, bots will stay in place at all times, regardless of their distance from the player. \nNote: If you use the Keepers mod, it is better to leave this disabled."
 }

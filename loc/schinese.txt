@@ -51,8 +51,8 @@
   "conc_toggle_desc": "勾选后，当附近出现成群敌人时，机器人会投掷震荡手雷。",
   "coop_toggle_title": "协同作战",
   "coop_toggle_desc": "勾选后，机器人会协同集火高威胁目标、为换弹的队友提供火力掩护，并主动覆盖不同的射击角度，像真人玩家一样配合作战。",
-  "coop_cluster_toggle_title": "空间聚类瞄准",
-  "coop_cluster_toggle_desc": "勾选后，机器人将使用空间聚类系统来确定敌人的优先级。每个机器人都会被分配一个特定的敌人集群作为目标，确保团队能够有效地将火力覆盖整个战场。特殊敌人不受此规则限制。\n注意：此功能依赖于“协同作战”开启，且可能会影响性能。",
+  "coop_optimal_assign_toggle_title": "最优目标分配",
+  "coop_optimal_assign_toggle_desc": "勾选后，机器人将使用匈牙利算法来最优地分配目标。每个机器人会根据距离、角度和威胁优先级被分配最合适的目标，确保团队战斗效率最大化。特殊敌人不受此规则限制。\n注意：此功能依赖于\"协同作战\"开启。",
   "keepstaying_toggle_title": "保持停留",
   "keepstaying_toggle_desc": "勾选后，机器人将始终停在原地，无论它们距离玩家有多远。\n注意：如果你使用 Keepers 模组，建议保持关闭。"
 }

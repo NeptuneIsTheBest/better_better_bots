@@ -17,7 +17,7 @@ end
 local PHALANX_VIP_SET = { phalanx_vip = true, phalanx_vip_test = true }
 local PHALANX_MINION_SET = { phalanx_minion = true }
 
-local function _shield_blocks(attacker, target_head_pos)
+function ThreatAssessment.shield_blocks(attacker, target_head_pos)
     local CombatHelper = BB.CombatHelper
     local Utils = BB.Utils
     local MASK = Utils.get_safe_mask("enemy_shield_check", 8)
@@ -129,17 +129,6 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
         end
     end
 
-    if flags.tasing then
-        threat = threat * 3.0
-    end
-
-    if flags.spooc_attack then
-        threat = threat * 3.5
-        if dist < 1500 then
-            threat = threat * 1.5
-        end
-    end
-
     if flags.dozer and flags.medic then
         threat = threat * (1 + (THREAT_WEIGHTS.DOZER_MEDIC_SYNERGY / 100))
     end
@@ -153,7 +142,7 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
 
     if flags.shield and not flags.turret then
         local ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-        local blocked = target_data.m_head_pos and _shield_blocks(bot_unit, target_data.m_head_pos)
+        local blocked = target_data.m_head_pos and ThreatAssessment.shield_blocks(bot_unit, target_data.m_head_pos)
 
         if blocked and (not ap) and dist > CONSTANTS.MELEE_DISTANCE then
             threat = threat * THREAT_WEIGHTS.SHIELD_BLOCKED_PENALTY

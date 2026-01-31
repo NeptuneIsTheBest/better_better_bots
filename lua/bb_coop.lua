@@ -1,4 +1,4 @@
-local BB = _G.BB
+﻿local BB = _G.BB
 
 local CONSTANTS = BB.CONSTANTS
 local THREAT_WEIGHTS = BB.THREAT_WEIGHTS
@@ -6,6 +6,7 @@ local CoopCacheManager = BB.CoopCacheManager
 local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 local EnemyClassifier = BB.EnemyClassifier
+local ThreatAssessment = BB.ThreatAssessment
 
 local clamp = Utils.clamp
 local game_time = Utils.game_time
@@ -22,10 +23,8 @@ CoopSystem.data = BB.coop_data or {
     target_directions = {},
     team_pressure_cache = {},
     reloading_count_cache = { count = 0, last_update = 0 },
-    enemy_clusters = {},
-    bot_assignments = {},
-    previous_centroids = nil,
-    last_cluster_update = 0,
+    optimal_assignments = {},
+    last_assignment_update = 0,
 }
 BB.coop_data = CoopSystem.data
 
@@ -37,8 +36,8 @@ function CoopSystem.is_enabled()
     return BB:get("coop", false)
 end
 
-function CoopSystem.is_clustering_enabled()
-    return BB:get("coop", false) and BB:get("coop_cluster", false)
+function CoopSystem.is_assignment_enabled()
+    return BB:get("coop", false) and BB:get("coop_optimal_assign", false)
 end
 
 
@@ -209,191 +208,241 @@ function CoopSystem.is_direction_covered(target_pos, my_unit)
     return false
 end
 
+local function hungarian_algorithm(cost_matrix, n_bots, n_enemies)
+    local n = math.max(n_bots, n_enemies)
+    if n == 0 then return {} end
 
-function CoopSystem.update_clusters()
-    local t = game_time()
-    
-    if CoopSystem.data.last_cluster_update and (t - CoopSystem.data.last_cluster_update) < CONSTANTS.CLUSTER_UPDATE_INTERVAL then
-        return
-    end
-    CoopSystem.data.last_cluster_update = t
-
-    local active_bots = {}
-    for u_key, status in pairs(CoopSystem.data.teammates_status) do
-        if status.unit and alive(status.unit) then
-            table.insert(active_bots, { key = u_key, unit = status.unit, pos = status.position, fwd = status.facing_direction })
+    local matrix = {}
+    for i = 1, n do
+        matrix[i] = {}
+        for j = 1, n do
+            if i <= n_bots and j <= n_enemies then
+                matrix[i][j] = cost_matrix[i][j] or 0
+            else
+                matrix[i][j] = 0
+            end
         end
     end
-    
-    local k_count = #active_bots
-    if k_count < 1 then return end
+
+    local INF = 1e18
+    local u = {}
+    local v = {}
+    local p = {}
+    local way = {}
+
+    for i = 0, n do
+        u[i] = 0
+        v[i] = 0
+        p[i] = 0
+    end
+
+
+    for i = 1, n do
+        p[0] = i
+        local j0 = 0
+        local minv = {}
+        local used = {}
+
+        for j = 0, n do
+            minv[j] = INF
+            used[j] = false
+            way[j] = 0
+        end
+
+
+        repeat
+            used[j0] = true
+            local i0 = p[j0]
+            local delta = INF
+            local j1 = 0
+
+            for j = 1, n do
+                if not used[j] then
+                    local cur = matrix[i0][j] - u[i0] - v[j]
+                    if cur < minv[j] then
+                        minv[j] = cur
+                        way[j] = j0
+                    end
+                    if minv[j] < delta then
+                        delta = minv[j]
+                        j1 = j
+                    end
+                end
+            end
+
+
+            for j = 0, n do
+                if used[j] then
+                    u[p[j]] = u[p[j]] + delta
+                    v[j] = v[j] - delta
+                else
+                    minv[j] = minv[j] - delta
+                end
+            end
+
+            j0 = j1
+        until p[j0] == 0
+
+
+        repeat
+            local j1 = way[j0]
+            p[j0] = p[j1]
+            j0 = j1
+        until j0 == 0
+    end
+
+
+    local assignment = {}
+    for j = 1, n do
+        if p[j] > 0 and p[j] <= n_bots and j <= n_enemies then
+            assignment[p[j]] = j
+        end
+    end
+
+    return assignment
+end
+
+function CoopSystem.update_optimal_assignments()
+    local t = game_time()
+
+    if CoopSystem.data.last_assignment_update and (t - CoopSystem.data.last_assignment_update) < CONSTANTS.ASSIGNMENT_UPDATE_INTERVAL then
+        return
+    end
+    CoopSystem.data.last_assignment_update = t
+
+    local active_bots = {}
+    local bot_key_to_index = {}
+    for u_key, status in pairs(CoopSystem.data.teammates_status) do
+        if status.unit and alive(status.unit) then
+            table.insert(active_bots, {
+                key = u_key,
+                unit = status.unit,
+                pos = status.position,
+                fwd = status.facing_direction
+            })
+            bot_key_to_index[u_key] = #active_bots
+        end
+    end
+
+    local n_bots = #active_bots
+    if n_bots < 1 then
+        CoopSystem.data.optimal_assignments = {}
+        return
+    end
+
 
     local valid_enemies = {}
+    local enemy_key_to_index = {}
     local targets = CoopSystem.get_priority_targets()
 
     for k, v in pairs(targets) do
         if v.unit and alive(v.unit) then
             local pos = v.unit:movement() and v.unit:movement():m_head_pos()
             if pos then
-                table.insert(valid_enemies, { key = k, pos = pos })
+                table.insert(valid_enemies, {
+                    key = k,
+                    unit = v.unit,
+                    pos = pos,
+                    priority = v.priority or 1,
+                    state = v.state
+                })
+                enemy_key_to_index[k] = #valid_enemies
             end
         end
     end
 
     local n_enemies = #valid_enemies
-    if n_enemies == 0 then 
-        CoopSystem.data.enemy_clusters = {}
-        CoopSystem.data.bot_assignments = {}
-        return 
+    if n_enemies == 0 then
+        CoopSystem.data.optimal_assignments = {}
+        return
     end
 
-    local effective_k = math.min(k_count, n_enemies)
 
-    local centroids = {}
-    
-    if CoopSystem.data.previous_centroids and #CoopSystem.data.previous_centroids == effective_k then
-        for i, c in ipairs(CoopSystem.data.previous_centroids) do
-            centroids[i] = mvector3.copy(c)
-        end
-    else
-        for i = 1, effective_k do
-            centroids[i] = mvector3.copy(valid_enemies[math.random(1, n_enemies)].pos)
-        end
-    end
 
-    local assignments = {} 
-    
-    for iter = 1, CONSTANTS.KMEANS_MAX_ITERATIONS do
-        local clusters = {}
-        for i = 1, effective_k do clusters[i] = {} end
-        local changed = false
 
-        for _, enemy in ipairs(valid_enemies) do
-            local best_dist = math.huge
-            local best_c = 1
-            
-            for c_idx, c_pos in ipairs(centroids) do
-                local d = mvector3.distance_sq(enemy.pos, c_pos)
-                if d < best_dist then
-                    best_dist = d
-                    best_c = c_idx
+    local cost_matrix = {}
+    local MAX_COST = 1e9
+
+    for i, bot in ipairs(active_bots) do
+        cost_matrix[i] = {}
+        for j, enemy in ipairs(valid_enemies) do
+            local priority = enemy.priority or 1
+
+
+            local dist = 1
+            if bot.pos and enemy.pos then
+                dist = mvector3.distance(bot.pos, enemy.pos)
+            end
+
+
+            local dist_factor = 1 / (1 + dist / 1000)
+
+
+            local angle_factor = 1
+            if bot.fwd and bot.pos and enemy.pos then
+                local to_enemy = enemy.pos - bot.pos
+                if mvector3.length(to_enemy) > 0.1 then
+                    mvector3.normalize(to_enemy)
+                    local dot = mvector3.dot(bot.fwd, to_enemy)
+                    angle_factor = 0.5 + 0.5 * math.max(0, dot)
                 end
             end
-            
-            table.insert(clusters[best_c], enemy)
-            if assignments[enemy.key] ~= best_c then
-                assignments[enemy.key] = best_c
-                changed = true
-            end
-        end
 
-        for c_idx, cluster_points in ipairs(clusters) do
-            if #cluster_points > 0 then
-                local new_pos = Vector3(0, 0, 0)
-                for _, p in ipairs(cluster_points) do
-                    mvector3.add(new_pos, p.pos)
-                end
-                mvector3.divide(new_pos, #cluster_points)
-                centroids[c_idx] = new_pos
-            end
-        end
-        
-        if not changed then break end
-    end
 
-    CoopSystem.data.previous_centroids = centroids
-    CoopSystem.data.enemy_clusters = assignments
+            local score = priority * dist_factor * angle_factor
 
-    local bot_assignments = {}
-    local used_clusters = {}
-    
-    local suitability_list = {}
-    
-    for _, bot in ipairs(active_bots) do
-        for c_idx, c_pos in ipairs(centroids) do
-            local cache_key = tostring(bot.key) .. "_cluster_" .. c_idx
-            local score = nil
-            
-            if BB.CoopCacheManager.suitability then
-                score = BB.CoopCacheManager.suitability:get(cache_key)
-            end
 
-            if not score then
-                local dist = mvector3.distance(bot.pos, c_pos)
-                local angle_penalty = 0
-                
-                if bot.fwd then
-                    local to_cluster = c_pos - bot.pos
-                    mvector3.normalize(to_cluster)
-                    local dot = mvector3.dot(bot.fwd, to_cluster)
-                    angle_penalty = (1 - dot) * CONSTANTS.ALLOCATION_ANGLE_WEIGHT
-                end
-                
-                score = dist * (1 + angle_penalty)
-                
-                if BB.CoopCacheManager.suitability then
-                    BB.CoopCacheManager.suitability:set(cache_key, score, 0.5)
-                end
-            end
-            
-            table.insert(suitability_list, { 
-                bot_key = bot.key, 
-                cluster_idx = c_idx, 
-                score = score 
-            })
+            cost_matrix[i][j] = MAX_COST - score * 1000
         end
     end
 
-    table.sort(suitability_list, function(a, b) return a.score < b.score end)
 
-    local bots_assigned_count = 0
-    local assigned_bots_set = {}
+    local assignment = hungarian_algorithm(cost_matrix, n_bots, n_enemies)
 
-    for _, entry in ipairs(suitability_list) do
-        if not assigned_bots_set[entry.bot_key] and not used_clusters[entry.cluster_idx] then
-            bot_assignments[entry.bot_key] = entry.cluster_idx
-            used_clusters[entry.cluster_idx] = true
-            assigned_bots_set[entry.bot_key] = true
-            bots_assigned_count = bots_assigned_count + 1
-        end
-        
-        if bots_assigned_count >= effective_k or bots_assigned_count >= k_count then
-            break
+
+    local optimal_assignments = {}
+    for bot_idx, enemy_idx in pairs(assignment) do
+        if bot_idx <= n_bots and enemy_idx <= n_enemies then
+            local bot_key = active_bots[bot_idx].key
+            local enemy_key = valid_enemies[enemy_idx].key
+            optimal_assignments[bot_key] = enemy_key
         end
     end
 
-    CoopSystem.data.bot_assignments = bot_assignments
+    CoopSystem.data.optimal_assignments = optimal_assignments
 end
 
-function CoopSystem.is_my_assigned_cluster(target_u_key, my_key)
-    local t_cluster = CoopSystem.data.enemy_clusters and CoopSystem.data.enemy_clusters[target_u_key]
-    local my_cluster = CoopSystem.data.bot_assignments and CoopSystem.data.bot_assignments[my_key]
-    
-    if t_cluster and my_cluster then
-        return t_cluster == my_cluster
+function CoopSystem.is_my_assigned_target(target_u_key, my_key)
+    local my_assigned = CoopSystem.data.optimal_assignments and CoopSystem.data.optimal_assignments[my_key]
+    if my_assigned then
+        return my_assigned == target_u_key
     end
     return false
 end
 
-function CoopSystem.get_cluster_owner(target_u_key)
-    local t_cluster = CoopSystem.data.enemy_clusters and CoopSystem.data.enemy_clusters[target_u_key]
-    if not t_cluster then return nil end
-    
-    for b_key, c_idx in pairs(CoopSystem.data.bot_assignments or {}) do
-        if c_idx == t_cluster then
-            return b_key
+function CoopSystem.get_target_owner(target_u_key)
+    for bot_key, assigned_target in pairs(CoopSystem.data.optimal_assignments or {}) do
+        if assigned_target == target_u_key then
+            return bot_key
         end
     end
     return nil
 end
 
-function CoopSystem.is_cluster_covered(target_key, except_my_key, check_special)
-   local owner = CoopSystem.get_cluster_owner(target_key)
-   if owner and owner ~= except_my_key then
-       return true
-   end
-   return false
+function CoopSystem.is_target_covered(target_key, except_my_key, check_special)
+    local owner = CoopSystem.get_target_owner(target_key)
+    if owner and owner ~= except_my_key then
+        return true
+    end
+    return false
 end
+
+
+CoopSystem.update_clusters = CoopSystem.update_optimal_assignments
+CoopSystem.is_my_assigned_cluster = CoopSystem.is_my_assigned_target
+CoopSystem.get_cluster_owner = CoopSystem.get_target_owner
+CoopSystem.is_cluster_covered = CoopSystem.is_target_covered
+CoopSystem.is_clustering_enabled = CoopSystem.is_assignment_enabled
 
 CoopSystem.STATE_PRIORITY = {
     normal = 0,
@@ -527,10 +576,6 @@ function CoopSystem.get_closest_teammate_info(pos)
     return min_dist, in_danger_any, who
 end
 
-local function shield_blocks(attacker, target_head_pos)
-    return BB.CombatHelper.shield_blocks(attacker, target_head_pos, BB.MASK.enemy_shield_check)
-end
-
 function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
     if not (alive(my_unit) and att_obj and att_obj.unit and alive(att_obj.unit)) then
         return 0, "normal"
@@ -559,11 +604,11 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
     end
 
     if flags.turret then
-        prio = prio + 18
+        prio = prio + THREAT_WEIGHTS.COOP_TURRET_PRIO
     end
     if flags.dozer then
-        prio = prio + 13
-        
+        prio = prio + THREAT_WEIGHTS.COOP_DOZER_PRIO
+
         if pos and my_head then
             local e_mov = enemy:movement()
             local e_fwd = e_mov and e_mov:m_head_rot() and e_mov:m_head_rot():y()
@@ -571,46 +616,46 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
                 local to_me = my_head - pos
                 mvector3.normalize(to_me)
                 if mvector3.dot(e_fwd, to_me) > 0.7 then
-                    prio = prio + 20
+                    prio = prio + THREAT_WEIGHTS.COOP_DOZER_FACING_BONUS
                     state = "dozer_facing"
                 end
             end
         end
     end
     if flags.taser then
-        prio = prio + 14
+        prio = prio + THREAT_WEIGHTS.COOP_TASER_PRIO
     end
     if flags.cloaker then
-        prio = prio + (dis < 1400 and 18 or 12)
+        prio = prio + (dis < 1400 and THREAT_WEIGHTS.COOP_CLOAKER_CLOSE_PRIO or THREAT_WEIGHTS.COOP_CLOAKER_PRIO)
     end
     if flags.sniper then
-        prio = prio + 15
+        prio = prio + THREAT_WEIGHTS.COOP_SNIPER_PRIO
         if dis > 2500 then
-            prio = prio + 4
+            prio = prio + THREAT_WEIGHTS.COOP_SNIPER_FAR_BONUS
         end
     end
     if flags.medic then
-        prio = prio + 10
+        prio = prio + THREAT_WEIGHTS.COOP_MEDIC_PRIO
     end
 
     if flags.tasing then
-        prio = prio + 30
+        prio = prio + THREAT_WEIGHTS.COOP_TASING_PRIO
         state = "tasing_teammate"
     end
 
     if flags.spooc_attack then
-        prio = prio + 28
+        prio = prio + THREAT_WEIGHTS.COOP_SPOOC_PRIO
         state = "spooc_attacking"
     end
 
     if flags.shield then
         local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-        local blocked = pos and shield_blocks(my_unit, pos)
+        local blocked = pos and ThreatAssessment.shield_blocks(my_unit, pos)
 
         if blocked and not has_ap and dis > CONSTANTS.MELEE_DISTANCE then
-            prio = prio + 2
+            prio = prio + THREAT_WEIGHTS.COOP_SHIELD_BLOCKED_PRIO
         else
-            prio = prio + 9
+            prio = prio + THREAT_WEIGHTS.COOP_SHIELD_CLEAR_PRIO
         end
     end
 
@@ -632,7 +677,7 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
         end
 
         if cluster >= 3 then
-            prio = prio + 5
+            prio = prio + THREAT_WEIGHTS.COOP_CLUSTER_BONUS
         end
     end
 
@@ -641,7 +686,7 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
     end
 
     if att_obj.verified then
-        prio = prio + 2
+        prio = prio + THREAT_WEIGHTS.COOP_VERIFIED_BONUS
     end
 
     if not flags.sniper and not flags.turret then
@@ -793,7 +838,7 @@ function CoopSystem.get_pressure_adjusted_reload_threshold(unit, data, base_thre
     end
 
     local pressure = CoopSystem.calculate_team_pressure(unit, data)
-    
+
     local threshold = base_threshold
 
     if pressure >= CONSTANTS.PRESSURE_HIGH_THRESHOLD then
