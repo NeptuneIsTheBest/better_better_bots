@@ -369,7 +369,8 @@ function CombatBehavior.mark_enemy(data, criminal, to_mark, play_sound, play_act
         return
     end
 
-    local char_tweak = to_mark:base():char_tweak()
+    local base = to_mark:base()
+    local char_tweak = base and base.char_tweak and base:char_tweak() or nil
     local is_turret = EnemyClassifier.is_turret(to_mark)
     local is_special_enemy = EnemyClassifier.is_special(to_mark)
 
@@ -624,6 +625,154 @@ function CombatBehavior.execute_melee_attack(data, criminal)
     play_net_redirect(criminal, "melee")
 end
 
+local function dbscan_cluster(points, eps, minPts)
+    local n = #points
+    if n == 0 then return {}, {} end
+    
+    local dist_matrix = {}
+    for i = 1, n do
+        dist_matrix[i] = {}
+        for j = i, n do
+            if i == j then
+                dist_matrix[i][j] = 0
+            else
+                local pos_i = points[i].m_head_pos
+                local pos_j = points[j].m_head_pos
+                if pos_i and pos_j then
+                    local d = mvector3.distance(pos_i, pos_j)
+                    dist_matrix[i][j] = d
+                    dist_matrix[j] = dist_matrix[j] or {}
+                    dist_matrix[j][i] = d
+                else
+                    dist_matrix[i][j] = math.huge
+                    dist_matrix[j] = dist_matrix[j] or {}
+                    dist_matrix[j][i] = math.huge
+                end
+            end
+        end
+    end
+    
+    local function get_neighbors(i)
+        local neighbors = {}
+        for j = 1, n do
+            if dist_matrix[i][j] and dist_matrix[i][j] <= eps then
+                table.insert(neighbors, j)
+            end
+        end
+        return neighbors
+    end
+    
+    local labels = {}
+    for i = 1, n do labels[i] = 0 end
+    
+    local cluster_id = 0
+    local clusters = {}
+    
+    for i = 1, n do
+        if labels[i] == 0 then
+            local neighbors = get_neighbors(i)
+            
+            if #neighbors < minPts then
+                labels[i] = -1
+            else
+                cluster_id = cluster_id + 1
+                clusters[cluster_id] = {}
+                
+                labels[i] = cluster_id
+                table.insert(clusters[cluster_id], i)
+                
+                local seed_set = {}
+                for _, idx in ipairs(neighbors) do
+                    if idx ~= i then
+                        table.insert(seed_set, idx)
+                    end
+                end
+                
+                local k = 1
+                while k <= #seed_set do
+                    local q = seed_set[k]
+                    
+                    if labels[q] == -1 then
+                        labels[q] = cluster_id
+                        table.insert(clusters[cluster_id], q)
+                    end
+                    
+                    if labels[q] == 0 then
+                        labels[q] = cluster_id
+                        table.insert(clusters[cluster_id], q)
+                        
+                        local q_neighbors = get_neighbors(q)
+                        if #q_neighbors >= minPts then
+                            for _, new_idx in ipairs(q_neighbors) do
+                                local already_in = false
+                                for _, existing in ipairs(seed_set) do
+                                    if existing == new_idx then
+                                        already_in = true
+                                        break
+                                    end
+                                end
+                                if not already_in and new_idx ~= i then
+                                    table.insert(seed_set, new_idx)
+                                end
+                            end
+                        end
+                    end
+                    
+                    k = k + 1
+                end
+            end
+        end
+    end
+    
+    return clusters, labels
+end
+
+local function calculate_cluster_centroid(points, cluster_indices)
+    if #cluster_indices == 0 then return nil end
+    
+    local sum_x, sum_y, sum_z = 0, 0, 0
+    local valid_count = 0
+    
+    for _, idx in ipairs(cluster_indices) do
+        local pos = points[idx].m_head_pos
+        if pos then
+            sum_x = sum_x + mvector3.x(pos)
+            sum_y = sum_y + mvector3.y(pos)
+            sum_z = sum_z + mvector3.z(pos)
+            valid_count = valid_count + 1
+        end
+    end
+    
+    if valid_count == 0 then return nil end
+    
+    local centroid = Vector3(sum_x / valid_count, sum_y / valid_count, sum_z / valid_count)
+    return centroid
+end
+
+local function evaluate_cluster_value(points, cluster_indices)
+    local value = 0
+    local shield_bonus = CONSTANTS.CONC_SHIELD_BONUS or 2.0
+    local special_bonus = CONSTANTS.CONC_SPECIAL_BONUS or 1.5
+    
+    for _, idx in ipairs(cluster_indices) do
+        local u_char = points[idx]
+        local unit = u_char.unit
+        if alive(unit) then
+            value = value + 1
+            if EnemyClassifier.is_shield(unit, u_char) then
+                value = value + shield_bonus
+            end
+            if EnemyClassifier.is_special(unit, u_char)
+                    and not EnemyClassifier.is_dozer(unit)
+                    and not EnemyClassifier.is_turret(unit) then
+                value = value + special_bonus
+            end
+        end
+    end
+    
+    return value
+end
+
 function CombatBehavior.throw_concussion_grenade(data, criminal)
     if not (alive(criminal) and BB:get("conc", false)) then
         return false
@@ -662,64 +811,87 @@ function CombatBehavior.throw_concussion_grenade(data, criminal)
             local unit = u_char.unit
             if alive(unit) and are_units_foes(criminal, unit) then
                 local is_turret = EnemyClassifier.is_turret(unit)
+                local is_dozer = EnemyClassifier.is_dozer(unit)
                 local unit_brain = not is_turret and unit:brain()
 
-                if not (u_char.is_converted or (unit_brain and unit_brain:surrendered())) then
+                if not (u_char.is_converted or (unit_brain and unit_brain:surrendered()))
+                        and not is_dozer
+                        and not is_turret
+                then
                     local vec = u_char.m_head_pos - from_pos
                     if vec and mvector3.angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
-                        local is_dozer = EnemyClassifier.is_dozer(unit)
+                        close_enemies = close_enemies + 1
 
-                        if not is_dozer then
-                            close_enemies = close_enemies + 1
-
-                            if EnemyClassifier.is_shield(unit, u_char) then
-                                shield_count = shield_count + 1
-                            end
-
-                            if EnemyClassifier.is_special(unit, u_char) then
-                                special_count = special_count + 1
-                            end
-
-                            table.insert(enemy_cluster, u_char)
+                        if EnemyClassifier.is_shield(unit, u_char) then
+                            shield_count = shield_count + 1
                         end
+
+                        if EnemyClassifier.is_special(unit, u_char) then
+                            special_count = special_count + 1
+                        end
+
+                        table.insert(enemy_cluster, u_char)
                     end
                 end
             end
         end
     end
 
-    local should_throw = (close_enemies >= 5)
-            or (shield_count >= 2)
-            or (special_count >= 2 and close_enemies >= 3)
+    local min_enemies = CONSTANTS.CONC_MIN_ENEMIES or 5
+    local min_shields = CONSTANTS.CONC_MIN_SHIELDS or 2
+    local special_threshold = CONSTANTS.CONC_SPECIAL_THRESHOLD or 2
+    local special_min_enemies = CONSTANTS.CONC_SPECIAL_MIN_ENEMIES or 3
+    
+    local should_throw = (close_enemies >= min_enemies)
+            or (shield_count >= min_shields)
+            or (special_count >= special_threshold and close_enemies >= special_min_enemies)
 
     if not should_throw then
         return false
     end
 
-    local best_cluster_pos
-    local best_cluster_count = 0
-    local target_unit
-
-    for i, u_char1 in ipairs(enemy_cluster) do
-        local cluster_count = 0
-
-        for j, u_char2 in ipairs(enemy_cluster) do
-            if i ~= j and u_char2.m_head_pos then
-                local dist = mvector3.distance(u_char1.m_head_pos, u_char2.m_head_pos)
-                if dist <= CONSTANTS.CLUSTER_DISTANCE then
-                    cluster_count = cluster_count + 1
-                end
+    local eps = CONSTANTS.CLUSTER_DISTANCE or 1000
+    local minPts = CONSTANTS.DBSCAN_MIN_POINTS or 2
+    
+    local clusters, labels = dbscan_cluster(enemy_cluster, eps, minPts)
+    
+    local best_cluster_id = nil
+    local best_cluster_value = 0
+    local best_cluster_size = 0
+    
+    for cluster_id, indices in pairs(clusters) do
+        if #indices >= minPts then
+            local value = evaluate_cluster_value(enemy_cluster, indices)
+            if value > best_cluster_value or 
+               (value == best_cluster_value and #indices > best_cluster_size) then
+                best_cluster_value = value
+                best_cluster_size = #indices
+                best_cluster_id = cluster_id
             end
         end
-
-        if cluster_count > best_cluster_count then
-            best_cluster_count = cluster_count
-            best_cluster_pos = u_char1.m_head_pos
-            target_unit = u_char1.unit
+    end
+    
+    if not best_cluster_id or best_cluster_size < 2 then
+        return false
+    end
+    
+    local best_cluster_pos = calculate_cluster_centroid(enemy_cluster, clusters[best_cluster_id])
+    
+    local target_unit = nil
+    local min_dist_to_centroid = math.huge
+    
+    for _, idx in ipairs(clusters[best_cluster_id]) do
+        local u_char = enemy_cluster[idx]
+        if alive(u_char.unit) and u_char.m_head_pos then
+            local dist = mvector3.distance(best_cluster_pos, u_char.m_head_pos)
+            if dist < min_dist_to_centroid then
+                min_dist_to_centroid = dist
+                target_unit = u_char.unit
+            end
         end
     end
 
-    if not (alive(target_unit) and best_cluster_count >= 2 and best_cluster_pos) then
+    if not (alive(target_unit) and best_cluster_pos) then
         return false
     end
 
