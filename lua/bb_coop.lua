@@ -338,7 +338,8 @@ function CoopSystem.update_optimal_assignments()
                 key = u_key,
                 unit = status.unit,
                 pos = status.position,
-                fwd = status.facing_direction
+                fwd = status.facing_direction,
+                weapon_type = ThreatAssessment.get_weapon_archetype(status.unit)
             })
             bot_key_to_index[u_key] = #active_bots
         end
@@ -364,7 +365,8 @@ function CoopSystem.update_optimal_assignments()
                     unit = v.unit,
                     pos = pos,
                     priority = v.priority or 1,
-                    state = v.state
+                    state = v.state,
+                    is_special = is_special_unit(v.unit)
                 })
                 enemy_key_to_index[k] = #valid_enemies
             end
@@ -448,7 +450,22 @@ function CoopSystem.update_optimal_assignments()
             end
             ttk_score = math.min(ttk_score, CONSTANTS.TTK_SCORE_CAP)
 
-            local score = ((priority + coverage_bonus + state_bonus) + ttk_score) * dist_factor * angle_factor * dozer_penalty
+            local weapon_type_score = 0
+            local bot_weapon = bot.weapon_type
+            if bot_weapon == "sniper" then
+                if enemy.is_special then
+                    weapon_type_score = CONSTANTS.SNIPER_SPECIAL_BONUS
+                end
+            elseif bot_weapon == "shotgun" then
+                if dist < CONSTANTS.SHOTGUN_EFFECTIVE_RANGE then
+                    weapon_type_score = math.max(0, CONSTANTS.SHOTGUN_MAX_BONUS - dist / CONSTANTS.SHOTGUN_RANGE_DIVISOR)
+                end
+                if enemy.is_special and dist < CONSTANTS.SHOTGUN_EFFECTIVE_RANGE then
+                    weapon_type_score = weapon_type_score + CONSTANTS.SHOTGUN_SPECIAL_BONUS
+                end
+            end
+
+            local score = ((priority + coverage_bonus + state_bonus + weapon_type_score) + ttk_score) * dist_factor * angle_factor * dozer_penalty
 
             cost_matrix[i][j] = MAX_COST - score * 1000
         end

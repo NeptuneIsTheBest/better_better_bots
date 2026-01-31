@@ -25,25 +25,33 @@ function ThreatAssessment.shield_blocks(attacker, target_head_pos)
 end
 
 function ThreatAssessment.get_weapon_archetype(unit)
-    local equipped_wep = unit:inventory() and unit:inventory():equipped_unit()
+    local inv = unit:inventory()
+    local equipped_wep = inv and inv:equipped_unit()
     if not equipped_wep then
         return "unknown"
     end
 
-    local wep_tweak = equipped_wep:base() and equipped_wep:base()._tweak_data
-    if not wep_tweak or not wep_tweak.categories then
+    local wep_base = equipped_wep:base()
+    if not wep_base or not wep_base.is_category then
         return "unknown"
     end
 
-    local weapon_types = {
-        sniper = "sniper",
-        shotgun = "shotgun",
-    }
-
-    for category, weapon_type in pairs(weapon_types) do
-        if table.contains(wep_tweak.categories, category) then
-            return weapon_type
-        end
+    if wep_base:is_category("snp") then
+        return "sniper"
+    elseif wep_base:is_category("shotgun") then
+        return "shotgun"
+    elseif wep_base:is_category("lmg") then
+        return "lmg"
+    elseif wep_base:is_category("smg") then
+        return "smg"
+    elseif wep_base:is_category("assault_rifle") then
+        return "assault_rifle"
+    elseif wep_base:is_category("akimbo") then
+        return "akimbo"
+    elseif wep_base:is_category("pistol") then
+        return "pistol"
+    elseif wep_base:is_category("flamethrower") then
+        return "flamethrower"
     end
 
     return "rifle"
@@ -202,7 +210,6 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
             or (bot_head and target_data.m_head_pos and mvector3.distance(bot_head, target_data.m_head_pos))
             or 1000
 
-    local weapon_type = ThreatAssessment.get_weapon_archetype(bot_unit)
     local target_unit = target_data.unit
     local flags = EnemyClassifier.classify(target_unit, target_data)
     local tweak_name = _get_tweak_name(target_unit)
@@ -225,35 +232,6 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
         elseif PHALANX_MINION_SET[tweak_name] then
             score = score + 80
         end
-    end
-
-    local weapon_scores = {
-        sniper = function()
-            score = score + (flags.sniper and 50 or 20)
-            if dist < 800 then
-                score = score - 30
-            end
-        end,
-        shotgun = function()
-            score = score + math.max(0, 100 - dist / 10)
-            if flags.shield then
-                score = score + 40
-            end
-        end,
-        rifle = function()
-            if dist > 4000 then
-                score = score - 50
-            end
-        end,
-    }
-
-    local weapon_handler = weapon_scores[weapon_type]
-    if weapon_handler then
-        weapon_handler()
-    end
-
-    if flags.dozer and flags.medic and weapon_type ~= "shotgun" then
-        score = score + 20
     end
 
     local bot_fwd = bot_mov:m_head_rot():y()
