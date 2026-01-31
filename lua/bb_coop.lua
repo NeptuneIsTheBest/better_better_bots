@@ -13,6 +13,32 @@ local game_time = Utils.game_time
 local get_unit_health_ratio = UnitOps.health_ratio
 local are_units_foes = UnitOps.are_foes
 local is_dozer_unit = EnemyClassifier.is_dozer
+local is_special_unit = EnemyClassifier.is_special
+
+local function get_bot_weapon_dps(bot_unit)
+    if not (bot_unit and alive(bot_unit)) then return 10 end
+    local inventory = bot_unit:inventory()
+    local equipped_unit = inventory and inventory:equipped_unit()
+    local weapon_base = equipped_unit and equipped_unit:base()
+    if weapon_base then
+        local damage = weapon_base._damage or 1
+        local name_id = weapon_base._name_id
+        local fire_rate = 0.1
+
+        if name_id and tweak_data.weapon[name_id] then
+            local weapon_tweak = tweak_data.weapon[name_id]
+            if weapon_tweak.auto and weapon_tweak.auto.fire_rate then
+                fire_rate = weapon_tweak.auto.fire_rate
+            elseif weapon_tweak.fire_mode_data and weapon_tweak.fire_mode_data.fire_rate then
+                fire_rate = weapon_tweak.fire_mode_data.fire_rate
+            end
+        end
+
+        local dps = damage / math.max(fire_rate, 0.05)
+        return dps * 10
+    end
+    return 10
+end
 
 local CoopSystem = {}
 
@@ -31,15 +57,9 @@ BB.coop_data = CoopSystem.data
 CoopSystem._last_scan = BB._last_coop_scan or {}
 BB._last_coop_scan = CoopSystem._last_scan
 
-
 function CoopSystem.is_enabled()
     return BB:get("coop", false)
 end
-
-function CoopSystem.is_assignment_enabled()
-    return BB:get("coop", false) and BB:get("coop_optimal_assign", false)
-end
-
 
 function CoopSystem.update_teammate_status(unit)
     if not alive(unit) or not CoopSystem.is_enabled() then
@@ -357,9 +377,6 @@ function CoopSystem.update_optimal_assignments()
         return
     end
 
-
-
-
     local cost_matrix = {}
     local MAX_COST = 1e9
 
@@ -368,15 +385,12 @@ function CoopSystem.update_optimal_assignments()
         for j, enemy in ipairs(valid_enemies) do
             local priority = enemy.priority or 1
 
-
             local dist = 1
             if bot.pos and enemy.pos then
                 dist = mvector3.distance(bot.pos, enemy.pos)
             end
 
-
             local dist_factor = 1 / (1 + dist / 1000)
-
 
             local angle_factor = 1
             if bot.fwd and bot.pos and enemy.pos then
@@ -388,9 +402,53 @@ function CoopSystem.update_optimal_assignments()
                 end
             end
 
+            local coverage_bonus = 0
+            if enemy.pos and not CoopSystem.is_direction_covered(enemy.pos, bot.unit) then
+                coverage_bonus = THREAT_WEIGHTS.DIRECTION_BONUS
+            end
 
-            local score = priority * dist_factor * angle_factor
+            local dozer_penalty = 1
+            if is_dozer_unit(enemy.unit) then
+                local current_attackers = CoopSystem.count_dozer_attackers(enemy.key)
+                local attacker_limit = CoopSystem.get_dozer_attacker_limit(enemy.unit, dist)
+                if current_attackers >= attacker_limit then
+                    local already_targeting = CoopSystem.data.dozer_attackers[bot.key] == enemy.key
+                    if not already_targeting then
+                        dozer_penalty = 0.3
+                    end
+                end
+            end
 
+            local state_bonus = 0
+            if enemy.state == "tasing_teammate" then
+                state_bonus = THREAT_WEIGHTS.TASING_BONUS
+            elseif enemy.state == "spooc_attacking" then
+                state_bonus = THREAT_WEIGHTS.SPOOC_ATTACK_BONUS
+            elseif enemy.state == "dozer_facing" then
+                state_bonus = THREAT_WEIGHTS.COOP_DOZER_FACING_BONUS
+            elseif enemy.state == "near_teammate" then
+                state_bonus = 10
+            end
+
+            local enemy_health_ratio = get_unit_health_ratio(enemy.unit)
+            local bot_dps = get_bot_weapon_dps(bot.unit)
+            local ttk_score = 0
+            if bot_dps > 0 then
+                local kill_power = math.min(bot_dps / 100, 5.0)
+                local health_factor = math.max(enemy_health_ratio, 0.1)
+                ttk_score = kill_power / health_factor
+                if enemy_health_ratio < 0.3 then
+                    ttk_score = ttk_score * CONSTANTS.LOW_HEALTH_TTK_BONUS
+                end
+                if is_special_unit(enemy.unit) then
+                    if enemy_health_ratio > 0.5 then
+                        ttk_score = math.min(ttk_score, 5)
+                    end
+                end
+            end
+            ttk_score = math.min(ttk_score, CONSTANTS.TTK_SCORE_CAP)
+
+            local score = ((priority + coverage_bonus + state_bonus) + ttk_score) * dist_factor * angle_factor * dozer_penalty
 
             cost_matrix[i][j] = MAX_COST - score * 1000
         end
@@ -428,21 +486,6 @@ function CoopSystem.get_target_owner(target_u_key)
     end
     return nil
 end
-
-function CoopSystem.is_target_covered(target_key, except_my_key, check_special)
-    local owner = CoopSystem.get_target_owner(target_key)
-    if owner and owner ~= except_my_key then
-        return true
-    end
-    return false
-end
-
-
-CoopSystem.update_clusters = CoopSystem.update_optimal_assignments
-CoopSystem.is_my_assigned_cluster = CoopSystem.is_my_assigned_target
-CoopSystem.get_cluster_owner = CoopSystem.get_target_owner
-CoopSystem.is_cluster_covered = CoopSystem.is_target_covered
-CoopSystem.is_clustering_enabled = CoopSystem.is_assignment_enabled
 
 CoopSystem.STATE_PRIORITY = {
     normal = 0,
@@ -716,9 +759,7 @@ function CoopSystem.scan_and_update_priorities(data)
 
     CoopSystem._last_scan[my_key] = t
 
-    if CoopSystem.is_clustering_enabled() then
-        CoopSystem.update_clusters()
-    end
+    CoopSystem.update_optimal_assignments()
 
     for _, att_obj in pairs(data.detected_attention_objects or {}) do
         if att_obj.identified
@@ -843,7 +884,7 @@ function CoopSystem.get_pressure_adjusted_reload_threshold(unit, data, base_thre
 
     if pressure >= CONSTANTS.PRESSURE_HIGH_THRESHOLD then
         local factor = (pressure - CONSTANTS.PRESSURE_HIGH_THRESHOLD) / (1 - CONSTANTS.PRESSURE_HIGH_THRESHOLD)
-        threshold = math.lerp(base_threshold, 0.0, factor)
+        threshold = math.lerp(base_threshold, CONSTANTS.PRESSURE_RELOAD_MIN, factor)
     elseif pressure <= CONSTANTS.PRESSURE_LOW_THRESHOLD then
         local factor = (CONSTANTS.PRESSURE_LOW_THRESHOLD - pressure) / CONSTANTS.PRESSURE_LOW_THRESHOLD
         threshold = math.lerp(base_threshold, CONSTANTS.PRESSURE_RELOAD_MAX, factor)

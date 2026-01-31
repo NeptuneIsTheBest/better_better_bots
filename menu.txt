@@ -183,15 +183,6 @@
         },
         {
             "type" : "toggle",
-            "id" : "coop_optimal_assign_toggle",
-            "title" : "coop_optimal_assign_toggle_title",
-            "description" : "coop_optimal_assign_toggle_desc",
-            "callback" : "callback_coop_optimal_assign_toggle",
-            "value" : "coop_optimal_assign",
-            "default_value" : false
-        },
-        {
-            "type" : "toggle",
             "id" : "keepstaying_toggle",
             "title" : "keepstaying_toggle_title",
             "description" : "keepstaying_toggle_desc",

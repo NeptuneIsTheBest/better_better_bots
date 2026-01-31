@@ -174,33 +174,29 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
 
             local suitability = ThreatAssessment.calculate_suitability(unit, local_target_info.data)
 
-            if BB.CoopSystem.is_assignment_enabled() then
-                local is_special = EnemyClassifier.is_special(local_target_info.data.unit)
+            local is_special = EnemyClassifier.is_special(local_target_info.data.unit)
 
-                if BB.CoopSystem.is_my_assigned_target(u_key, data.key) then
-                    suitability = suitability + CONSTANTS.ASSIGNED_TARGET_BONUS
-                else
-                    local target_owner = BB.CoopSystem.get_target_owner(u_key)
-                    local unit = local_target_info.data.unit
-                    local is_high_threat = EnemyClassifier.is_dozer(unit)
-                            or EnemyClassifier.is_turret(unit)
-                            or EnemyClassifier.is_taser(unit)
-                            or EnemyClassifier.is_cloaker(unit)
+            if BB.CoopSystem.is_my_assigned_target(u_key, data.key) then
+                suitability = suitability + CONSTANTS.ASSIGNED_TARGET_BONUS
+            else
+                local target_owner = BB.CoopSystem.get_target_owner(u_key)
+                local target_unit = local_target_info.data.unit
+                local is_high_threat = EnemyClassifier.is_dozer(target_unit)
+                        or EnemyClassifier.is_turret(target_unit)
+                        or EnemyClassifier.is_taser(target_unit)
+                        or EnemyClassifier.is_cloaker(target_unit)
 
-                    if not is_high_threat then
-                        if not target_owner then
-                            suitability = suitability + CONSTANTS.UNASSIGNED_TARGET_BONUS
-                        elseif target_owner ~= data.key then
-                            suitability = suitability * CONSTANTS.OTHER_ASSIGNMENT_PENALTY
-                        end
+                if not is_high_threat then
+                    if not target_owner then
+                        suitability = suitability + CONSTANTS.UNASSIGNED_TARGET_BONUS
+                    elseif target_owner ~= data.key then
+                        suitability = suitability * CONSTANTS.OTHER_ASSIGNMENT_PENALTY
                     end
                 end
+            end
 
-                if is_special then
-                     suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
-                end
-            elseif not BB.CoopSystem.is_direction_covered(local_target_info.data.m_head_pos, unit) then
-                suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
+            if is_special then
+                 suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
             end
 
             local final_score = dynamic_prio * suitability * claimed_penalty

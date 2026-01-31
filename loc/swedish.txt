@@ -50,9 +50,7 @@
   "conc_toggle_title": "Bottar kastar chockgranater",
   "conc_toggle_desc": "Om markerad, kommer bottar att kasta chockgranater när de möter grupper av fiender i närheten.",
   "coop_toggle_title": "Bottar samarbetar för att döda fiender",
-  "coop_toggle_desc": "Om markerad, kommer bottar att koordinera eldgivning mot högprioriterade mål, ge understödseld för omladdande lagkamrater och täcka olika attackvinklar, och strida mycket likt mänskliga spelare.",
-  "coop_optimal_assign_toggle_title": "Optimal måltilldelning",
-  "coop_optimal_assign_toggle_desc": "Om markerad, kommer bottar att använda den ungerska algoritmen för att optimalt tilldela mål. Varje bot tilldelas det bästa målet baserat på avstånd, vinkel och hotprioritet, vilket säkerställer maximal stridseffektivitet. Speciella fiender är undantagna från denna regel.\\nNotera: Denna funktion beror på att 'Bottar samarbetar för att döda fiender' är aktiverat.",
+  "coop_toggle_desc": "Om markerad, kommer bottar att använda den ungerska algoritmen för att optimalt tilldela mål och koordinera eldgivning. Varje bot tilldelas det bästa målet baserat på avstånd, vinkel och hotprioritet, ge understödseld för omladdande lagkamrater och täcka olika attackvinklar.",
   "keepstaying_toggle_title": "Stanna Kvar",
   "keepstaying_toggle_desc": "Om markerad, kommer bottar alltid att stanna kvar på plats, oavsett avståndet till spelaren.\nNotera: Om du använder modden Keepers är det bättre att lämna detta inaktiverat."
 }
