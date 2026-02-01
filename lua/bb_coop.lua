@@ -90,6 +90,7 @@ function CoopSystem.update_teammate_status(unit)
         in_danger = health_ratio < 0.3,
         needs_cover = health_ratio < 0.15,
         is_reloading = is_reloading,
+        is_downed = unit:character_damage() and unit:character_damage():need_revive(),
         last_update = t,
     }
 
@@ -868,14 +869,30 @@ function CoopSystem.calculate_team_pressure(unit, data)
     local teammates_in_danger = 0
     for u_key, status in pairs(CoopSystem.data.teammates_status) do
         if u_key ~= unit:key() and status.unit and alive(status.unit) then
-            if status.in_danger then
+            if status.is_downed then
+                teammates_in_danger = teammates_in_danger + 1
+                pressure = pressure + CONSTANTS.PRESSURE_DOWNED_WEIGHT
+            elseif status.in_danger then
                 teammates_in_danger = teammates_in_danger + 1
                 pressure = pressure + CONSTANTS.PRESSURE_TEAMMATE_LOW_HEALTH_WEIGHT
             end
-            if status.needs_cover then
+            
+            if status.needs_cover and not status.is_downed then
                 pressure = pressure + CONSTANTS.PRESSURE_TEAMMATE_LOW_HEALTH_WEIGHT * 0.5
             end
+
+            if status.is_reloading and not status.is_downed then
+                pressure = pressure + CONSTANTS.PRESSURE_RELOADING_TEAMMATE_WEIGHT
+            end
         end
+    end
+    
+    local my_dmg = unit:character_damage()
+    if my_dmg then
+         local last_dmg_t = (my_dmg.last_suppression_t and my_dmg:last_suppression_t()) or 0
+         if (t - last_dmg_t) < CONSTANTS.RECENT_DAMAGE_DURATION then
+             pressure = pressure + CONSTANTS.PRESSURE_RECENT_DAMAGE_WEIGHT
+         end
     end
 
     local my_health = get_unit_health_ratio(unit)

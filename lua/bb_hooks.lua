@@ -843,6 +843,78 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
 
         return data, i
     end
+
+    local _bb_orig_get_target_pos = CopActionShoot._get_target_pos
+
+    function CopActionShoot:_get_target_pos(shoot_from_pos, attention, ...)
+        local target_pos, target_vec, target_dis, autotarget = _bb_orig_get_target_pos(self, shoot_from_pos, attention, ...)
+
+        if not BB:get("combat", false) or not (self._unit and alive(self._unit) and is_team_ai(self._unit)) then
+            return target_pos, target_vec, target_dis, autotarget
+        end
+        
+        if attention and attention.unit and alive(attention.unit) then
+            local target_unit = attention.unit
+            local target_movement = target_unit:movement()
+
+            if target_movement and target_movement.m_head_pos then
+                local head_pos = target_movement:m_head_pos()
+
+                if head_pos then
+                    local new_target_pos = Vector3()
+                    mvector3.set(new_target_pos, head_pos)
+
+                    local new_target_vec = Vector3()
+                    local new_target_dis = mvector3.direction(new_target_vec, shoot_from_pos, new_target_pos)
+
+                    return new_target_pos, new_target_vec, new_target_dis, autotarget
+                end
+            end
+        end
+
+        return target_pos, target_vec, target_dis, autotarget
+    end
+
+    local _bb_orig_get_transition_target_pos = CopActionShoot._get_transition_target_pos
+
+    function CopActionShoot:_get_transition_target_pos(shoot_from_pos, attention, t, ...)
+        local target_pos, target_vec, target_dis, autotarget = _bb_orig_get_transition_target_pos(self, shoot_from_pos, attention, t, ...)
+        
+        if not BB:get("combat", false) or not (self._unit and alive(self._unit) and is_team_ai(self._unit)) then
+            return target_pos, target_vec, target_dis, autotarget
+        end
+
+        if attention and attention.unit and alive(attention.unit) then
+            local target_unit = attention.unit
+            local target_movement = target_unit:movement()
+
+            if target_movement and target_movement.m_head_pos then
+                local head_pos = target_movement:m_head_pos()
+
+                if head_pos then
+                    local new_target_pos = Vector3()
+                    mvector3.set(new_target_pos, head_pos)
+
+                    local new_target_vec = Vector3()
+                    local new_target_dis = mvector3.direction(new_target_vec, shoot_from_pos, new_target_pos)
+
+                    if self._aim_transition then
+                        local transition = self._aim_transition
+                        local prog = (t - transition.start_t) / transition.duration
+
+                        if prog < 1 then
+                            prog = math.bezier({0, 0, 1, 1}, prog)
+                            mvector3.lerp(new_target_vec, transition.start_vec, new_target_vec, prog)
+                        end
+                    end
+
+                    return new_target_pos, new_target_vec, new_target_dis, autotarget
+                end
+            end
+        end
+
+        return target_pos, target_vec, target_dis, autotarget
+    end
 end
 
 if RequiredScript == "lib/units/enemies/cop/copbrain" then

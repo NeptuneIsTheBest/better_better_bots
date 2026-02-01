@@ -249,7 +249,7 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
 
     if flags.shield then
         local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-        if target_data.m_head_pos and (has_ap or not _shield_blocks(bot_unit, target_data.m_head_pos)) then
+        if target_data.m_head_pos and (has_ap or not ThreatAssessment.shield_blocks(bot_unit, target_data.m_head_pos)) then
             score = score + 30
         else
             score = score - 80

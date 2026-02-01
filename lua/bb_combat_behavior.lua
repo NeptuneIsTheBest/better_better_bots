@@ -493,8 +493,17 @@ function CombatBehavior.check_smart_reload(data)
     end
 
     local is_empty = clip_ammo == 0
+    local is_low_capacity = clip_max <= 20
+
+    if is_low_capacity and reload_threshold > 0.5 and nearby_threats > 0 then
+        reload_threshold = reload_threshold * 0.4
+    end
     
-    local want_tactical_reload = clip_ammo <= math.ceil(clip_max * reload_threshold)
+    local threshold_ammo = clip_max * reload_threshold
+
+    local threshold_val = is_low_capacity and math.floor(threshold_ammo) or math.ceil(threshold_ammo)
+
+    local want_tactical_reload = clip_ammo <= threshold_val
 
     if is_empty or want_tactical_reload then
         local action_type = "reload"
