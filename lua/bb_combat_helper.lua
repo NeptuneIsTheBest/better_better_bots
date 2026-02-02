@@ -15,15 +15,7 @@ function CombatHelper.shield_blocks(attacker, target_head_pos, mask)
         return false
     end
 
-    local ray = World:raycast(
-            "ray",
-            from,
-            target_head_pos,
-            "ignore_unit",
-            { attacker },
-            "slot_mask",
-            mask
-    )
+    local ray = World:raycast("ray", from, target_head_pos, "ignore_unit", { attacker }, "slot_mask", mask, "report")
     return ray and true or false
 end
 

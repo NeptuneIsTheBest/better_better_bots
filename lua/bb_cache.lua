@@ -179,28 +179,28 @@ function CoopCacheManager.init()
     })
 
     CoopCacheManager.priority_target = CacheManager.new({
-        ttl = 2,
+        ttl = 0.5,
         max_size = 100,
         cleanup_interval = 5,
         name = "PriorityTarget"
     })
 
     CoopCacheManager.threat_value = CacheManager.new({
-        ttl = 0.3,
+        ttl = 0.1,
         max_size = 200,
         cleanup_interval = 3,
         name = "ThreatValue"
     })
 
     CoopCacheManager.suitability = CacheManager.new({
-        ttl = 0.3,
+        ttl = 0.1,
         max_size = 200,
         cleanup_interval = 3,
         name = "Suitability"
     })
 
     CoopCacheManager.teammate_distance = CacheManager.new({
-        ttl = 0.2,
+        ttl = 0.5,
         max_size = 50,
         cleanup_interval = 2,
         name = "TeammateDistance"

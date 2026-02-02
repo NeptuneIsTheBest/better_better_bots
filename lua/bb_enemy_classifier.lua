@@ -8,7 +8,7 @@ EnemyClassifier._cache_manager = nil
 function EnemyClassifier._init_cache()
     if not EnemyClassifier._cache_manager and BB.CacheManager then
         EnemyClassifier._cache_manager = BB.CacheManager.new({
-            ttl = 0.5,
+            ttl = 1,
             max_size = 500,
             cleanup_interval = 5,
             name = "EnemyClassifier"

@@ -46,7 +46,6 @@ CoopSystem.data = BB.coop_data or {
     priority_targets = {},
     teammates_status = {},
     dozer_attackers = {},
-    target_directions = {},
     team_pressure_cache = {},
     reloading_count_cache = { count = 0, last_update = 0 },
     optimal_assignments = {},
@@ -144,32 +143,6 @@ function CoopSystem.count_active_teammates()
     end
 
     return count
-end
-
-function CoopSystem.get_dozer_attacker_limit(dozer_unit, dozer_distance)
-    if not alive(dozer_unit) then
-        return 1
-    end
-
-    local team_size = CoopSystem.count_active_teammates()
-    local health_ratio = get_unit_health_ratio(dozer_unit)
-    local base_limit = team_size >= 4 and 3 or (team_size >= 3 and 2 or 1)
-
-    if health_ratio < 0.3 then
-        base_limit = math.max(1, base_limit - 1)
-    elseif health_ratio > 0.7 and team_size >= 3 then
-        base_limit = base_limit + 1
-    end
-
-    if dozer_distance then
-        if dozer_distance < 800 then
-            base_limit = base_limit + 1
-        elseif dozer_distance > 2000 then
-            base_limit = math.max(1, base_limit - 1)
-        end
-    end
-
-    return math.min(base_limit, math.max(1, math.ceil(team_size / 2)))
 end
 
 function CoopSystem.count_dozer_attackers(dozer_u_key)
@@ -388,6 +361,14 @@ function CoopSystem.update_optimal_assignments()
         for j, enemy in ipairs(valid_enemies) do
             local priority = enemy.priority or 1
 
+            local visibility_factor = 1
+            if bot.pos and enemy.pos then
+                local ray = World:raycast("ray", bot.pos, enemy.pos, "slot_mask", managers.slot:get_mask("AI_visibility"), "ray_type", "ai_vision", "report")
+                if ray then
+                    visibility_factor = 0
+                end
+            end
+
             local dist = 1
             if bot.pos and enemy.pos then
                 dist = mvector3.distance(bot.pos, enemy.pos)
@@ -413,12 +394,12 @@ function CoopSystem.update_optimal_assignments()
             local dozer_penalty = 1
             if is_dozer_unit(enemy.unit) then
                 local current_attackers = CoopSystem.count_dozer_attackers(enemy.key)
-                local attacker_limit = CoopSystem.get_dozer_attacker_limit(enemy.unit, dist)
-                if current_attackers >= attacker_limit then
-                    local already_targeting = CoopSystem.data.dozer_attackers[bot.key] == enemy.key
-                    if not already_targeting then
-                        dozer_penalty = 0.3
-                    end
+                local already_targeting = CoopSystem.data.dozer_attackers[bot.key] == enemy.key
+                local other_attackers = already_targeting and (current_attackers - 1) or current_attackers
+                other_attackers = math.max(0, other_attackers)
+                
+                if other_attackers > 0 then
+                    dozer_penalty = math.pow(0.85, other_attackers)
                 end
             end
 
@@ -466,7 +447,7 @@ function CoopSystem.update_optimal_assignments()
                 end
             end
 
-            local score = ((priority + coverage_bonus + state_bonus + weapon_type_score) + ttk_score) * dist_factor * angle_factor * dozer_penalty
+            local score = ((priority + coverage_bonus + state_bonus + weapon_type_score) + ttk_score) * dist_factor * angle_factor * dozer_penalty * visibility_factor
 
             cost_matrix[i][j] = MAX_COST - score * 1000
         end

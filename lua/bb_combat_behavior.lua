@@ -47,6 +47,7 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
     local old_target_u_key = data._last_target_u_key
     local last_target_t = data._last_target_t or 0
 
+    local force_unlock = false
     local potential_targets_map = {}
     for u_key, attention_data in pairs(attention_objects or {}) do
         if attention_data.identified
@@ -71,6 +72,7 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
                     if flags.tasing then
                         threat = threat * 3.0
                         BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
+                        force_unlock = true
                     end
                     if flags.spooc_attack then
                         threat = threat * 3.5
@@ -78,6 +80,7 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
                             threat = threat * 1.5
                         end
                         BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
+                        force_unlock = true
                     end
 
                     if old_target_u_key
@@ -100,7 +103,7 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
 
     local lock_active = data._target_lock_until and (t < data._target_lock_until)
 
-    if lock_active and old_target_u_key and potential_targets_map[old_target_u_key] then
+    if lock_active and not force_unlock and old_target_u_key and potential_targets_map[old_target_u_key] then
         local locked = potential_targets_map[old_target_u_key]
         data._last_target_u_key = locked.data.u_key
         data._last_target_t = t
@@ -147,25 +150,22 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
             local target_unit = global_target.unit
             local is_turret = EnemyClassifier.is_turret(target_unit)
             local is_dozer = EnemyClassifier.is_dozer(target_unit)
+            local is_cloaker = EnemyClassifier.is_cloaker(target_unit)
+            local is_taser = EnemyClassifier.is_taser(target_unit)
 
             if is_dozer and not is_turret then
                 local current_attackers = BB.CoopSystem.count_dozer_attackers(u_key)
-                local attacker_limit = BB.CoopSystem.get_dozer_attacker_limit(
-                        global_target.unit,
-                        local_target_info.data.verified_dis
-                )
+                local already_targeting = BB.coop_data.dozer_attackers[data.key] == u_key
+                local other_attackers = already_targeting and (current_attackers - 1) or current_attackers
+                other_attackers = math.max(0, other_attackers)
 
-                if current_attackers >= attacker_limit then
-                    local already_targeting = BB.coop_data.dozer_attackers[data.key] == u_key
-                    if not already_targeting then
-                        dynamic_prio = dynamic_prio * 0.3
-                    end
+                if other_attackers > 0 then
+                     dynamic_prio = dynamic_prio * math.pow(0.85, other_attackers)
                 end
             end
 
             local claimed_penalty = 1
-            if not is_dozer
-                    and not is_turret
+            if not is_dozer and not is_turret and not is_cloaker and not is_taser
                     and global_target.targeted_by
                     and global_target.targeted_by ~= data.key
             then
@@ -240,19 +240,21 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
         local target_unit = target.data.unit
         local is_turret = EnemyClassifier.is_turret(target_unit)
         local is_dozer = EnemyClassifier.is_dozer(target_unit)
+        local is_cloaker = EnemyClassifier.is_cloaker(target_unit)
+        local is_taser = EnemyClassifier.is_taser(target_unit)
 
         local penalty = 1
         if g and g.targeted_by and g.targeted_by ~= data.key then
             if is_dozer and not is_turret then
                 local current_attackers = BB.CoopSystem.count_dozer_attackers(u_key)
-                local attacker_limit = BB.CoopSystem.get_dozer_attacker_limit(
-                        target.data.unit,
-                        target.data.verified_dis
-                )
-                if current_attackers >= attacker_limit then
-                    penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
+                local already_targeting = BB.coop_data.dozer_attackers[data.key] == u_key
+                local other_attackers = already_targeting and (current_attackers - 1) or current_attackers
+                other_attackers = math.max(0, other_attackers)
+
+                if other_attackers > 0 then
+                    penalty = penalty * math.pow(0.85, other_attackers)
                 end
-            elseif not is_turret then
+            elseif not is_turret and not is_cloaker and not is_taser then
                 penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
             end
         end
@@ -638,34 +640,19 @@ local function dbscan_cluster(points, eps, minPts)
     local n = #points
     if n == 0 then return {}, {} end
     
-    local dist_matrix = {}
-    for i = 1, n do
-        dist_matrix[i] = {}
-        for j = i, n do
-            if i == j then
-                dist_matrix[i][j] = 0
-            else
-                local pos_i = points[i].m_head_pos
-                local pos_j = points[j].m_head_pos
-                if pos_i and pos_j then
-                    local d = mvector3.distance(pos_i, pos_j)
-                    dist_matrix[i][j] = d
-                    dist_matrix[j] = dist_matrix[j] or {}
-                    dist_matrix[j][i] = d
-                else
-                    dist_matrix[i][j] = math.huge
-                    dist_matrix[j] = dist_matrix[j] or {}
-                    dist_matrix[j][i] = math.huge
-                end
-            end
-        end
-    end
+    local eps_sq = eps * eps
     
     local function get_neighbors(i)
         local neighbors = {}
+        local p1 = points[i].m_head_pos
+        if not p1 then return neighbors end
+
         for j = 1, n do
-            if dist_matrix[i][j] and dist_matrix[i][j] <= eps then
-                table.insert(neighbors, j)
+            local p2 = points[j].m_head_pos
+            if p2 then
+                if mvector3.distance_sq(p1, p2) <= eps_sq then
+                    table.insert(neighbors, j)
+                end
             end
         end
         return neighbors
@@ -691,9 +678,12 @@ local function dbscan_cluster(points, eps, minPts)
                 table.insert(clusters[cluster_id], i)
                 
                 local seed_set = {}
+                local in_seed_set = {}
+                
                 for _, idx in ipairs(neighbors) do
                     if idx ~= i then
                         table.insert(seed_set, idx)
+                        in_seed_set[idx] = true
                     end
                 end
                 
@@ -713,14 +703,8 @@ local function dbscan_cluster(points, eps, minPts)
                         local q_neighbors = get_neighbors(q)
                         if #q_neighbors >= minPts then
                             for _, new_idx in ipairs(q_neighbors) do
-                                local already_in = false
-                                for _, existing in ipairs(seed_set) do
-                                    if existing == new_idx then
-                                        already_in = true
-                                        break
-                                    end
-                                end
-                                if not already_in and new_idx ~= i then
+                                if not in_seed_set[new_idx] and new_idx ~= i then
+                                    in_seed_set[new_idx] = true
                                     table.insert(seed_set, new_idx)
                                 end
                             end
