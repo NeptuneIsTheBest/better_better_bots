@@ -57,6 +57,16 @@ function ThreatAssessment.get_weapon_archetype(unit)
     return "rifle"
 end
 
+function ThreatAssessment.get_archetype_damage_multiplier(bot_unit)
+    if not BB:get("combat", false) then
+        return 1
+    end
+    local dmg_mul = BB:get("dmgmul", 5)
+    local archetype = ThreatAssessment.get_weapon_archetype(bot_unit) or "unknown"
+    local archetype_mul = BB.ARCHETYPE_DAMAGE_MULTIPLIERS[archetype] or CONSTANTS.DEFAULT_ARCHETYPE_MUL
+    return dmg_mul * archetype_mul
+end
+
 function ThreatAssessment.count_alive_with_tweak(tweak_set)
     local gstate = managers.groupai and managers.groupai:state()
     if not (gstate and gstate._police) then

@@ -25,6 +25,8 @@ local function get_bot_weapon_dps(bot_unit)
         local name_id = weapon_base._name_id
         local fire_rate = 0.1
 
+        local dmg_mul = ThreatAssessment.get_archetype_damage_multiplier(bot_unit)
+
         if name_id and tweak_data.weapon[name_id] then
             local weapon_tweak = tweak_data.weapon[name_id]
             if weapon_tweak.auto and weapon_tweak.auto.fire_rate then
@@ -34,7 +36,7 @@ local function get_bot_weapon_dps(bot_unit)
             end
         end
 
-        local dps = damage / math.max(fire_rate, 0.05)
+        local dps = (damage * dmg_mul) / math.max(fire_rate, 0.05)
         return dps * 10
     end
     return 10
