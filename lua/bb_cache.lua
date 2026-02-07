@@ -15,17 +15,22 @@ function CacheManager.new(options)
     self._last_cleanup = 0
     self._cleanup_interval = options.cleanup_interval or 10
     self._name = options.name or "UnnamedCache"
+    self._count = 0
+    self._hits = 0
+    self._misses = 0
 
     return self
 end
 
 function CacheManager:get(key)
     if not key then
+        self._misses = self._misses + 1
         return nil
     end
 
     local entry = self._cache[key]
     if not entry then
+        self._misses = self._misses + 1
         return nil
     end
 
@@ -34,10 +39,13 @@ function CacheManager:get(key)
 
     if now - entry.t > ttl then
         self._cache[key] = nil
+        self._count = self._count - 1
+        self._misses = self._misses + 1
         return nil
     end
 
     entry.last_access = now
+    self._hits = self._hits + 1
     return entry.value
 end
 
@@ -47,6 +55,7 @@ function CacheManager:set(key, value, ttl)
     end
 
     local now = Utils.game_time()
+    local is_new = self._cache[key] == nil
 
     self._cache[key] = {
         value = value,
@@ -55,14 +64,22 @@ function CacheManager:set(key, value, ttl)
         ttl = ttl
     }
 
+    if is_new then
+        self._count = self._count + 1
+    end
+
     self:_maybe_cleanup(now)
 end
 
 function CacheManager:clear(key)
     if key then
-        self._cache[key] = nil
+        if self._cache[key] then
+            self._cache[key] = nil
+            self._count = self._count - 1
+        end
     else
         self._cache = {}
+        self._count = 0
         Utils.log(string.format("[%s] Cache cleared", self._name), "DEBUG")
     end
 end
@@ -72,11 +89,7 @@ function CacheManager:has(key)
 end
 
 function CacheManager:size()
-    local count = 0
-    for _ in pairs(self._cache) do
-        count = count + 1
-    end
-    return count
+    return self._count
 end
 
 function CacheManager:cleanup(force)
@@ -89,19 +102,18 @@ function CacheManager:cleanup(force)
     self._last_cleanup = now
 
     local removed = 0
-    local remaining = 0
 
     for k, entry in pairs(self._cache) do
         local ttl = entry.ttl or self._ttl
         if now - entry.t > ttl then
             self._cache[k] = nil
             removed = removed + 1
-        else
-            remaining = remaining + 1
         end
     end
 
-    if remaining > self._max_size then
+    self._count = self._count - removed
+
+    if self._count > self._max_size then
         local entries = {}
         for k, entry in pairs(self._cache) do
             table.insert(entries, {
@@ -114,17 +126,18 @@ function CacheManager:cleanup(force)
             return a.last_access < b.last_access
         end)
 
-        local to_remove = remaining - self._max_size
+        local to_remove = self._count - self._max_size
         for i = 1, to_remove do
             if entries[i] then
                 self._cache[entries[i].key] = nil
                 removed = removed + 1
+                self._count = self._count - 1
             end
         end
     end
 
     if removed > 0 then
-        Utils.log(string.format("[%s] Cleaned %d entries, %d remaining", self._name, removed, self:size()), "DEBUG")
+        Utils.log(string.format("[%s] Cleaned %d entries, %d remaining", self._name, removed, self._count), "DEBUG")
     end
 end
 
@@ -145,30 +158,24 @@ function CacheManager:keys()
 end
 
 function CacheManager:stats()
-    local now = Utils.game_time()
-    local total = 0
-    local expired = 0
-
-    for _, entry in pairs(self._cache) do
-        total = total + 1
-        local ttl = entry.ttl or self._ttl
-        if now - entry.t > ttl then
-            expired = expired + 1
-        end
-    end
+    local total_requests = self._hits + self._misses
+    local hit_rate = total_requests > 0 and (self._hits / total_requests * 100) or 0
 
     return {
         name = self._name,
-        total = total,
-        expired = expired,
-        valid = total - expired,
+        total = self._count,
         max_size = self._max_size,
         ttl = self._ttl,
-        last_cleanup = self._last_cleanup
+        last_cleanup = self._last_cleanup,
+        hits = self._hits,
+        misses = self._misses,
+        hit_rate = hit_rate
     }
 end
 
 local CoopCacheManager = {}
+
+local CACHE_NAMES = {"teammate_status", "priority_target", "threat_value", "suitability", "teammate_distance"}
 
 function CoopCacheManager.init()
     CoopCacheManager.teammate_status = CacheManager.new({
@@ -208,39 +215,29 @@ function CoopCacheManager.init()
 end
 
 function CoopCacheManager.cleanup_all()
-    if CoopCacheManager.teammate_status then
-        CoopCacheManager.teammate_status:cleanup(true)
-    end
-    if CoopCacheManager.priority_target then
-        CoopCacheManager.priority_target:cleanup(true)
-    end
-    if CoopCacheManager.threat_value then
-        CoopCacheManager.threat_value:cleanup(true)
-    end
-    if CoopCacheManager.suitability then
-        CoopCacheManager.suitability:cleanup(true)
-    end
-    if CoopCacheManager.teammate_distance then
-        CoopCacheManager.teammate_distance:cleanup(true)
+    for _, name in ipairs(CACHE_NAMES) do
+        if CoopCacheManager[name] then
+            CoopCacheManager[name]:cleanup(true)
+        end
     end
 end
 
 function CoopCacheManager.clear_all()
-    if CoopCacheManager.teammate_status then
-        CoopCacheManager.teammate_status:clear()
+    for _, name in ipairs(CACHE_NAMES) do
+        if CoopCacheManager[name] then
+            CoopCacheManager[name]:clear()
+        end
     end
-    if CoopCacheManager.priority_target then
-        CoopCacheManager.priority_target:clear()
+end
+
+function CoopCacheManager.all_stats()
+    local result = {}
+    for _, name in ipairs(CACHE_NAMES) do
+        if CoopCacheManager[name] then
+            result[name] = CoopCacheManager[name]:stats()
+        end
     end
-    if CoopCacheManager.threat_value then
-        CoopCacheManager.threat_value:clear()
-    end
-    if CoopCacheManager.suitability then
-        CoopCacheManager.suitability:clear()
-    end
-    if CoopCacheManager.teammate_distance then
-        CoopCacheManager.teammate_distance:clear()
-    end
+    return result
 end
 
 CoopCacheManager.init()

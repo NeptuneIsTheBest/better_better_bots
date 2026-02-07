@@ -205,6 +205,20 @@ end
 
 if RequiredScript == "lib/units/player_team/teamaidamage" then
     if Network:is_server() then
+        local health_multipliers = { nil, 2, 3 }
+
+        Hooks:PostHook(TeamAIDamage, "init", "BB_TeamAIDamage_init_HealthBoost", function(self, unit)
+            local health_idx = BB:get("health", 1)
+            local multiplier = health_multipliers[health_idx]
+            if multiplier then
+                self._HEALTH_INIT = self._HEALTH_INIT * multiplier
+                self._health = self._HEALTH_INIT
+                self._HEALTH_TOTAL = self._HEALTH_INIT + self._HEALTH_BLEEDOUT_INIT
+                self._HEALTH_TOTAL_PERCENT = self._HEALTH_TOTAL / 100
+                self._health_ratio = self._health / self._HEALTH_INIT
+            end
+        end)
+
         Hooks:PostHook(TeamAIDamage, "_apply_damage", "BB_TeamAIDamage_applyDamage_SayHurt", function(self, ...)
             if not BB:get("doc", false) then
                 return
@@ -280,13 +294,13 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 then
                      local ThreatAssessment = BB.ThreatAssessment
                      local archetype = ThreatAssessment and ThreatAssessment.get_weapon_archetype(self._unit) or "unknown"
-                     local acc_mul = 1
+                     local acc_mul = 1.1
                      if archetype == "sniper" then
-                         acc_mul = 1.5
-                     elseif archetype == "assault_rifle" then
                          acc_mul = 1.25
+                     elseif archetype == "assault_rifle" then
+                         acc_mul = 1.5
                      elseif archetype == "lmg" then
-                         acc_mul = 1.1
+                         acc_mul = 1.2
                      end
                      return old_accuracy_multiplier(self, ...) * acc_mul
                 end
@@ -352,16 +366,7 @@ if RequiredScript == "lib/managers/criminalsmanager" then
 
         if tweak_data and tweak_data.character and tweak_data.character.presets then
             local char_preset = tweak_data.character.presets
-            local health_multipliers = { nil, 2, 3 }
             local dodge_options = { "poor", "average", "heavy", "athletic", "ninja" }
-
-            if char_preset.gang_member_damage then
-                local health_idx = BB:get("health", 1)
-                if health_multipliers[health_idx] then
-                    local base_health = char_preset.gang_member_damage.HEALTH_INIT or 133
-                    char_preset.gang_member_damage.HEALTH_INIT = base_health * health_multipliers[health_idx]
-                end
-            end
 
             local gang_weapon = char_preset.weapon and (char_preset.weapon.bot_weapons or char_preset.weapon.gang_member)
 
@@ -376,8 +381,8 @@ if RequiredScript == "lib/managers/criminalsmanager" then
                         v.always_face_enemy = true
                         v.crouch_move = true
 
-                        if char_preset.hurt_severities and char_preset.hurt_severities.only_light_hurt then
-                            v.damage.hurt_severity = char_preset.hurt_severities.only_light_hurt
+                        if char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
+                            v.damage.hurt_severity = char_preset.hurt_severities.no_hurts
                         end
 
                         if char_preset.move_speed and char_preset.move_speed.lightning then
@@ -518,6 +523,18 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                         end
                     end
                 end
+            end
+        end
+
+        if TeamAIMovement.get_reload_speed_multiplier then
+            local old_get_reload_speed_multiplier = TeamAIMovement.get_reload_speed_multiplier
+
+            function TeamAIMovement:get_reload_speed_multiplier(...)
+                local multiplier = old_get_reload_speed_multiplier(self, ...)
+                if BB:get("combat", false) and self._unit and is_team_ai(self._unit) then
+                    return (multiplier or 1) * 2
+                end
+                return multiplier
             end
         end
 
