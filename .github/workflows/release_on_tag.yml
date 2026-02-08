@@ -94,14 +94,22 @@ jobs:
           ZIP="${ZIP_NAME}"
           NOTES_FILE="${NOTES_FILE}"
 
+          PRERELEASE_FLAG=""
+          if [[ "$TAG" =~ rc|alpha|beta|pre ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Use unquoted variable expansion to ignore if empty
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" \
               --title "$TITLE" \
-              --notes-file "$NOTES_FILE"
+              --notes-file "$NOTES_FILE" \
+              $PRERELEASE_FLAG
           else
             gh release create "$TAG" \
               --title "$TITLE" \
-              --notes-file "$NOTES_FILE"
+              --notes-file "$NOTES_FILE" \
+              $PRERELEASE_FLAG
           fi
 
           gh release upload "$TAG" "$ZIP" --clobber
