@@ -135,10 +135,6 @@ function CacheManager:cleanup(force)
             end
         end
     end
-
-    if removed > 0 then
-        Utils.log(string.format("[%s] Cleaned %d entries, %d remaining", self._name, removed, self._count), "DEBUG")
-    end
 end
 
 function CacheManager:_maybe_cleanup(now)
@@ -175,7 +171,7 @@ end
 
 local CoopCacheManager = {}
 
-local CACHE_NAMES = {"teammate_status", "priority_target", "threat_value", "suitability", "teammate_distance"}
+local CACHE_NAMES = {"teammate_status", "priority_target", "threat_value", "suitability", "teammate_distance", "conc_area_cooldown"}
 
 function CoopCacheManager.init()
     CoopCacheManager.teammate_status = CacheManager.new({
@@ -211,6 +207,13 @@ function CoopCacheManager.init()
         max_size = 50,
         cleanup_interval = 2,
         name = "TeammateDistance"
+    })
+
+    CoopCacheManager.conc_area_cooldown = CacheManager.new({
+        ttl = 3,
+        max_size = 50,
+        cleanup_interval = 2,
+        name = "ConcAreaCooldown"
     })
 end
 

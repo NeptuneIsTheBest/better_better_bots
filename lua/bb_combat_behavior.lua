@@ -15,6 +15,14 @@ local request_act = UnitOps.request_act
 local play_net_redirect = UnitOps.play_redirect
 local get_unit_health_ratio = UnitOps.health_ratio
 
+local function get_conc_area_key(pos)
+    local grid_size = CONSTANTS.CONC_AREA_RADIUS or 1500
+    local gx = math.floor(mvector3.x(pos) / grid_size)
+    local gy = math.floor(mvector3.y(pos) / grid_size)
+    local gz = math.floor(mvector3.z(pos) / grid_size)
+    return string.format("conc_%d_%d_%d", gx, gy, gz)
+end
+
 local SLOTS = BB.SLOTS
 local MASK = {
     enemy_shield_check = Utils.get_safe_mask("enemy_shield_check", 8),
@@ -22,6 +30,24 @@ local MASK = {
 
 local function shield_blocks(attacker, target_head_pos)
     return BB.CombatHelper.shield_blocks(attacker, target_head_pos, MASK.enemy_shield_check)
+end
+
+local function is_surrendering(unit)
+    if not alive(unit) then
+        return false
+    end
+
+    local anim = unit:anim_data()
+    if anim and (anim.hands_back or anim.surrender or anim.hands_tied) then
+        return true
+    end
+
+    local brain = unit:brain()
+    if brain and brain.surrendered and brain:surrendered() then
+        return true
+    end
+
+    return false
 end
 
 local CombatBehavior = {}
@@ -65,7 +91,9 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
                     end
                 end
 
-                if not dom_active then
+                local is_in_surrender_state = is_surrendering(attention_data.unit)
+
+                if not dom_active and not is_in_surrender_state then
                     local threat = ThreatAssessment.calculate_threat_value(unit, attention_data, data)
 
                     local flags = BB.classify_enemy(attention_data.unit, attention_data)
@@ -405,6 +433,43 @@ function CombatBehavior.mark_enemy(data, criminal, to_mark, play_sound, play_act
     data._ai_last_mark_t = t
 end
 
+local function _is_enemy_actively_firing(enemy_unit, my_unit)
+    if not alive(enemy_unit) then
+        return false, false
+    end
+
+    local enemy_brain = enemy_unit:brain()
+    if not enemy_brain then
+        return false, false
+    end
+
+    local logic_data = enemy_brain._logic_data
+    if not logic_data then
+        return false, false
+    end
+
+    local internal_data = logic_data.internal_data
+    local is_firing = internal_data and (internal_data.firing or internal_data.shooting)
+
+    local is_targeting_me = false
+    if is_firing and logic_data.attention_obj then
+        local att_obj = logic_data.attention_obj
+        if att_obj.unit and alive(att_obj.unit) then
+            if att_obj.unit == my_unit then
+                is_targeting_me = true
+            elseif alive(my_unit) and my_unit:movement() then
+                local my_pos = my_unit:movement():m_head_pos()
+                local att_pos = att_obj.m_head_pos or (att_obj.unit:movement() and att_obj.unit:movement():m_head_pos())
+                if my_pos and att_pos and mvector3.distance(my_pos, att_pos) < 500 then
+                    is_targeting_me = true
+                end
+            end
+        end
+    end
+
+    return is_firing, is_targeting_me
+end
+
 function CombatBehavior.check_smart_reload(data)
     local unit = data.unit
     if not alive(unit) then return end
@@ -441,7 +506,9 @@ function CombatBehavior.check_smart_reload(data)
     end
 
     local nearby_threats = 0
+    local active_threats = 0
     local closest_threat_dis = math.huge
+    local closest_active_threat_dis = math.huge
     local active_enemy = nil
     
     if unit_movement:attention() and unit_movement:attention().unit then
@@ -451,17 +518,30 @@ function CombatBehavior.check_smart_reload(data)
     for _, u_char in pairs(data.detected_attention_objects or {}) do
         if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
             nearby_threats = nearby_threats + 1
-            if u_char.verified_dis and u_char.verified_dis < closest_threat_dis then
-                closest_threat_dis = u_char.verified_dis
+            local dis = u_char.verified_dis or math.huge
+            if dis < closest_threat_dis then
+                closest_threat_dis = dis
+            end
+
+            local is_firing, is_targeting_me = _is_enemy_actively_firing(u_char.unit, unit)
+            if is_firing then
+                active_threats = active_threats + 1
+                if is_targeting_me and dis < closest_active_threat_dis then
+                    closest_active_threat_dis = dis
+                end
             end
         end
     end
 
-    if clip_ammo > 0 and closest_threat_dis < 700 then
+    if clip_ammo > 0 and active_threats > 0 and closest_active_threat_dis < 500 then
         return 
     end
 
-    if clip_ammo > 0 and pressure > 0.75 then
+    if clip_ammo > 0 and closest_threat_dis < 300 then
+        return
+    end
+
+    if clip_ammo > 0 and pressure > 0.85 then
         return
     end
 
@@ -469,25 +549,30 @@ function CombatBehavior.check_smart_reload(data)
         local is_dangerous_special = EnemyClassifier.is_dozer(active_enemy)
                 or EnemyClassifier.is_taser(active_enemy)
                 or EnemyClassifier.is_cloaker(active_enemy)
-        if is_dangerous_special and closest_threat_dis < 1500 then
+        
+        local is_firing, is_targeting_me = _is_enemy_actively_firing(active_enemy, unit)
+        
+        if is_dangerous_special and is_firing and closest_threat_dis < 1200 then
             return
         end
         
-        if unit:anim_data().fire then
+        if unit:anim_data().fire and is_targeting_me and closest_threat_dis < 800 then
              return
         end
     end
 
-    local reload_threshold = 0.1
+    local reload_threshold = 0.05
 
     if nearby_threats == 0 then
         reload_threshold = 0.9
-    elseif closest_threat_dis > 1500 then
-        reload_threshold = 0.5
-    elseif closest_threat_dis > 800 then
-        reload_threshold = 0.2
-    else
-        reload_threshold = 0.05
+    elseif active_threats == 0 then
+        reload_threshold = 0.6
+    elseif closest_threat_dis > 2000 then
+        reload_threshold = 0.4
+    elseif closest_threat_dis > 1200 then
+        reload_threshold = 0.25
+    elseif closest_threat_dis > 600 then
+        reload_threshold = 0.1
     end
 
     if BB:get("coop", false) then
@@ -495,29 +580,25 @@ function CombatBehavior.check_smart_reload(data)
     end
 
     local is_empty = clip_ammo == 0
-    local is_low_capacity = clip_max <= 20
+    local is_low_capacity = clip_max <= 10
 
-    if is_low_capacity and reload_threshold > 0.5 and nearby_threats > 0 then
-        reload_threshold = reload_threshold * 0.4
+    if is_low_capacity and reload_threshold > 0.5 then
+        reload_threshold = reload_threshold * 0.3
     end
     
     local threshold_ammo = clip_max * reload_threshold
-
     local threshold_val = is_low_capacity and math.floor(threshold_ammo) or math.ceil(threshold_ammo)
-
     local want_tactical_reload = clip_ammo <= threshold_val
 
     if is_empty or want_tactical_reload then
-        local action_type = "reload"
         local brain = unit:brain()
-        
         if not brain then return end
 
         if not is_empty then
             local objective = data.objective
             local in_cover = objective and objective.in_place
             
-            if not in_cover and closest_threat_dis < 1200 then
+            if not in_cover and active_threats > 0 and closest_active_threat_dis < 1000 then
                 return
             end
         end
@@ -807,7 +888,7 @@ function CombatBehavior.throw_concussion_grenade(data, criminal)
                 local is_dozer = EnemyClassifier.is_dozer(unit)
                 local unit_brain = not is_turret and unit:brain()
 
-                if not (u_char.is_converted or (unit_brain and unit_brain:surrendered()))
+                if not (u_char.is_converted or is_surrendering(unit))
                         and not is_dozer
                         and not is_turret
                 then
@@ -869,6 +950,13 @@ function CombatBehavior.throw_concussion_grenade(data, criminal)
     end
     
     local best_cluster_pos = calculate_cluster_centroid(enemy_cluster, clusters[best_cluster_id])
+
+    if best_cluster_pos then
+        local area_key = get_conc_area_key(best_cluster_pos)
+        if CoopCacheManager.conc_area_cooldown:has(area_key) then
+            return false
+        end
+    end
     
     local target_unit = nil
     local min_dist_to_centroid = math.huge
@@ -888,6 +976,80 @@ function CombatBehavior.throw_concussion_grenade(data, criminal)
         return false
     end
 
+    local player_safe_radius = CONSTANTS.CONC_PLAYER_SAFE_RADIUS or 1000
+    local player_safe_radius_sq = player_safe_radius * player_safe_radius
+    local adjusted_pos = Vector3()
+    mvector3.set(adjusted_pos, best_cluster_pos)
+    
+    local max_adjustments = 3
+    for _ = 1, max_adjustments do
+        local needs_adjustment = false
+        local push_dir = Vector3()
+        local closest_player_dist_sq = math.huge
+        
+        for _, u_data in pairs(managers.groupai:state():all_player_criminals() or {}) do
+            if alive(u_data.unit) and u_data.unit:movement() then
+                local player_pos = u_data.unit:movement():m_head_pos()
+                if player_pos then
+                    local dist_sq = mvector3.distance_sq(adjusted_pos, player_pos)
+                    if dist_sq < player_safe_radius_sq then
+                        needs_adjustment = true
+                        if dist_sq < closest_player_dist_sq then
+                            closest_player_dist_sq = dist_sq
+                            mvector3.set(push_dir, adjusted_pos)
+                            mvector3.subtract(push_dir, player_pos)
+                        end
+                    end
+                end
+            end
+        end
+        
+        if not needs_adjustment then
+            break
+        end
+        
+        local push_length = mvector3.length(push_dir)
+        if push_length < 1 then
+            mvector3.set(push_dir, from_pos)
+            mvector3.subtract(push_dir, adjusted_pos)
+            mvector3.negate(push_dir)
+            push_length = mvector3.length(push_dir)
+            if push_length < 1 then
+                return false
+            end
+        end
+        
+        mvector3.normalize(push_dir)
+        local current_dist = math.sqrt(closest_player_dist_sq)
+        local offset_needed = player_safe_radius - current_dist + 100
+        mvector3.multiply(push_dir, offset_needed)
+        mvector3.add(adjusted_pos, push_dir)
+    end
+    
+    local final_check_failed = false
+    for _, u_data in pairs(managers.groupai:state():all_player_criminals() or {}) do
+        if alive(u_data.unit) and u_data.unit:movement() then
+            local player_pos = u_data.unit:movement():m_head_pos()
+            if player_pos then
+                local dist_sq = mvector3.distance_sq(adjusted_pos, player_pos)
+                if dist_sq < player_safe_radius_sq then
+                    final_check_failed = true
+                    break
+                end
+            end
+        end
+    end
+    
+    if final_check_failed then
+        return false
+    end
+    
+    best_cluster_pos = adjusted_pos
+    local area_key = get_conc_area_key(best_cluster_pos)
+    if CoopCacheManager.conc_area_cooldown:has(area_key) then
+        return false
+    end
+
     local mvec_spread_direction = best_cluster_pos - from_pos
 
     if ProjectileBase and ProjectileBase.spawn then
@@ -899,6 +1061,8 @@ function CombatBehavior.throw_concussion_grenade(data, criminal)
                 play_net_redirect(criminal, "throw_grenade")
                 safe_say(criminal, "g43", true, true)
                 safe_call(base_ext.throw, base_ext, { dir = mvec_spread_direction, owner = criminal })
+                local area_key = get_conc_area_key(best_cluster_pos)
+                CoopCacheManager.conc_area_cooldown:set(area_key, true)
                 return true
             end
         end

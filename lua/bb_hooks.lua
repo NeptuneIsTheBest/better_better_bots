@@ -294,13 +294,13 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 then
                      local ThreatAssessment = BB.ThreatAssessment
                      local archetype = ThreatAssessment and ThreatAssessment.get_weapon_archetype(self._unit) or "unknown"
-                     local acc_mul = 1.1
+                     local acc_mul = 1.5
                      if archetype == "sniper" then
-                         acc_mul = 1.25
+                         acc_mul = 1.75
                      elseif archetype == "assault_rifle" then
-                         acc_mul = 1.5
+                         acc_mul = 2.0
                      elseif archetype == "lmg" then
-                         acc_mul = 1.2
+                         acc_mul = 2.5
                      end
                      return old_accuracy_multiplier(self, ...) * acc_mul
                 end
