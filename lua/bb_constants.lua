@@ -127,8 +127,34 @@ local ENEMY_TWEAK_MAP = {
     swat_turret_gun = { turret = true },
 }
 
+local INFER_FLAGS_PATTERNS = {
+    turret = "turret",
+    shield = "shield",
+    tank = "dozer",
+    dozer = "dozer",
+    taser = "taser",
+    spooc = "cloaker",
+    cloaker = "cloaker",
+    medic = "medic",
+    sniper = "sniper",
+    phalanx = "captain",
+    captain = "captain",
+}
+
+local CLASSIFY_TAG_MAP = {
+    shield = "shield",
+    tank = "dozer",
+    taser = "taser",
+    spooc = "cloaker",
+    sniper = "sniper",
+    medic = "medic",
+    phalanx = "captain",
+}
+
 BB.CONSTANTS = CONSTANTS
 BB.THREAT_WEIGHTS = THREAT_WEIGHTS
 BB.SLOTS = SLOTS
 BB.ENEMY_TWEAK_MAP = ENEMY_TWEAK_MAP
 BB.ARCHETYPE_DAMAGE_MULTIPLIERS = ARCHETYPE_DAMAGE_MULTIPLIERS
+BB.INFER_FLAGS_PATTERNS = INFER_FLAGS_PATTERNS
+BB.CLASSIFY_TAG_MAP = CLASSIFY_TAG_MAP

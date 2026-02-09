@@ -25,21 +25,7 @@ function EnemyClassifier._infer_flags_from_name(name)
 
     name = tostring(name):lower()
 
-    local patterns = {
-        turret = "turret",
-        shield = "shield",
-        tank = "dozer",
-        dozer = "dozer",
-        taser = "taser",
-        spooc = "cloaker",
-        cloaker = "cloaker",
-        medic = "medic",
-        sniper = "sniper",
-        phalanx = "captain",
-        captain = "captain",
-    }
-
-    for pattern, flag in pairs(patterns) do
+    for pattern, flag in pairs(BB.INFER_FLAGS_PATTERNS) do
         if name:find(pattern) then
             f[flag] = true
         end
@@ -115,16 +101,7 @@ function EnemyClassifier.classify(unit, att_obj)
     end
 
     if base and base.has_tag then
-        local tag_map = {
-            shield = "shield",
-            tank = "dozer",
-            taser = "taser",
-            spooc = "cloaker",
-            sniper = "sniper",
-            medic = "medic",
-            phalanx = "captain",
-        }
-        for tag, flag in pairs(tag_map) do
+        for tag, flag in pairs(BB.CLASSIFY_TAG_MAP) do
             if base:has_tag(tag) then
                 flags[flag] = true
             end
@@ -146,16 +123,7 @@ function EnemyClassifier.classify(unit, att_obj)
     end
 
     if char_tweak and char_tweak.tags then
-        local tag_map = {
-            shield = "shield",
-            tank = "dozer",
-            taser = "taser",
-            spooc = "cloaker",
-            sniper = "sniper",
-            medic = "medic",
-            phalanx = "captain",
-        }
-        for tag, flag in pairs(tag_map) do
+        for tag, flag in pairs(BB.CLASSIFY_TAG_MAP) do
             if char_tweak.tags[tag] then
                 flags[flag] = true
             end

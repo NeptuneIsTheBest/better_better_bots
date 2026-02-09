@@ -50,15 +50,12 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
     local char_tweak = IntimidationSystem.get_char_tweak(target_unit)
     local surrender = char_tweak and char_tweak.surrender
 
-    local preset = tweak_data and tweak_data.character and tweak_data.character.presets
-    local surrender_special = preset
-            and preset.surrender
-            and preset.surrender.special
+    local flags = BB.classify_enemy(target_unit)
+    if flags and flags.special then
+        return false
+    end
 
-    if not surrender
-            or (surrender_special and surrender == surrender_special)
-            or anim.hands_tied
-    then
+    if not surrender or anim.hands_tied then
         return false
     end
 
