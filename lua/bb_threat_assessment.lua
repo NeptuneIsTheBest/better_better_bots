@@ -105,7 +105,11 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
     end
 
     local target_unit = target_data.unit
-    local bot_head = bot_unit:movement():m_head_pos()
+    local bot_mov = bot_unit:movement()
+    if not bot_mov then
+        return 0
+    end
+    local bot_head = bot_mov:m_head_pos()
     local dist = target_data.verified_dis
             or (bot_head and target_data.m_head_pos and mvector3.distance(bot_head, target_data.m_head_pos))
             or 1000
@@ -215,6 +219,9 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
 
     local score = 100.0
     local bot_mov = bot_unit:movement()
+    if not bot_mov then
+        return 0
+    end
     local bot_head = bot_mov:m_head_pos()
     local dist = target_data.verified_dis
             or (bot_head and target_data.m_head_pos and mvector3.distance(bot_head, target_data.m_head_pos))
@@ -244,7 +251,12 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
         end
     end
 
-    local bot_fwd = bot_mov:m_head_rot():y()
+    local bot_rot = bot_mov:m_head_rot()
+    local bot_fwd = bot_rot and bot_rot:y()
+    if not bot_fwd then
+        CoopCacheManager.suitability:set(cache_key, score, 0.3)
+        return score
+    end
     local dir_to_target = (target_data.m_head_pos
             or (target_unit:movement() and target_unit:movement():m_head_pos())
             or bot_head) - bot_head

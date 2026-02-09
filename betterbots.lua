@@ -65,8 +65,6 @@ local function ensure_dyn_unit_loaded(unit_path)
     return CombatHelper.ensure_dyn_unit_loaded(unit_path)
 end
 
-BB.classify_enemy = EnemyClassifier.classify
-
 BB._path = ModPath
 BB._data_path = SavePath .. "bb_data.txt"
 BB._data = BB._data or {}
@@ -124,13 +122,15 @@ end
 BB:Load()
 
 function BB:is_blacklisted_cop(u_key)
-    return self.dom_blacklist and self.dom_blacklist[u_key] == true
+    return u_key and self.dom_blacklist and self.dom_blacklist[tostring(u_key)] == true
 end
 
 function BB:clear_cop_state(u_key)
     if not u_key then
         return
     end
+
+    u_key = tostring(u_key)
 
     self.cops_to_intimidate[u_key] = nil
     self.dom_failures[u_key] = nil
@@ -143,13 +143,15 @@ function BB:on_intimidation_attempt(u_key)
         return
     end
 
-    self.dom_pending[u_key] = game_time()
+    self.dom_pending[tostring(u_key)] = game_time()
 end
 
 function BB:on_intimidation_result(u_key, success)
     if not u_key then
         return
     end
+
+    u_key = tostring(u_key)
 
     self.dom_pending[u_key] = nil
 
@@ -176,6 +178,7 @@ function BB:add_cop_to_intimidation_list(unit_key)
     end
 
     local t = game_time()
+    unit_key = tostring(unit_key)
     local prev_t = self.cops_to_intimidate[unit_key]
     self.cops_to_intimidate[unit_key] = t
 

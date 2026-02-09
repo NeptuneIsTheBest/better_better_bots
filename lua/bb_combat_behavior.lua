@@ -1061,7 +1061,7 @@ function CombatBehavior.throw_concussion_grenade(data, criminal)
                 play_net_redirect(criminal, "throw_grenade")
                 safe_say(criminal, "g43", true, true)
                 safe_call(base_ext.throw, base_ext, { dir = mvec_spread_direction, owner = criminal })
-                local area_key = get_conc_area_key(best_cluster_pos)
+                -- local area_key = get_conc_area_key(best_cluster_pos) -- Redundant, use outer variable
                 CoopCacheManager.conc_area_cooldown:set(area_key, true)
                 return true
             end

@@ -69,7 +69,7 @@ function EnemyClassifier.classify(unit, att_obj)
 
     EnemyClassifier._init_cache()
 
-    local u_key = unit:key()
+    local u_key = tostring(unit:key())
 
     if EnemyClassifier._cache_manager then
         local cached = EnemyClassifier._cache_manager:get(u_key)

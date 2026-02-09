@@ -97,8 +97,7 @@ function CoopSystem.update_teammate_status(unit)
 
     CoopCacheManager.teammate_status:set(u_key, status, 1)
 
-    local original_u_key = unit:key()
-    CoopSystem.data.teammates_status[original_u_key] = status
+    CoopSystem.data.teammates_status[u_key] = status
 
     return status
 end
@@ -116,8 +115,9 @@ function CoopSystem.get_reloading_teammates_count(exclude_key)
     end
 
     local count = 0
+    local exclude_key_str = exclude_key and tostring(exclude_key)
     for u_key, status in pairs(CoopSystem.data.teammates_status) do
-        if u_key ~= exclude_key and status.is_reloading then
+        if u_key ~= exclude_key_str and status.is_reloading then
             count = count + 1
         end
     end
@@ -155,8 +155,10 @@ function CoopSystem.count_dozer_attackers(dozer_u_key)
     local count = 0
     local t = game_time()
 
+    local dozer_u_key_str = tostring(dozer_u_key)
+
     for u_key, target_u_key in pairs(CoopSystem.data.dozer_attackers) do
-        if target_u_key == dozer_u_key then
+        if target_u_key == dozer_u_key_str then
             local teammate = CoopSystem.data.teammates_status[u_key]
             if teammate and teammate.unit and alive(teammate.unit)
                     and (t - (teammate.last_update or 0)) < CONSTANTS.DOZER_FOCUS_REFRESH
@@ -187,8 +189,10 @@ function CoopSystem.is_direction_covered(target_pos, my_unit)
     local same_dir_threshold = 0.6
     local face_target_threshold = 0.6
 
+    local my_key = tostring(my_unit:key())
+
     for u_key, status in pairs(CoopSystem.data.teammates_status) do
-        if u_key ~= my_unit:key() and status.position and status.facing_direction then
+        if u_key ~= my_key and status.position and status.facing_direction then
             local other_to_target = target_pos - status.position
             mvector3.normalize(other_to_target)
 
@@ -472,6 +476,8 @@ function CoopSystem.update_optimal_assignments()
 end
 
 function CoopSystem.is_my_assigned_target(target_u_key, my_key)
+    target_u_key = tostring(target_u_key)
+    my_key = tostring(my_key)
     local my_assigned = CoopSystem.data.optimal_assignments and CoopSystem.data.optimal_assignments[my_key]
     if my_assigned then
         return my_assigned == target_u_key
@@ -480,6 +486,7 @@ function CoopSystem.is_my_assigned_target(target_u_key, my_key)
 end
 
 function CoopSystem.get_target_owner(target_u_key)
+    target_u_key = tostring(target_u_key)
     for bot_key, assigned_target in pairs(CoopSystem.data.optimal_assignments or {}) do
         if assigned_target == target_u_key then
             return bot_key
@@ -532,7 +539,7 @@ function CoopSystem.update_priority_target(unit, priority, state_info)
         CoopCacheManager.priority_target:set(u_key_str, new_target, CONSTANTS.PRIORITY_TARGET_DURATION)
     end
 
-    CoopSystem.data.priority_targets[u_key] = CoopCacheManager.priority_target:get(u_key_str)
+    CoopSystem.data.priority_targets[u_key_str] = CoopCacheManager.priority_target:get(u_key_str)
 end
 
 function CoopSystem.get_priority_targets()
@@ -566,12 +573,12 @@ function CoopSystem.get_priority_targets()
                 end
             end
 
-            local original_key = target_data.u_key
+            local original_key = tostring(target_data.u_key)
             active_targets[original_key] = target_data
         else
             CoopCacheManager.priority_target:clear(u_key_str)
             if target_data and target_data.u_key then
-                CoopSystem.data.priority_targets[target_data.u_key] = nil
+                CoopSystem.data.priority_targets[tostring(target_data.u_key)] = nil
             end
         end
     end
@@ -802,7 +809,7 @@ function CoopSystem.calculate_team_pressure(unit, data)
     end
 
     local t = game_time()
-    local u_key = unit:key()
+    local u_key = tostring(unit:key())
     local cache = CoopSystem.data.team_pressure_cache[u_key]
 
     if cache and (t - cache.last_update) < 0.2 then
@@ -850,8 +857,9 @@ function CoopSystem.calculate_team_pressure(unit, data)
     end
 
     local teammates_in_danger = 0
+    local my_key = tostring(unit:key())
     for u_key, status in pairs(CoopSystem.data.teammates_status) do
-        if u_key ~= unit:key() and status.unit and alive(status.unit) then
+        if u_key ~= my_key and status.unit and alive(status.unit) then
             if status.is_downed then
                 teammates_in_danger = teammates_in_danger + 1
                 pressure = pressure + CONSTANTS.PRESSURE_DOWNED_WEIGHT
