@@ -361,6 +361,7 @@ function CoopSystem.update_optimal_assignments()
 
     local cost_matrix = {}
     local MAX_COST = 1e9
+    local vis_mask = managers.slot:get_mask("AI_visibility")
 
     for i, bot in ipairs(active_bots) do
         cost_matrix[i] = {}
@@ -369,7 +370,7 @@ function CoopSystem.update_optimal_assignments()
 
             local visibility_factor = 1
             if bot.pos and enemy.pos then
-                local ray = World:raycast("ray", bot.pos, enemy.pos, "slot_mask", managers.slot:get_mask("AI_visibility"), "ray_type", "ai_vision", "report")
+                local ray = World:raycast("ray", bot.pos, enemy.pos, "slot_mask", vis_mask, "ray_type", "ai_vision", "report")
                 if ray then
                     visibility_factor = 0
                 end
@@ -605,10 +606,12 @@ function CoopSystem.get_closest_teammate_info(pos)
     for _, u_key in ipairs(keys) do
         local st = CoopCacheManager.teammate_status:get(u_key)
         if st and st.unit and alive(st.unit) and st.position then
+            if st.in_danger then
+                in_danger_any = true
+            end
             local d = mvector3.distance(pos, st.position)
             if d < min_dist then
                 min_dist = d
-                in_danger_any = st.in_danger or in_danger_any
                 who = st
             end
         end

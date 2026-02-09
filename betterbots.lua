@@ -202,7 +202,7 @@ function BB:add_cop_to_intimidation_list(unit_key)
         end
 
         local att_obj = brain._logic_data.attention_obj
-        if att_obj and att_obj.u_key == unit_key then
+        if att_obj and tostring(att_obj.u_key) == unit_key then
             if CopLogicBase and CopLogicBase._set_attention_obj then
                 CopLogicBase._set_attention_obj(brain._logic_data, nil, nil)
             end
@@ -239,5 +239,4 @@ dofile(ModPath .. "lua/bb_intimidation_system.lua")
 local IntimidationSystem = BB.IntimidationSystem
 
 dofile(ModPath .. "lua/bb_hooks.lua")
-
 

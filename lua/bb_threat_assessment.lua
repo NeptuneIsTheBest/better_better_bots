@@ -17,11 +17,10 @@ end
 local PHALANX_VIP_SET = { phalanx_vip = true, phalanx_vip_test = true }
 local PHALANX_MINION_SET = { phalanx_minion = true }
 
+local _shield_check_mask = BB.Utils.get_safe_mask("enemy_shield_check", 8)
+
 function ThreatAssessment.shield_blocks(attacker, target_head_pos)
-    local CombatHelper = BB.CombatHelper
-    local Utils = BB.Utils
-    local MASK = Utils.get_safe_mask("enemy_shield_check", 8)
-    return CombatHelper.shield_blocks(attacker, target_head_pos, MASK)
+    return BB.CombatHelper.shield_blocks(attacker, target_head_pos, _shield_check_mask)
 end
 
 function ThreatAssessment.get_weapon_archetype(unit)

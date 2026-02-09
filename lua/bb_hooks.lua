@@ -182,9 +182,10 @@ if RequiredScript == "lib/units/player_team/teamaibase" then
         end)
 
         function TeamAIBase:set_upgrade_value(category, upgrade, level)
+            if not managers.player then return end
             self._upgrades = self._upgrades or {}
             self._upgrades[category] = self._upgrades[category] or {}
-            
+
             local value = managers.player:upgrade_value_by_level(category, upgrade, level)
             self._upgrades[category][upgrade] = value
 
@@ -932,12 +933,12 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                         CoopCacheManager.priority_target:clear(u_key_str)
 
                         if BB.coop_data and BB.coop_data.priority_targets then
-                            BB.coop_data.priority_targets[u_key] = nil
+                            BB.coop_data.priority_targets[u_key_str] = nil
                         end
 
                         if BB.coop_data and BB.coop_data.dozer_attackers then
                             for bot_key, target_key in pairs(BB.coop_data.dozer_attackers) do
-                                if target_key == u_key then
+                                if tostring(target_key) == u_key_str then
                                     BB.coop_data.dozer_attackers[bot_key] = nil
                                 end
                             end
@@ -1039,7 +1040,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
                 if alive(unit) then
                     local u_key = unit:key()
 
-                    if BB.dom_pending and BB.dom_pending[u_key] then
+                    if BB.dom_pending and BB.dom_pending[tostring(u_key)] then
                         BB:on_intimidation_result(u_key, surrender and true or false)
                     end
 

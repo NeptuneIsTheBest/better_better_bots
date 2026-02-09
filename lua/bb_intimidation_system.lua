@@ -161,9 +161,15 @@ function IntimidationSystem.find_enemy_to_intimidate(data)
     if consider_all then
         candidates = data.detected_attention_objects or {}
     else
+        local detected = data.detected_attention_objects or {}
+        local detected_by_str = {}
+        for att_key, att_obj in pairs(detected) do
+            detected_by_str[tostring(att_key)] = att_obj
+        end
+
         for u_key, t0 in pairs(BB.cops_to_intimidate or {}) do
             if data.t - t0 < BB.grace_period then
-                local att_obj = data.detected_attention_objects and data.detected_attention_objects[u_key]
+                local att_obj = detected_by_str[u_key]
                 if att_obj then
                     candidates[u_key] = att_obj
                 end
