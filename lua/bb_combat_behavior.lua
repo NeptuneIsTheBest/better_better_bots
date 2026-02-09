@@ -516,8 +516,9 @@ function CombatBehavior.check_smart_reload(data)
     local closest_active_threat_dis = math.huge
     local active_enemy = nil
     
-    if unit_movement:attention() and unit_movement:attention().unit then
-        active_enemy = unit_movement:attention().unit
+    local attention = unit_movement:attention()
+    if attention and attention.unit then
+        active_enemy = attention.unit
     end
 
     for _, u_char in pairs(data.detected_attention_objects or {}) do
@@ -561,7 +562,6 @@ function CombatBehavior.check_smart_reload(data)
             return
         end
         
-        local anim = unit:anim_data()
         if anim and anim.fire and is_targeting_me and closest_threat_dis < 800 then
              return
         end

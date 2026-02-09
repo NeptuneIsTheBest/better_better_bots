@@ -361,7 +361,7 @@ function CoopSystem.update_optimal_assignments()
 
     local cost_matrix = {}
     local MAX_COST = 1e9
-    local vis_mask = managers.slot:get_mask("AI_visibility")
+    local vis_mask = BB.MASK.AI_visibility
 
     for i, bot in ipairs(active_bots) do
         cost_matrix[i] = {}

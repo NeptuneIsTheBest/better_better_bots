@@ -60,6 +60,11 @@ function EnemyClassifier.classify(unit, att_obj)
     if EnemyClassifier._cache_manager then
         local cached = EnemyClassifier._cache_manager:get(u_key)
         if cached then
+            local brain = unit:brain()
+            local logic_data = brain and brain._logic_data
+            local internal_data = logic_data and logic_data.internal_data
+            cached.tasing = internal_data and internal_data.tasing or false
+            cached.spooc_attack = internal_data and internal_data.spooc_attack or false
             return cached
         end
     end

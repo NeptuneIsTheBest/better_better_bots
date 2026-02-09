@@ -670,10 +670,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     local my_data = data.internal_data or {}
                     local unit = data.unit
 
-                    if BB:get("coop", false) and is_team_ai(unit) then
-                        BB.CoopSystem.update_teammate_status(unit)
-                    end
-
                     my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
                     if t >= my_data._next_conc_eval_t then
                         my_data._next_conc_eval_t = t + 1
@@ -695,7 +691,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                         safe_call(CombatBehavior.check_smart_reload, data)
                     end
 
-                    safe_call(BB.CoopSystem.scan_and_update_priorities, data)
                 end
         )
 
