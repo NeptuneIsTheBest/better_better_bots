@@ -21,6 +21,9 @@ local EnemyClassifier = BB.EnemyClassifier
 dofile(ModPath .. "lua/bb_combat_helper.lua")
 local CombatHelper = BB.CombatHelper
 
+dofile(ModPath .. "lua/bb_clustering.lua")
+local Clustering = BB.Clustering
+
 dofile(ModPath .. "lua/bb_threat_assessment.lua")
 local ThreatAssessment = BB.ThreatAssessment
 
@@ -56,14 +59,6 @@ local is_sniper_unit = EnemyClassifier.is_sniper
 local is_taser_unit = EnemyClassifier.is_taser
 local is_cloaker_unit = EnemyClassifier.is_cloaker
 local is_medic_unit = EnemyClassifier.is_medic
-
-local function shield_blocks(attacker, target_head_pos)
-    return CombatHelper.shield_blocks(attacker, target_head_pos, MASK.enemy_shield_check)
-end
-
-local function ensure_dyn_unit_loaded(unit_path)
-    return CombatHelper.ensure_dyn_unit_loaded(unit_path)
-end
 
 BB._path = ModPath
 BB._data_path = SavePath .. "bb_data.txt"
@@ -229,11 +224,17 @@ function BB:add_cop_to_intimidation_list(unit_key)
     end
 end
 
+dofile(ModPath .. "lua/bb_hungarian.lua")
+local Hungarian = BB.Hungarian
+
 dofile(ModPath .. "lua/bb_coop.lua")
 local CoopSystem = BB.CoopSystem
 
 dofile(ModPath .. "lua/bb_combat_behavior.lua")
 local CombatBehavior = BB.CombatBehavior
+
+dofile(ModPath .. "lua/bb_concussion.lua")
+local ConcussionSystem = BB.ConcussionSystem
 
 dofile(ModPath .. "lua/bb_intimidation_system.lua")
 local IntimidationSystem = BB.IntimidationSystem

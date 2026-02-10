@@ -17,11 +17,7 @@ end
 local PHALANX_VIP_SET = { phalanx_vip = true, phalanx_vip_test = true }
 local PHALANX_MINION_SET = { phalanx_minion = true }
 
-local _shield_check_mask = BB.Utils.get_safe_mask("enemy_shield_check", 8)
-
-function ThreatAssessment.shield_blocks(attacker, target_head_pos)
-    return BB.CombatHelper.shield_blocks(attacker, target_head_pos, _shield_check_mask)
-end
+local CombatHelper = BB.CombatHelper
 
 function ThreatAssessment.get_weapon_archetype(unit)
     local inv = unit:inventory()
@@ -156,14 +152,14 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
 
     if flags.dozer then
         local hr = UnitOps.health_ratio(target_unit)
-        if hr < 0.3 then
-            threat = threat * 1.3
+        if hr < CONSTANTS.LOW_HEALTH_RATIO then
+            threat = threat * CONSTANTS.DOZER_LOW_HEALTH_MUL
         end
     end
 
     if flags.shield and not flags.turret then
-        local ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-        local blocked = target_data.m_head_pos and ThreatAssessment.shield_blocks(bot_unit, target_data.m_head_pos)
+        local ap = CombatHelper.has_ap_ammo()
+        local blocked = target_data.m_head_pos and CombatHelper.shield_blocks_default(bot_unit, target_data.m_head_pos)
 
         if blocked and (not ap) and dist > CONSTANTS.MELEE_DISTANCE then
             threat = threat * THREAT_WEIGHTS.SHIELD_BLOCKED_PENALTY
@@ -174,7 +170,7 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
 
     if not flags.turret then
         local hr2 = UnitOps.health_ratio(target_unit)
-        if hr2 < 0.3 then
+        if hr2 < CONSTANTS.LOW_HEALTH_RATIO then
             threat = threat + THREAT_WEIGHTS.LOW_HEALTH_BONUS
         end
 
@@ -185,21 +181,26 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
         end
     end
 
-    if not flags.sniper and not flags.turret then
-        if dist > 4000 then
-            threat = threat * 0.7
-        elseif dist > 3000 then
-            threat = threat * 0.85
-        elseif dist < 500 then
-            threat = threat * 1.5
-        end
-    elseif flags.sniper and dist > 3000 then
-        threat = threat * 1.1
-    end
+    threat = threat * ThreatAssessment.distance_falloff(dist, flags)
 
     CoopCacheManager.threat_value:set(cache_key, threat, 0.3)
 
     return threat
+end
+
+function ThreatAssessment.distance_falloff(dist, flags)
+    if not flags.sniper and not flags.turret then
+        if dist > CONSTANTS.DIST_FAR_THRESHOLD then
+            return CONSTANTS.DIST_FAR_MUL
+        elseif dist > CONSTANTS.DIST_MID_THRESHOLD then
+            return CONSTANTS.DIST_MID_MUL
+        elseif dist < CONSTANTS.DIST_CLOSE_THRESHOLD then
+            return CONSTANTS.DIST_CLOSE_MUL
+        end
+    elseif flags.sniper and dist > CONSTANTS.DIST_MID_THRESHOLD then
+        return CONSTANTS.SNIPER_FAR_MUL
+    end
+    return 1
 end
 
 function ThreatAssessment.calculate_suitability(bot_unit, target_data)
@@ -269,8 +270,8 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
     end
 
     if flags.shield then
-        local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-        if target_data.m_head_pos and (has_ap or not ThreatAssessment.shield_blocks(bot_unit, target_data.m_head_pos)) then
+        local has_ap = CombatHelper.has_ap_ammo()
+        if target_data.m_head_pos and (has_ap or not CombatHelper.shield_blocks_default(bot_unit, target_data.m_head_pos)) then
             score = score + 30
         else
             score = score - 80

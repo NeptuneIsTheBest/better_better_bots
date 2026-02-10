@@ -7,6 +7,7 @@ local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 local EnemyClassifier = BB.EnemyClassifier
 local ThreatAssessment = BB.ThreatAssessment
+local CombatHelper = BB.CombatHelper
 
 local clamp = Utils.clamp
 local game_time = Utils.game_time
@@ -173,6 +174,18 @@ function CoopSystem.count_dozer_attackers(dozer_u_key)
     return count
 end
 
+function CoopSystem.calculate_dozer_penalty(enemy_key, bot_key)
+    local current_attackers = CoopSystem.count_dozer_attackers(enemy_key)
+    local already_targeting = CoopSystem.data.dozer_attackers[bot_key] == tostring(enemy_key)
+    local other_attackers = already_targeting and (current_attackers - 1) or current_attackers
+    other_attackers = math.max(0, other_attackers)
+
+    if other_attackers > 0 then
+        return math.pow(CONSTANTS.DOZER_PENALTY_BASE, other_attackers)
+    end
+    return 1
+end
+
 function CoopSystem.is_direction_covered(target_pos, my_unit)
     if not (target_pos and alive(my_unit)) then
         return false
@@ -208,99 +221,7 @@ function CoopSystem.is_direction_covered(target_pos, my_unit)
     return false
 end
 
-local function hungarian_algorithm(cost_matrix, n_bots, n_enemies)
-    local n = math.max(n_bots, n_enemies)
-    if n == 0 then return {} end
-
-    local matrix = {}
-    for i = 1, n do
-        matrix[i] = {}
-        for j = 1, n do
-            if i <= n_bots and j <= n_enemies then
-                matrix[i][j] = cost_matrix[i][j] or 0
-            else
-                matrix[i][j] = 0
-            end
-        end
-    end
-
-    local INF = 1e18
-    local u = {}
-    local v = {}
-    local p = {}
-    local way = {}
-
-    for i = 0, n do
-        u[i] = 0
-        v[i] = 0
-        p[i] = 0
-    end
-
-
-    for i = 1, n do
-        p[0] = i
-        local j0 = 0
-        local minv = {}
-        local used = {}
-
-        for j = 0, n do
-            minv[j] = INF
-            used[j] = false
-            way[j] = 0
-        end
-
-
-        repeat
-            used[j0] = true
-            local i0 = p[j0]
-            local delta = INF
-            local j1 = 0
-
-            for j = 1, n do
-                if not used[j] then
-                    local cur = matrix[i0][j] - u[i0] - v[j]
-                    if cur < minv[j] then
-                        minv[j] = cur
-                        way[j] = j0
-                    end
-                    if minv[j] < delta then
-                        delta = minv[j]
-                        j1 = j
-                    end
-                end
-            end
-
-
-            for j = 0, n do
-                if used[j] then
-                    u[p[j]] = u[p[j]] + delta
-                    v[j] = v[j] - delta
-                else
-                    minv[j] = minv[j] - delta
-                end
-            end
-
-            j0 = j1
-        until p[j0] == 0
-
-
-        repeat
-            local j1 = way[j0]
-            p[j0] = p[j1]
-            j0 = j1
-        until j0 == 0
-    end
-
-
-    local assignment = {}
-    for j = 1, n do
-        if p[j] > 0 and p[j] <= n_bots and j <= n_enemies then
-            assignment[p[j]] = j
-        end
-    end
-
-    return assignment
-end
+local Hungarian = BB.Hungarian
 
 function CoopSystem.update_optimal_assignments()
     local t = game_time()
@@ -381,7 +302,7 @@ function CoopSystem.update_optimal_assignments()
                 dist = mvector3.distance(bot.pos, enemy.pos)
             end
 
-            local dist_factor = 1 / (1 + dist / 1000)
+            local dist_factor = 1 / (1 + dist / CONSTANTS.DIST_NORM_DIVISOR)
 
             local angle_factor = 1
             if bot.fwd and bot.pos and enemy.pos then
@@ -389,7 +310,7 @@ function CoopSystem.update_optimal_assignments()
                 if mvector3.length(to_enemy) > 0.1 then
                     mvector3.normalize(to_enemy)
                     local dot = mvector3.dot(bot.fwd, to_enemy)
-                    angle_factor = 0.5 + 0.5 * math.max(0, dot)
+                    angle_factor = CONSTANTS.ANGLE_FACTOR_BASE + CONSTANTS.ANGLE_FACTOR_SCALE * math.max(0, dot)
                 end
             end
 
@@ -400,14 +321,7 @@ function CoopSystem.update_optimal_assignments()
 
             local dozer_penalty = 1
             if is_dozer_unit(enemy.unit) then
-                local current_attackers = CoopSystem.count_dozer_attackers(enemy.key)
-                local already_targeting = CoopSystem.data.dozer_attackers[bot.key] == enemy.key
-                local other_attackers = already_targeting and (current_attackers - 1) or current_attackers
-                other_attackers = math.max(0, other_attackers)
-                
-                if other_attackers > 0 then
-                    dozer_penalty = math.pow(0.85, other_attackers)
-                end
+                dozer_penalty = CoopSystem.calculate_dozer_penalty(enemy.key, bot.key)
             end
 
             local state_bonus = 0
@@ -461,7 +375,7 @@ function CoopSystem.update_optimal_assignments()
     end
 
 
-    local assignment = hungarian_algorithm(cost_matrix, n_bots, n_enemies)
+    local assignment = Hungarian.solve(cost_matrix, n_bots, n_enemies)
 
 
     local optimal_assignments = {}
@@ -703,8 +617,8 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
     end
 
     if flags.shield then
-        local has_ap = managers.player and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-        local blocked = pos and ThreatAssessment.shield_blocks(my_unit, pos)
+        local has_ap = CombatHelper.has_ap_ammo()
+        local blocked = pos and CombatHelper.shield_blocks_default(my_unit, pos)
 
         if blocked and not has_ap and dis > CONSTANTS.MELEE_DISTANCE then
             prio = prio + THREAT_WEIGHTS.COOP_SHIELD_BLOCKED_PRIO
@@ -743,13 +657,7 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
         prio = prio + THREAT_WEIGHTS.COOP_VERIFIED_BONUS
     end
 
-    if not flags.sniper and not flags.turret then
-        if dis > 4000 then
-            prio = prio * 0.7
-        elseif dis > 3000 then
-            prio = prio * 0.85
-        end
-    end
+    prio = prio * ThreatAssessment.distance_falloff(dis, flags)
 
     prio = prio * team_factor
     return prio, state
@@ -841,7 +749,7 @@ function CoopSystem.calculate_team_pressure(unit, data)
                 enemy_count = enemy_count + 1
                 pressure = pressure + CONSTANTS.PRESSURE_ENEMY_WEIGHT
 
-                if dis < 800 then
+                if dis < CONSTANTS.PRESSURE_CLOSE_ENEMY_DIST then
                     close_enemy_count = close_enemy_count + 1
                     pressure = pressure + CONSTANTS.PRESSURE_ENEMY_WEIGHT
                 end
@@ -853,7 +761,7 @@ function CoopSystem.calculate_team_pressure(unit, data)
                 end
 
                 if flags.tasing or flags.spooc_attack then
-                    pressure = pressure + 0.25
+                    pressure = pressure + CONSTANTS.TASING_PRESSURE_BONUS
                 end
             end
         end
@@ -890,10 +798,10 @@ function CoopSystem.calculate_team_pressure(unit, data)
     end
 
     local my_health = get_unit_health_ratio(unit)
-    if my_health < 0.25 then
-        pressure = pressure + 0.2
-    elseif my_health < 0.5 then
-        pressure = pressure + 0.1
+    if my_health < CONSTANTS.MY_HEALTH_CRITICAL then
+        pressure = pressure + CONSTANTS.MY_HEALTH_CRITICAL_PRESSURE
+    elseif my_health < CONSTANTS.MY_HEALTH_LOW then
+        pressure = pressure + CONSTANTS.MY_HEALTH_LOW_PRESSURE
     end
 
     pressure = clamp(pressure, 0, 1)

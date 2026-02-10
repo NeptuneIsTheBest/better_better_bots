@@ -15,44 +15,12 @@ local request_act = UnitOps.request_act
 local play_net_redirect = UnitOps.play_redirect
 local get_unit_health_ratio = UnitOps.health_ratio
 
-local function get_conc_area_key(pos)
-    local grid_size = CONSTANTS.CONC_AREA_RADIUS or 1500
-    local gx = math.floor(mvector3.x(pos) / grid_size)
-    local gy = math.floor(mvector3.y(pos) / grid_size)
-    local gz = math.floor(mvector3.z(pos) / grid_size)
-    return string.format("conc_%d_%d_%d", gx, gy, gz)
-end
-
 local SLOTS = BB.SLOTS
-local MASK = {
-    enemy_shield_check = Utils.get_safe_mask("enemy_shield_check", 8),
-}
-
-local function shield_blocks(attacker, target_head_pos)
-    return BB.CombatHelper.shield_blocks(attacker, target_head_pos, MASK.enemy_shield_check)
-end
-
-local function is_surrendering(unit)
-    if not alive(unit) then
-        return false
-    end
-
-    local anim = unit:anim_data()
-    if anim and (anim.hands_back or anim.surrender or anim.hands_tied) then
-        return true
-    end
-
-    local brain = unit:brain()
-    if brain and brain.surrendered and brain:surrendered() then
-        return true
-    end
-
-    return false
-end
+local CombatHelper = BB.CombatHelper
 
 local CombatBehavior = {}
 
-function CombatBehavior.get_priority_attention(data, attention_objects, reaction_func)
+function CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
     local unit = data.unit
     if not (alive(unit) and unit:movement()) then
         return
@@ -100,14 +68,14 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
 
                     local flags = BB.classify_enemy(attention_data.unit, attention_data)
                     if flags.tasing then
-                        threat = threat * 3.0
+                        threat = threat * CONSTANTS.TASING_THREAT_MUL
                         BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
                         force_unlock = true
                     end
                     if flags.spooc_attack then
-                        threat = threat * 3.5
-                        if attention_data.verified_dis and attention_data.verified_dis < 1500 then
-                            threat = threat * 1.5
+                        threat = threat * CONSTANTS.SPOOC_THREAT_MUL
+                        if attention_data.verified_dis and attention_data.verified_dis < CONSTANTS.SPOOC_CLOSE_RANGE then
+                            threat = threat * CONSTANTS.SPOOC_CLOSE_MUL
                         end
                         BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
                         force_unlock = true
@@ -118,7 +86,7 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
                             and (t - last_target_t) <= CONSTANTS.TARGET_SWITCH_DELAY
                             and not flags.turret
                     then
-                        threat = threat * 1.3
+                        threat = threat * CONSTANTS.TARGET_STICKINESS_MUL
                     end
 
                     potential_targets_map[u_key_str] = {
@@ -184,14 +152,7 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
             local is_taser = EnemyClassifier.is_taser(target_unit)
 
             if is_dozer and not is_turret then
-                local current_attackers = BB.CoopSystem.count_dozer_attackers(u_key)
-                local already_targeting = BB.coop_data.dozer_attackers[my_key_str] == u_key
-                local other_attackers = already_targeting and (current_attackers - 1) or current_attackers
-                other_attackers = math.max(0, other_attackers)
-
-                if other_attackers > 0 then
-                     dynamic_prio = dynamic_prio * math.pow(0.85, other_attackers)
-                end
+                dynamic_prio = dynamic_prio * BB.CoopSystem.calculate_dozer_penalty(u_key, my_key_str)
             end
 
             local claimed_penalty = 1
@@ -280,14 +241,7 @@ function CombatBehavior.get_priority_attention(data, attention_objects, reaction
         local penalty = 1
         if g and g.targeted_by and tostring(g.targeted_by) ~= my_key_str then
             if is_dozer and not is_turret then
-                local current_attackers = BB.CoopSystem.count_dozer_attackers(u_key)
-                local already_targeting = BB.coop_data.dozer_attackers[my_key_str] == u_key
-                local other_attackers = already_targeting and (current_attackers - 1) or current_attackers
-                other_attackers = math.max(0, other_attackers)
-
-                if other_attackers > 0 then
-                    penalty = penalty * math.pow(0.85, other_attackers)
-                end
+                penalty = penalty * BB.CoopSystem.calculate_dozer_penalty(u_key, my_key_str)
             elseif not is_turret and not is_cloaker and not is_taser then
                 penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
             end
@@ -335,7 +289,7 @@ function CombatBehavior.find_enemy_to_mark(enemies, my_unit)
     local unit_movement = my_unit:movement()
     local player_manager = managers.player
     local contour_id = player_manager:get_contour_for_marked_enemy()
-    local has_ap = player_manager:has_category_upgrade("team", "crew_ai_ap_ammo")
+    local has_ap = CombatHelper.has_ap_ammo()
 
     local my_head = unit_movement:m_head_pos()
     local best_unit
@@ -364,7 +318,7 @@ function CombatBehavior.find_enemy_to_mark(enemies, my_unit)
                                     or u_contour:has_id("mark_enemy"))
 
                             if contour_id and contour_id ~= "" and u_contour and not already_marked then
-                                local shield_blocked = target_head and shield_blocks(my_unit, target_head)
+                                local shield_blocked = target_head and CombatHelper.shield_blocks_default(my_unit, target_head)
                                 local can_hit = has_ap
                                         or dis <= CONSTANTS.MELEE_DISTANCE
                                         or not shield_blocked
@@ -476,6 +430,96 @@ local function _is_enemy_actively_firing(enemy_unit, my_unit)
     return is_firing, is_targeting_me
 end
 
+local function _scan_nearby_threats(data, unit)
+    local result = {
+        nearby = 0,
+        active = 0,
+        closest_dis = math.huge,
+        closest_active_dis = math.huge,
+        active_enemy = nil,
+    }
+
+    local unit_movement = unit:movement()
+    local attention = unit_movement:attention()
+    if attention and attention.unit then
+        result.active_enemy = attention.unit
+    end
+
+    for _, u_char in pairs(data.detected_attention_objects or {}) do
+        if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
+            result.nearby = result.nearby + 1
+            local dis = u_char.verified_dis or math.huge
+            if dis < result.closest_dis then
+                result.closest_dis = dis
+            end
+
+            local is_firing, is_targeting_me = _is_enemy_actively_firing(u_char.unit, unit)
+            if is_firing then
+                result.active = result.active + 1
+                if is_targeting_me and dis < result.closest_active_dis then
+                    result.closest_active_dis = dis
+                end
+            end
+        end
+    end
+
+    return result
+end
+
+local function _should_suppress_reload(clip_ammo, threats, pressure, active_enemy, unit, anim)
+    if clip_ammo <= 0 then
+        return false
+    end
+
+    if threats.active > 0 and threats.closest_active_dis < CONSTANTS.RELOAD_ACTIVE_CLOSE_DIST then
+        return true
+    end
+    if threats.closest_dis < CONSTANTS.RELOAD_THREAT_CLOSE_DIST then
+        return true
+    end
+    if pressure > CONSTANTS.RELOAD_HIGH_PRESSURE then
+        return true
+    end
+
+    if active_enemy and alive(active_enemy) then
+        local is_dangerous = EnemyClassifier.is_dozer(active_enemy)
+                or EnemyClassifier.is_taser(active_enemy)
+                or EnemyClassifier.is_cloaker(active_enemy)
+        local is_firing, is_targeting_me = _is_enemy_actively_firing(active_enemy, unit)
+
+        if is_dangerous and is_firing and threats.closest_dis < CONSTANTS.RELOAD_DANGEROUS_SPECIAL_DIST then
+            return true
+        end
+        if anim and anim.fire and is_targeting_me and threats.closest_dis < CONSTANTS.RELOAD_FIRING_AT_ME_DIST then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function _calculate_reload_threshold(threats, unit, data)
+    local threshold = CONSTANTS.RELOAD_BASE
+
+    if threats.nearby == 0 then
+        threshold = CONSTANTS.RELOAD_NO_THREATS
+    elseif threats.active == 0 then
+        threshold = CONSTANTS.RELOAD_NO_ACTIVE
+    elseif threats.closest_dis > 2000 then
+        threshold = CONSTANTS.RELOAD_FAR
+    elseif threats.closest_dis > 1200 then
+        threshold = CONSTANTS.RELOAD_MID
+    elseif threats.closest_dis > 600 then
+        threshold = CONSTANTS.RELOAD_CLOSE
+    end
+
+    if BB:get("coop", false) then
+        threshold = BB.CoopSystem.get_pressure_adjusted_reload_threshold(unit, data, threshold)
+    end
+
+    return threshold
+end
+
 function CombatBehavior.check_smart_reload(data)
     local unit = data.unit
     if not alive(unit) then return end
@@ -491,126 +535,53 @@ function CombatBehavior.check_smart_reload(data)
     if not wep_base then return end
 
     local clip_max, clip_ammo, reserve_total, _ = wep_base:ammo_info()
-    
     if not (clip_max and clip_max > 0) then return end
     if clip_ammo >= clip_max then return end
     if (reserve_total or 0) <= 0 then return end
 
     if clip_ammo > 0 and BB:get("coop", false) then
         local teammates_reloading = BB.CoopSystem.get_reloading_teammates_count(unit:key())
-
         if teammates_reloading >= CONSTANTS.MAX_RELOADING_TEAMMATES then
             return
         end
     end
 
-    local t = game_time()
-    local pressure = 0
-    if BB:get("coop", false) then
-        pressure = BB.CoopSystem.calculate_team_pressure(unit, data)
-    end
+    local pressure = BB:get("coop", false) and BB.CoopSystem.calculate_team_pressure(unit, data) or 0
+    local threats = _scan_nearby_threats(data, unit)
 
-    local nearby_threats = 0
-    local active_threats = 0
-    local closest_threat_dis = math.huge
-    local closest_active_threat_dis = math.huge
-    local active_enemy = nil
-    
-    local attention = unit_movement:attention()
-    if attention and attention.unit then
-        active_enemy = attention.unit
-    end
-
-    for _, u_char in pairs(data.detected_attention_objects or {}) do
-        if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
-            nearby_threats = nearby_threats + 1
-            local dis = u_char.verified_dis or math.huge
-            if dis < closest_threat_dis then
-                closest_threat_dis = dis
-            end
-
-            local is_firing, is_targeting_me = _is_enemy_actively_firing(u_char.unit, unit)
-            if is_firing then
-                active_threats = active_threats + 1
-                if is_targeting_me and dis < closest_active_threat_dis then
-                    closest_active_threat_dis = dis
-                end
-            end
-        end
-    end
-
-    if clip_ammo > 0 and active_threats > 0 and closest_active_threat_dis < 500 then
-        return 
-    end
-
-    if clip_ammo > 0 and closest_threat_dis < 300 then
+    if _should_suppress_reload(clip_ammo, threats, pressure, threats.active_enemy, unit, anim) then
         return
     end
 
-    if clip_ammo > 0 and pressure > 0.85 then
-        return
-    end
-
-    if clip_ammo > 0 and active_enemy and alive(active_enemy) then
-        local is_dangerous_special = EnemyClassifier.is_dozer(active_enemy)
-                or EnemyClassifier.is_taser(active_enemy)
-                or EnemyClassifier.is_cloaker(active_enemy)
-        
-        local is_firing, is_targeting_me = _is_enemy_actively_firing(active_enemy, unit)
-        
-        if is_dangerous_special and is_firing and closest_threat_dis < 1200 then
-            return
-        end
-        
-        if anim and anim.fire and is_targeting_me and closest_threat_dis < 800 then
-             return
-        end
-    end
-
-    local reload_threshold = 0.05
-
-    if nearby_threats == 0 then
-        reload_threshold = 0.9
-    elseif active_threats == 0 then
-        reload_threshold = 0.6
-    elseif closest_threat_dis > 2000 then
-        reload_threshold = 0.4
-    elseif closest_threat_dis > 1200 then
-        reload_threshold = 0.25
-    elseif closest_threat_dis > 600 then
-        reload_threshold = 0.1
-    end
-
-    if BB:get("coop", false) then
-        reload_threshold = BB.CoopSystem.get_pressure_adjusted_reload_threshold(unit, data, reload_threshold)
-    end
+    local reload_threshold = _calculate_reload_threshold(threats, unit, data)
 
     local is_empty = clip_ammo == 0
-    local is_low_capacity = clip_max <= 10
+    local is_low_capacity = clip_max <= CONSTANTS.RELOAD_LOW_CAP_THRESHOLD
 
-    if is_low_capacity and reload_threshold > 0.5 then
-        reload_threshold = reload_threshold * 0.3
+    if is_low_capacity and reload_threshold > CONSTANTS.RELOAD_LOW_CAP_TACTICAL_MAX then
+        reload_threshold = reload_threshold * CONSTANTS.RELOAD_LOW_CAP_MUL
     end
-    
+
     local threshold_ammo = clip_max * reload_threshold
     local threshold_val = is_low_capacity and math.floor(threshold_ammo) or math.ceil(threshold_ammo)
     local want_tactical_reload = clip_ammo <= threshold_val
 
-    if is_empty or want_tactical_reload then
-        local brain = unit:brain()
-        if not brain then return end
-
-        if not is_empty then
-            local objective = data.objective
-            local in_cover = objective and objective.in_place
-            
-            if not in_cover and active_threats > 0 and closest_active_threat_dis < 1000 then
-                return
-            end
-        end
-
-        brain:action_request({ type = "reload", body_part = 3 })
+    if not is_empty and not want_tactical_reload then
+        return
     end
+
+    local brain = unit:brain()
+    if not brain then return end
+
+    if not is_empty and threats.active > 0 then
+        local objective = data.objective
+        local in_cover = objective and objective.in_place
+        if not in_cover and threats.closest_active_dis < CONSTANTS.RELOAD_NOT_IN_COVER_DIST then
+            return
+        end
+    end
+
+    brain:action_request({ type = "reload", body_part = 3 })
 end
 
 function CombatBehavior.execute_melee_attack(data, criminal)
@@ -723,360 +694,11 @@ function CombatBehavior.execute_melee_attack(data, criminal)
     play_net_redirect(criminal, "melee")
 end
 
-local function dbscan_cluster(points, eps, minPts)
-    local n = #points
-    if n == 0 then return {}, {} end
-    
-    local eps_sq = eps * eps
-    
-    local function get_neighbors(i)
-        local neighbors = {}
-        local p1 = points[i].m_head_pos
-        if not p1 then return neighbors end
-
-        for j = 1, n do
-            local p2 = points[j].m_head_pos
-            if p2 then
-                if mvector3.distance_sq(p1, p2) <= eps_sq then
-                    table.insert(neighbors, j)
-                end
-            end
-        end
-        return neighbors
-    end
-    
-    local labels = {}
-    for i = 1, n do labels[i] = 0 end
-    
-    local cluster_id = 0
-    local clusters = {}
-    
-    for i = 1, n do
-        if labels[i] == 0 then
-            local neighbors = get_neighbors(i)
-            
-            if #neighbors < minPts then
-                labels[i] = -1
-            else
-                cluster_id = cluster_id + 1
-                clusters[cluster_id] = {}
-                
-                labels[i] = cluster_id
-                table.insert(clusters[cluster_id], i)
-                
-                local seed_set = {}
-                local in_seed_set = {}
-                
-                for _, idx in ipairs(neighbors) do
-                    if idx ~= i then
-                        table.insert(seed_set, idx)
-                        in_seed_set[idx] = true
-                    end
-                end
-                
-                local k = 1
-                while k <= #seed_set do
-                    local q = seed_set[k]
-                    
-                    if labels[q] == -1 then
-                        labels[q] = cluster_id
-                        table.insert(clusters[cluster_id], q)
-                    end
-                    
-                    if labels[q] == 0 then
-                        labels[q] = cluster_id
-                        table.insert(clusters[cluster_id], q)
-                        
-                        local q_neighbors = get_neighbors(q)
-                        if #q_neighbors >= minPts then
-                            for _, new_idx in ipairs(q_neighbors) do
-                                if not in_seed_set[new_idx] and new_idx ~= i then
-                                    in_seed_set[new_idx] = true
-                                    table.insert(seed_set, new_idx)
-                                end
-                            end
-                        end
-                    end
-                    
-                    k = k + 1
-                end
-            end
-        end
-    end
-    
-    return clusters, labels
-end
-
-local function calculate_cluster_centroid(points, cluster_indices)
-    if #cluster_indices == 0 then return nil end
-    
-    local sum_x, sum_y, sum_z = 0, 0, 0
-    local valid_count = 0
-    
-    for _, idx in ipairs(cluster_indices) do
-        local pos = points[idx].m_head_pos
-        if pos then
-            sum_x = sum_x + mvector3.x(pos)
-            sum_y = sum_y + mvector3.y(pos)
-            sum_z = sum_z + mvector3.z(pos)
-            valid_count = valid_count + 1
-        end
-    end
-    
-    if valid_count == 0 then return nil end
-    
-    local centroid = Vector3(sum_x / valid_count, sum_y / valid_count, sum_z / valid_count)
-    return centroid
-end
-
-local function evaluate_cluster_value(points, cluster_indices)
-    local value = 0
-    local shield_bonus = CONSTANTS.CONC_SHIELD_BONUS or 2.0
-    local special_bonus = CONSTANTS.CONC_SPECIAL_BONUS or 1.5
-    
-    for _, idx in ipairs(cluster_indices) do
-        local u_char = points[idx]
-        local unit = u_char.unit
-        if alive(unit) then
-            value = value + 1
-            if EnemyClassifier.is_shield(unit, u_char) then
-                value = value + shield_bonus
-            end
-            if EnemyClassifier.is_special(unit, u_char)
-                    and not EnemyClassifier.is_dozer(unit)
-                    and not EnemyClassifier.is_turret(unit) then
-                value = value + special_bonus
-            end
-        end
-    end
-    
-    return value
-end
-
 function CombatBehavior.throw_concussion_grenade(data, criminal)
-    if not (alive(criminal) and BB:get("conc", false)) then
-        return false
+    local ConcussionSystem = BB.ConcussionSystem
+    if ConcussionSystem then
+        return ConcussionSystem.throw(data, criminal)
     end
-
-    local conc_tweak = tweak_data.blackmarket.projectiles.concussion
-    
-    local pkg_ready = managers.dyn_resource:is_resource_ready(
-            Idstring("unit"),
-            Idstring(conc_tweak.unit),
-            managers.dyn_resource.DYN_RESOURCES_PACKAGE
-    )
-    if not pkg_ready then
-        return false
-    end
-
-    local crim_mov = criminal:movement()
-    if not crim_mov then
-        return false
-    end
-
-    local from_pos = crim_mov:m_head_pos()
-    local look_vec = crim_mov:m_rot():y()
-
-    local close_enemies = 0
-    local shield_count = 0
-    local special_count = 0
-    local enemy_cluster = {}
-
-    for _, u_char in pairs(data.detected_attention_objects or {}) do
-        if u_char.identified
-                and u_char.verified
-                and u_char.verified_dis
-                and u_char.verified_dis <= CONSTANTS.CONC_DISTANCE
-        then
-            local unit = u_char.unit
-            if alive(unit) and are_units_foes(criminal, unit) then
-                local is_turret = EnemyClassifier.is_turret(unit)
-                local is_dozer = EnemyClassifier.is_dozer(unit)
-                local unit_brain = not is_turret and unit:brain()
-
-                if not (u_char.is_converted or is_surrendering(unit))
-                        and not is_dozer
-                        and not is_turret
-                then
-                    local vec = u_char.m_head_pos - from_pos
-                    if vec and mvector3.angle(vec, look_vec) <= CONSTANTS.CONC_ANGLE then
-                        close_enemies = close_enemies + 1
-
-                        if EnemyClassifier.is_shield(unit, u_char) then
-                            shield_count = shield_count + 1
-                        end
-
-                        if EnemyClassifier.is_special(unit, u_char) then
-                            special_count = special_count + 1
-                        end
-
-                        table.insert(enemy_cluster, u_char)
-                    end
-                end
-            end
-        end
-    end
-
-    local min_enemies = CONSTANTS.CONC_MIN_ENEMIES or 5
-    local min_shields = CONSTANTS.CONC_MIN_SHIELDS or 2
-    local special_threshold = CONSTANTS.CONC_SPECIAL_THRESHOLD or 2
-    local special_min_enemies = CONSTANTS.CONC_SPECIAL_MIN_ENEMIES or 3
-    
-    local should_throw = (close_enemies >= min_enemies)
-            or (shield_count >= min_shields)
-            or (special_count >= special_threshold and close_enemies >= special_min_enemies)
-
-    if not should_throw then
-        return false
-    end
-
-    local eps = CONSTANTS.CLUSTER_DISTANCE or 1000
-    local minPts = CONSTANTS.DBSCAN_MIN_POINTS or 2
-    
-    local clusters, labels = dbscan_cluster(enemy_cluster, eps, minPts)
-    
-    local best_cluster_id = nil
-    local best_cluster_value = 0
-    local best_cluster_size = 0
-    
-    for cluster_id, indices in pairs(clusters) do
-        if #indices >= minPts then
-            local value = evaluate_cluster_value(enemy_cluster, indices)
-            if value > best_cluster_value or 
-               (value == best_cluster_value and #indices > best_cluster_size) then
-                best_cluster_value = value
-                best_cluster_size = #indices
-                best_cluster_id = cluster_id
-            end
-        end
-    end
-    
-    if not best_cluster_id or best_cluster_size < 2 then
-        return false
-    end
-    
-    local best_cluster_pos = calculate_cluster_centroid(enemy_cluster, clusters[best_cluster_id])
-
-    if best_cluster_pos then
-        local area_key = get_conc_area_key(best_cluster_pos)
-        if CoopCacheManager.conc_area_cooldown:has(area_key) then
-            return false
-        end
-    end
-    
-    local target_unit = nil
-    local min_dist_to_centroid = math.huge
-    
-    for _, idx in ipairs(clusters[best_cluster_id]) do
-        local u_char = enemy_cluster[idx]
-        if alive(u_char.unit) and u_char.m_head_pos then
-            local dist = mvector3.distance(best_cluster_pos, u_char.m_head_pos)
-            if dist < min_dist_to_centroid then
-                min_dist_to_centroid = dist
-                target_unit = u_char.unit
-            end
-        end
-    end
-
-    if not (alive(target_unit) and best_cluster_pos) then
-        return false
-    end
-
-    local player_safe_radius = CONSTANTS.CONC_PLAYER_SAFE_RADIUS or 1000
-    local player_safe_radius_sq = player_safe_radius * player_safe_radius
-    local adjusted_pos = Vector3()
-    mvector3.set(adjusted_pos, best_cluster_pos)
-    
-    local gstate = managers.groupai and managers.groupai:state()
-    local player_criminals = gstate and gstate:all_player_criminals() or {}
-
-    local max_adjustments = 3
-    for _ = 1, max_adjustments do
-        local needs_adjustment = false
-        local push_dir = Vector3()
-        local closest_player_dist_sq = math.huge
-
-        for _, u_data in pairs(player_criminals) do
-            if alive(u_data.unit) and u_data.unit:movement() then
-                local player_pos = u_data.unit:movement():m_head_pos()
-                if player_pos then
-                    local dist_sq = mvector3.distance_sq(adjusted_pos, player_pos)
-                    if dist_sq < player_safe_radius_sq then
-                        needs_adjustment = true
-                        if dist_sq < closest_player_dist_sq then
-                            closest_player_dist_sq = dist_sq
-                            mvector3.set(push_dir, adjusted_pos)
-                            mvector3.subtract(push_dir, player_pos)
-                        end
-                    end
-                end
-            end
-        end
-        
-        if not needs_adjustment then
-            break
-        end
-        
-        local push_length = mvector3.length(push_dir)
-        if push_length < 1 then
-            mvector3.set(push_dir, from_pos)
-            mvector3.subtract(push_dir, adjusted_pos)
-            mvector3.negate(push_dir)
-            push_length = mvector3.length(push_dir)
-            if push_length < 1 then
-                return false
-            end
-        end
-        
-        mvector3.normalize(push_dir)
-        local current_dist = math.sqrt(closest_player_dist_sq)
-        local offset_needed = player_safe_radius - current_dist + 100
-        mvector3.multiply(push_dir, offset_needed)
-        mvector3.add(adjusted_pos, push_dir)
-    end
-    
-    local final_check_failed = false
-    for _, u_data in pairs(player_criminals) do
-        if alive(u_data.unit) and u_data.unit:movement() then
-            local player_pos = u_data.unit:movement():m_head_pos()
-            if player_pos then
-                local dist_sq = mvector3.distance_sq(adjusted_pos, player_pos)
-                if dist_sq < player_safe_radius_sq then
-                    final_check_failed = true
-                    break
-                end
-            end
-        end
-    end
-    
-    if final_check_failed then
-        return false
-    end
-    
-    best_cluster_pos = adjusted_pos
-    local area_key = get_conc_area_key(best_cluster_pos)
-    if CoopCacheManager.conc_area_cooldown:has(area_key) then
-        return false
-    end
-
-    local mvec_spread_direction = best_cluster_pos - from_pos
-
-    if ProjectileBase and ProjectileBase.spawn then
-        local success, cc_unit = safe_call(ProjectileBase.spawn, conc_tweak.unit, from_pos, Rotation())
-        if success and cc_unit then
-            local base_ext = cc_unit:base()
-            if base_ext then
-                mvector3.normalize(mvec_spread_direction)
-                play_net_redirect(criminal, "throw_grenade")
-                safe_say(criminal, "g43", true, true)
-                safe_call(base_ext.throw, base_ext, { dir = mvec_spread_direction, owner = criminal })
-                -- local area_key = get_conc_area_key(best_cluster_pos) -- Redundant, use outer variable
-                CoopCacheManager.conc_area_cooldown:set(area_key, true)
-                return true
-            end
-        end
-    end
-
     return false
 end
 
