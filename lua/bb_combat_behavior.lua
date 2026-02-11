@@ -14,36 +14,40 @@ local safe_say = UnitOps.say
 local request_act = UnitOps.request_act
 local play_net_redirect = UnitOps.play_redirect
 local get_unit_health_ratio = UnitOps.health_ratio
+local is_surrendering = UnitOps.is_surrendering
 
 local SLOTS = BB.SLOTS
 local CombatHelper = BB.CombatHelper
 
 local CombatBehavior = {}
 
-function CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
-    local unit = data.unit
-    if not (alive(unit) and unit:movement()) then
-        return
+local function _update_dozer_tracking(my_key_str, target_u_key, is_dozer, is_turret)
+    if is_dozer and not is_turret then
+        BB.coop_data.dozer_attackers[my_key_str] = tostring(target_u_key)
+    else
+        BB.coop_data.dozer_attackers[my_key_str] = nil
     end
+end
 
+local function _update_target_lock(data, new_u_key, old_u_key, t)
+    data._last_target_u_key = tostring(new_u_key)
+    data._last_target_t = t
+    if old_u_key ~= data._last_target_u_key then
+        data._target_lock_until = t + CONSTANTS.TARGET_LOCK_MIN
+    end
+end
+
+local function _filter_potential_targets(unit, data, attention_objects, t)
     local ThreatAssessment = BB.ThreatAssessment
     local IntimidationSystem = BB.IntimidationSystem
     local THREAT_WEIGHTS = BB.THREAT_WEIGHTS
 
-    local t = data.t or game_time()
-    local is_team_ai_unit = BB.UnitOps.is_team_ai(unit)
-
-    if BB:get("coop", false) and is_team_ai_unit then
-        BB.CoopSystem.update_teammate_status(unit)
-        safe_call(BB.CoopSystem.scan_and_update_priorities, data)
-    end
-
     local old_target_u_key = data._last_target_u_key and tostring(data._last_target_u_key)
-    local my_key_str = tostring(data.key)
     local last_target_t = data._last_target_t or 0
 
     local force_unlock = false
     local potential_targets_map = {}
+
     for u_key, attention_data in pairs(attention_objects or {}) do
         local u_key_str = tostring(u_key)
         if attention_data.identified
@@ -99,39 +103,31 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
         end
     end
 
-    local lock_active = data._target_lock_until and (t < data._target_lock_until)
+    return potential_targets_map, force_unlock
+end
 
-    if lock_active and not force_unlock and old_target_u_key and potential_targets_map[old_target_u_key] then
-        local locked = potential_targets_map[old_target_u_key]
-        data._last_target_u_key = tostring(locked.data.u_key)
-        data._last_target_t = t
-        return locked.data, 400 / math.max(locked.score or 1, 1), locked.reaction
+local function _select_solo_target(data, potential_targets_map, old_target_u_key, t)
+    local best_local_target
+    local max_score = 0
+
+    for _, target in pairs(potential_targets_map) do
+        if target.score > max_score then
+            max_score = target.score
+            best_local_target = target
+        end
     end
 
-    if not BB:get("coop", false) then
-        local best_local_target
-        local max_score = 0
-
-        for _, target in pairs(potential_targets_map) do
-            if target.score > max_score then
-                max_score = target.score
-                best_local_target = target
-            end
-        end
-
-        if best_local_target then
-            data._last_target_u_key = tostring(best_local_target.data.u_key)
-            data._last_target_t = t
-
-            if old_target_u_key ~= data._last_target_u_key then
-                data._target_lock_until = t + CONSTANTS.TARGET_LOCK_MIN
-            end
-
-            return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
-        end
-
-        return nil, nil, nil
+    if best_local_target then
+        _update_target_lock(data, best_local_target.data.u_key, old_target_u_key, t)
+        return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
     end
+
+    return nil, nil, nil
+end
+
+local function _select_coop_target(unit, data, potential_targets_map, old_target_u_key, my_key_str, t)
+    local ThreatAssessment = BB.ThreatAssessment
+    local THREAT_WEIGHTS = BB.THREAT_WEIGHTS
 
     local global_priority_targets = BB.CoopSystem.get_priority_targets()
     local best_coop_target
@@ -146,10 +142,11 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
             end
 
             local target_unit = global_target.unit
-            local is_turret = EnemyClassifier.is_turret(target_unit)
-            local is_dozer = EnemyClassifier.is_dozer(target_unit)
-            local is_cloaker = EnemyClassifier.is_cloaker(target_unit)
-            local is_taser = EnemyClassifier.is_taser(target_unit)
+            local flags = EnemyClassifier.classify(target_unit)
+            local is_turret = flags.turret
+            local is_dozer = flags.dozer
+            local is_cloaker = flags.cloaker
+            local is_taser = flags.taser
 
             if is_dozer and not is_turret then
                 dynamic_prio = dynamic_prio * BB.CoopSystem.calculate_dozer_penalty(u_key, my_key_str)
@@ -171,11 +168,7 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
                 suitability = suitability + CONSTANTS.ASSIGNED_TARGET_BONUS
             else
                 local target_owner = BB.CoopSystem.get_target_owner(u_key)
-                local target_unit = local_target_info.data.unit
-                local is_high_threat = EnemyClassifier.is_dozer(target_unit)
-                        or EnemyClassifier.is_turret(target_unit)
-                        or EnemyClassifier.is_taser(target_unit)
-                        or EnemyClassifier.is_cloaker(target_unit)
+                local is_high_threat = is_dozer or is_turret or is_taser or is_cloaker
 
                 if not is_high_threat then
                     if not target_owner then
@@ -203,26 +196,15 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
         best_coop_target.claimed_at = t
 
         local target_unit = best_coop_target.unit
-        local is_turret = EnemyClassifier.is_turret(target_unit)
-        local is_dozer = EnemyClassifier.is_dozer(target_unit)
-
-        if is_dozer and not is_turret then
-            BB.coop_data.dozer_attackers[my_key_str] = tostring(best_coop_target.u_key)
-        else
-            BB.coop_data.dozer_attackers[my_key_str] = nil
-        end
+        local post_flags = EnemyClassifier.classify(target_unit)
+        _update_dozer_tracking(my_key_str, best_coop_target.u_key, post_flags.dozer, post_flags.turret)
 
         local local_data = potential_targets_map[tostring(best_coop_target.u_key)]
                 or potential_targets_map[tostring(best_coop_target.unit and best_coop_target.unit:key() or "")]
         if not local_data then
             return nil, nil, nil
         end
-        data._last_target_u_key = tostring(best_coop_target.u_key)
-        data._last_target_t = t
-
-        if old_target_u_key ~= data._last_target_u_key then
-            data._target_lock_until = t + CONSTANTS.TARGET_LOCK_MIN
-        end
+        _update_target_lock(data, best_coop_target.u_key, old_target_u_key, t)
 
         return local_data.data, 300 / math.max(best_coop_score, 1), local_data.reaction
     end
@@ -233,10 +215,11 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
     for u_key, target in pairs(potential_targets_map) do
         local g = global_priority_targets[u_key]
         local target_unit = target.data.unit
-        local is_turret = EnemyClassifier.is_turret(target_unit)
-        local is_dozer = EnemyClassifier.is_dozer(target_unit)
-        local is_cloaker = EnemyClassifier.is_cloaker(target_unit)
-        local is_taser = EnemyClassifier.is_taser(target_unit)
+        local fb_flags = EnemyClassifier.classify(target_unit)
+        local is_turret = fb_flags.turret
+        local is_dozer = fb_flags.dozer
+        local is_cloaker = fb_flags.cloaker
+        local is_taser = fb_flags.taser
 
         local penalty = 1
         if g and g.targeted_by and tostring(g.targeted_by) ~= my_key_str then
@@ -256,27 +239,50 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
 
     if best_local_target then
         local target_unit = best_local_target.data.unit
-        local is_turret = EnemyClassifier.is_turret(target_unit)
-        local is_dozer = EnemyClassifier.is_dozer(target_unit)
-
-        if is_dozer and not is_turret then
-            BB.coop_data.dozer_attackers[my_key_str] = tostring(best_local_target.data.u_key)
-        else
-            BB.coop_data.dozer_attackers[my_key_str] = nil
-        end
-
-        data._last_target_u_key = tostring(best_local_target.data.u_key)
-        data._last_target_t = t
-
-        if old_target_u_key ~= data._last_target_u_key then
-            data._target_lock_until = t + CONSTANTS.TARGET_LOCK_MIN
-        end
+        local post_fb_flags = EnemyClassifier.classify(target_unit)
+        _update_dozer_tracking(my_key_str, best_local_target.data.u_key, post_fb_flags.dozer, post_fb_flags.turret)
+        _update_target_lock(data, best_local_target.data.u_key, old_target_u_key, t)
 
         return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
     end
 
     BB.coop_data.dozer_attackers[my_key_str] = nil
     return nil, nil, nil
+end
+
+function CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
+    local unit = data.unit
+    if not (alive(unit) and unit:movement()) then
+        return
+    end
+
+    local t = data.t or game_time()
+    local is_team_ai_unit = BB.UnitOps.is_team_ai(unit)
+
+    if BB:get("coop", false) and is_team_ai_unit then
+        BB.CoopSystem.update_teammate_status(unit)
+        safe_call(BB.CoopSystem.scan_and_update_priorities, data)
+    end
+
+    local old_target_u_key = data._last_target_u_key and tostring(data._last_target_u_key)
+    local my_key_str = tostring(data.key)
+
+    local potential_targets_map, force_unlock = _filter_potential_targets(unit, data, attention_objects, t)
+
+    local lock_active = data._target_lock_until and (t < data._target_lock_until)
+
+    if lock_active and not force_unlock and old_target_u_key and potential_targets_map[old_target_u_key] then
+        local locked = potential_targets_map[old_target_u_key]
+        data._last_target_u_key = tostring(locked.data.u_key)
+        data._last_target_t = t
+        return locked.data, 400 / math.max(locked.score or 1, 1), locked.reaction
+    end
+
+    if not BB:get("coop", false) then
+        return _select_solo_target(data, potential_targets_map, old_target_u_key, t)
+    end
+
+    return _select_coop_target(unit, data, potential_targets_map, old_target_u_key, my_key_str, t)
 end
 
 
@@ -326,10 +332,10 @@ function CombatBehavior.find_enemy_to_mark(enemies, my_unit)
                                 if (not flags.shield) or can_hit then
                                     local score = dis
                                     if attention_info.verified then
-                                        score = score - 150
+                                        score = score - CONSTANTS.MARK_VERIFIED_BONUS
                                     end
                                     if flags.shield then
-                                        score = score - 200
+                                        score = score - CONSTANTS.MARK_SHIELD_BONUS
                                     end
 
                                     if (not best_score) or score < best_score then

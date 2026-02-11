@@ -87,7 +87,7 @@ function UnitOps.is_team_ai(unit)
     end
 
     local state = groupai:state()
-    return state and state:is_unit_team_AI(unit) or false
+    return (state and state:is_unit_team_AI(unit)) or false
 end
 
 function UnitOps.has_tag(unit, tag)
@@ -96,7 +96,7 @@ function UnitOps.has_tag(unit, tag)
     end
 
     local base = unit:base()
-    return base and base.has_tag and base:has_tag(tag) or false
+    return (base and base.has_tag and base:has_tag(tag)) or false
 end
 
 function UnitOps.are_foes(a, b)
@@ -105,7 +105,7 @@ function UnitOps.are_foes(a, b)
         return false
     end
 
-    return ta.foes and ta.foes[tb.id] or false
+    return (ta.foes and ta.foes[tb.id]) or false
 end
 
 function UnitOps.is_law_unit(unit)
@@ -161,6 +161,24 @@ function UnitOps.play_redirect(unit, variant)
             Utils.safe_call(sess.send_to_peers_synched, sess, "play_distance_interact_redirect", unit, variant)
         end
     end
+end
+
+function UnitOps.is_surrendering(unit)
+    if not alive(unit) then
+        return false
+    end
+
+    local anim = unit:anim_data()
+    if anim and (anim.hands_back or anim.surrender or anim.hands_tied) then
+        return true
+    end
+
+    local brain = unit:brain()
+    if brain and brain.surrendered and brain:surrendered() then
+        return true
+    end
+
+    return false
 end
 
 function UnitOps.request_act(unit, variant, data)

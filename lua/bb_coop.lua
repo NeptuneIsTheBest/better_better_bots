@@ -284,18 +284,35 @@ function CoopSystem.update_optimal_assignments()
     local MAX_COST = 1e9
     local vis_mask = BB.MASK.AI_visibility
 
+    local coverage_cache = {}
+    for j, enemy in ipairs(valid_enemies) do
+        coverage_cache[j] = {}
+        for i, bot in ipairs(active_bots) do
+            coverage_cache[j][i] = enemy.pos and not CoopSystem.is_direction_covered(enemy.pos, bot.unit)
+        end
+    end
+
+    local raycast_cache = {}
+    for i, bot in ipairs(active_bots) do
+        raycast_cache[i] = {}
+        if bot.pos then
+            for j, enemy in ipairs(valid_enemies) do
+                if enemy.pos then
+                    local ray = World:raycast("ray", bot.pos, enemy.pos, "slot_mask", vis_mask, "ray_type", "ai_vision", "report")
+                    raycast_cache[i][j] = ray and 0 or 1
+                else
+                    raycast_cache[i][j] = 1
+                end
+            end
+        end
+    end
+
     for i, bot in ipairs(active_bots) do
         cost_matrix[i] = {}
         for j, enemy in ipairs(valid_enemies) do
             local priority = enemy.priority or 1
 
-            local visibility_factor = 1
-            if bot.pos and enemy.pos then
-                local ray = World:raycast("ray", bot.pos, enemy.pos, "slot_mask", vis_mask, "ray_type", "ai_vision", "report")
-                if ray then
-                    visibility_factor = 0
-                end
-            end
+            local visibility_factor = raycast_cache[i] and raycast_cache[i][j] or 1
 
             local dist = 1
             if bot.pos and enemy.pos then
@@ -315,7 +332,7 @@ function CoopSystem.update_optimal_assignments()
             end
 
             local coverage_bonus = 0
-            if enemy.pos and not CoopSystem.is_direction_covered(enemy.pos, bot.unit) then
+            if coverage_cache[j] and coverage_cache[j][i] then
                 coverage_bonus = THREAT_WEIGHTS.DIRECTION_BONUS
             end
 
@@ -332,7 +349,7 @@ function CoopSystem.update_optimal_assignments()
             elseif enemy.state == "dozer_facing" then
                 state_bonus = THREAT_WEIGHTS.COOP_DOZER_FACING_BONUS
             elseif enemy.state == "near_teammate" then
-                state_bonus = 10
+                state_bonus = CONSTANTS.NEAR_TEAMMATE_STATE_BONUS
             end
 
             local enemy_health_ratio = get_unit_health_ratio(enemy.unit)
@@ -345,7 +362,7 @@ function CoopSystem.update_optimal_assignments()
                 if enemy_health_ratio < 0.3 then
                     ttk_score = ttk_score * CONSTANTS.LOW_HEALTH_TTK_BONUS
                 end
-                if is_special_unit(enemy.unit) then
+                if enemy.is_special then
                     if enemy_health_ratio > 0.5 then
                         ttk_score = math.min(ttk_score, 5)
                     end
@@ -506,10 +523,14 @@ function CoopSystem.get_closest_teammate_info(pos)
         return nil, false, nil
     end
 
-    local cache_key = string.format("%.0f_%.0f_%.0f", pos.x, pos.y, pos.z)
+    local cache_key = string.format("%.1f_%.1f_%.1f", pos.x, pos.y, pos.z)
     local cached = CoopCacheManager.teammate_distance:get(cache_key)
     if cached then
-        return cached.min_dist, cached.in_danger_any, cached.who
+        if cached.who and cached.who.unit and not alive(cached.who.unit) then
+            CoopCacheManager.teammate_distance:clear(cache_key)
+        else
+            return cached.min_dist, cached.in_danger_any, cached.who
+        end
     end
 
     local min_dist = math.huge

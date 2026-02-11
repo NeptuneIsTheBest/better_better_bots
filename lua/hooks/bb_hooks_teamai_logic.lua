@@ -10,8 +10,6 @@ local game_time = Utils.game_time
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
     if Network:is_server() then
-        local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
-
         function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
             return CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
         end
@@ -60,7 +58,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
                     my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
                     if t >= my_data._next_conc_eval_t then
-                        my_data._next_conc_eval_t = t + 1
+                        my_data._next_conc_eval_t = t + CONSTANTS.CONC_EVAL_INTERVAL
                         if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
                             local success, thrown = safe_call(CombatBehavior.throw_concussion_grenade, data, unit)
                             if success and thrown then
@@ -92,7 +90,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
                     my_data._next_cache_cleanup_t = my_data._next_cache_cleanup_t or 0
                     if t >= my_data._next_cache_cleanup_t then
-                        my_data._next_cache_cleanup_t = t + 10
+                        my_data._next_cache_cleanup_t = t + CONSTANTS.CACHE_CLEANUP_INTERVAL
                         CoopCacheManager.cleanup_all()
                     end
                 end

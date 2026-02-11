@@ -10,6 +10,7 @@ local safe_call = Utils.safe_call
 local are_units_foes = UnitOps.are_foes
 local safe_say = UnitOps.say
 local play_net_redirect = UnitOps.play_redirect
+local is_surrendering = UnitOps.is_surrendering
 
 local ConcussionSystem = {}
 
@@ -19,24 +20,6 @@ local function get_conc_area_key(pos)
     local gy = math.floor(mvector3.y(pos) / grid_size)
     local gz = math.floor(mvector3.z(pos) / grid_size)
     return string.format("conc_%d_%d_%d", gx, gy, gz)
-end
-
-local function is_surrendering(unit)
-    if not alive(unit) then
-        return false
-    end
-
-    local anim = unit:anim_data()
-    if anim and (anim.hands_back or anim.surrender or anim.hands_tied) then
-        return true
-    end
-
-    local brain = unit:brain()
-    if brain and brain.surrendered and brain:surrendered() then
-        return true
-    end
-
-    return false
 end
 
 function ConcussionSystem.throw(data, criminal)
@@ -102,10 +85,10 @@ function ConcussionSystem.throw(data, criminal)
         end
     end
 
-    local min_enemies = CONSTANTS.CONC_MIN_ENEMIES or 5
-    local min_shields = CONSTANTS.CONC_MIN_SHIELDS or 2
-    local special_threshold = CONSTANTS.CONC_SPECIAL_THRESHOLD or 2
-    local special_min_enemies = CONSTANTS.CONC_SPECIAL_MIN_ENEMIES or 3
+    local min_enemies = CONSTANTS.CONC_MIN_ENEMIES
+    local min_shields = CONSTANTS.CONC_MIN_SHIELDS
+    local special_threshold = CONSTANTS.CONC_SPECIAL_THRESHOLD
+    local special_min_enemies = CONSTANTS.CONC_SPECIAL_MIN_ENEMIES
 
     local should_throw = (close_enemies >= min_enemies)
             or (shield_count >= min_shields)
@@ -115,10 +98,10 @@ function ConcussionSystem.throw(data, criminal)
         return false
     end
 
-    local eps = CONSTANTS.CLUSTER_DISTANCE or 1000
-    local minPts = CONSTANTS.DBSCAN_MIN_POINTS or 2
+    local eps = CONSTANTS.CLUSTER_DISTANCE
+    local minPts = CONSTANTS.DBSCAN_MIN_POINTS
 
-    local clusters, labels = Clustering.dbscan(enemy_cluster, eps, minPts)
+    local clusters = Clustering.dbscan(enemy_cluster, eps, minPts)
 
     local best_cluster_id = nil
     local best_cluster_value = 0

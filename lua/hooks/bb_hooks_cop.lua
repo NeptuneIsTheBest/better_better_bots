@@ -265,7 +265,8 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                             if attention_pos then
                                 local vis_ray = World:raycast("ray", my_pos, attention_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
                                 if not vis_ray or (vis_ray.unit and vis_ray.unit:key() == u_key) then
-                                    local att_obj = CopLogicBase._create_detected_attention_object_data(t, unit, u_key, attention_info, settings)
+                                    local ok, att_obj = safe_call(CopLogicBase._create_detected_attention_object_data, t, unit, u_key, attention_info, settings)
+                                    if not ok then att_obj = nil end
 
                                     if att_obj then
                                         local new_reaction = (settings and settings.reaction) or AIAttentionObject.REACT_IDLE

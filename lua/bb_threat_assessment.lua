@@ -96,7 +96,11 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
 
     local cached = CoopCacheManager.threat_value:get(cache_key)
     if cached then
-        return cached
+        if not alive(target_data.unit) then
+            CoopCacheManager.threat_value:clear(cache_key)
+        else
+            return cached
+        end
     end
 
     local target_unit = target_data.unit
@@ -150,8 +154,9 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
         threat = threat * (1 + (THREAT_WEIGHTS.DOZER_MEDIC_SYNERGY / 100))
     end
 
+    local hr = UnitOps.health_ratio(target_unit)
+
     if flags.dozer then
-        local hr = UnitOps.health_ratio(target_unit)
         if hr < CONSTANTS.LOW_HEALTH_RATIO then
             threat = threat * CONSTANTS.DOZER_LOW_HEALTH_MUL
         end
@@ -169,8 +174,7 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
     end
 
     if not flags.turret then
-        local hr2 = UnitOps.health_ratio(target_unit)
-        if hr2 < CONSTANTS.LOW_HEALTH_RATIO then
+        if hr < CONSTANTS.LOW_HEALTH_RATIO then
             threat = threat + THREAT_WEIGHTS.LOW_HEALTH_BONUS
         end
 
@@ -214,7 +218,11 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
 
     local cached = CoopCacheManager.suitability:get(cache_key)
     if cached then
-        return cached
+        if not alive(target_data.unit) then
+            CoopCacheManager.suitability:clear(cache_key)
+        else
+            return cached
+        end
     end
 
     local score = 100.0

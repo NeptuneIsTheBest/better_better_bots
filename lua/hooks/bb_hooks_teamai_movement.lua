@@ -158,7 +158,7 @@ if RequiredScript == "lib/units/player_team/actions/lower_body/criminalactionwal
             local type_data = carry_type and tweak_data.carry.types and tweak_data.carry.types[carry_type]
 
             if type_data then
-                return math.min(1, (type_data.move_speed_modifier or 1) * 1.5)
+                return math.min(1, (type_data.move_speed_modifier or 1) * CONSTANTS.BAG_SPEED_MUL)
             end
 
             return 1
