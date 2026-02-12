@@ -1,4 +1,4 @@
-﻿local BB = _G.BB
+local BB = _G.BB
 
 local CONSTANTS = BB.CONSTANTS
 local THREAT_WEIGHTS = BB.THREAT_WEIGHTS

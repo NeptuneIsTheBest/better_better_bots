@@ -265,9 +265,13 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
         CoopCacheManager.suitability:set(cache_key, score, 0.3)
         return score
     end
-    local dir_to_target = (target_data.m_head_pos
+    local target_pos = target_data.m_head_pos
             or (target_unit:movement() and target_unit:movement():m_head_pos())
-            or bot_head) - bot_head
+    if not target_pos then
+        CoopCacheManager.suitability:set(cache_key, score, 0.3)
+        return score
+    end
+    local dir_to_target = target_pos - bot_head
 
     mvector3.normalize(dir_to_target)
     local angle = mvector3.dot(dir_to_target, bot_fwd)

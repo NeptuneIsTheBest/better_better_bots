@@ -95,11 +95,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     end
                 end
         )
-    end
 
-    Hooks:PostHook(TeamAILogicAssault, "exit", "BB_TeamAILogicAssault_exit_SmartReload", function(data, ...)
-        safe_call(CombatBehavior.check_smart_reload, data)
-    end)
+        Hooks:PostHook(TeamAILogicAssault, "exit", "BB_TeamAILogicAssault_exit_SmartReload", function(data, ...)
+            safe_call(CombatBehavior.check_smart_reload, data)
+        end)
+    end
 end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
