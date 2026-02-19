@@ -28,10 +28,12 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
                     managers.network:session():send_to_peers("mission_ended", true, num_winners)
                 end
 
-                if game_state_machine and managers.player and managers.player:player_unit() then
+                if game_state_machine then
                     game_state_machine:change_state_by_name("victoryscreen", {
                         num_winners = num_winners,
-                        personal_win = alive(managers.player:player_unit()),
+                        personal_win = managers.player
+                            and managers.player:player_unit()
+                            and alive(managers.player:player_unit()) or false,
                     })
                 end
 

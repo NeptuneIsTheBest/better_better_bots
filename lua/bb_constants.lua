@@ -130,6 +130,7 @@ local CONSTANTS = {
 
 local ARCHETYPE_DAMAGE_MULTIPLIERS = {
     assault_rifle = 10,
+    lmg = 8,
     sniper = 5,
     shotgun = 2.5,
 }

@@ -31,6 +31,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
         end
 
         function GroupAIStateBase:_get_balancing_multiplier(balance_multipliers, ...)
+            if not balance_multipliers then return 1 end
             local nr_crim = 0
             for _, u_data in pairs(self:all_char_criminals() or {}) do
                 if not u_data.status then
@@ -39,7 +40,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             end
 
             nr_crim = math.clamp(nr_crim, 1, #balance_multipliers)
-            return balance_multipliers and balance_multipliers[nr_crim] or 1
+            return balance_multipliers[nr_crim]
         end
     end
 end

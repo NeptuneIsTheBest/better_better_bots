@@ -80,9 +80,18 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                     local bag_unit = unit or old_carry_unit
 
                     if unit and unit:carry_data() then
-                        self:set_visual_carry(unit:carry_data():carry_id())
+                        if not self.set_visual_carry and HuskPlayerMovement then
+                            TeamAIMovement.set_visual_carry = HuskPlayerMovement.set_visual_carry
+                            TeamAIMovement._destroy_current_carry_unit = HuskPlayerMovement._destroy_current_carry_unit
+                            TeamAIMovement._create_carry_unit = HuskPlayerMovement._create_carry_unit
+                        end
+                        if self.set_visual_carry then
+                            self:set_visual_carry(unit:carry_data():carry_id())
+                        end
                     else
-                        self:set_visual_carry(nil)
+                        if self.set_visual_carry then
+                            self:set_visual_carry(nil)
+                        end
                     end
 
                     if alive(bag_unit) then
@@ -111,7 +120,7 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 
             function TeamAIMovement:get_reload_speed_multiplier(...)
                 local multiplier = old_get_reload_speed_multiplier(self, ...)
-                if BB:get("combat", false) and self._unit and is_team_ai(self._unit) then
+                if BB:get("combat", false) and not BotWeapons and self._unit and is_team_ai(self._unit) then
                     return (multiplier or 1) * CONSTANTS.RELOAD_SPEED_MUL
                 end
                 return multiplier
