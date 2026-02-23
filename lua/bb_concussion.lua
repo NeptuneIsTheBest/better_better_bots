@@ -229,18 +229,16 @@ function ConcussionSystem.throw(data, criminal)
 
     local mvec_spread_direction = best_cluster_pos - from_pos
 
-    if ProjectileBase and ProjectileBase.spawn then
-        local success, cc_unit = safe_call(ProjectileBase.spawn, conc_tweak.unit, from_pos, Rotation())
-        if success and cc_unit then
-            local base_ext = cc_unit:base()
-            if base_ext then
-                mvector3.normalize(mvec_spread_direction)
-                play_net_redirect(criminal, "throw_grenade")
-                safe_say(criminal, "g43", true, true)
-                safe_call(base_ext.throw, base_ext, { dir = mvec_spread_direction, owner = criminal })
-                CoopCacheManager.conc_area_cooldown:set(area_key, true)
-                return true
-            end
+    if ProjectileBase and ProjectileBase.throw_projectile_npc then
+        mvector3.normalize(mvec_spread_direction)
+        if not play_net_redirect(criminal, "throw_grenade") then
+            return false
+        end
+        safe_say(criminal, "g43", true, true)
+        local ok, cc_unit = safe_call(ProjectileBase.throw_projectile_npc, "concussion", from_pos, mvec_spread_direction, criminal)
+        if ok and cc_unit then
+            CoopCacheManager.conc_area_cooldown:set(area_key, true)
+            return true
         end
     end
 

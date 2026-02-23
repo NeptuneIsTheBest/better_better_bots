@@ -25,12 +25,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
         end
 
         if not BotWeapons then
-            if HuskPlayerMovement then
-                TeamAIMovement.set_visual_carry = HuskPlayerMovement.set_visual_carry
-                TeamAIMovement._destroy_current_carry_unit = HuskPlayerMovement._destroy_current_carry_unit
-                TeamAIMovement._create_carry_unit = HuskPlayerMovement._create_carry_unit
-            end
-
             local orig_check_visual_equipment = TeamAIMovement.check_visual_equipment
 
             function TeamAIMovement:check_visual_equipment(...)
@@ -69,33 +63,10 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                 local orig_set_carrying_bag = TeamAIMovement.set_carrying_bag
 
                 function TeamAIMovement:set_carrying_bag(unit, ...)
-                    local old_carry_unit = self._carry_unit
-
                     orig_set_carrying_bag(self, unit, ...)
 
                     if not managers.hud then
                         return
-                    end
-
-                    local bag_unit = unit or old_carry_unit
-
-                    if unit and unit:carry_data() then
-                        if not self.set_visual_carry and HuskPlayerMovement then
-                            TeamAIMovement.set_visual_carry = HuskPlayerMovement.set_visual_carry
-                            TeamAIMovement._destroy_current_carry_unit = HuskPlayerMovement._destroy_current_carry_unit
-                            TeamAIMovement._create_carry_unit = HuskPlayerMovement._create_carry_unit
-                        end
-                        if self.set_visual_carry then
-                            self:set_visual_carry(unit:carry_data():carry_id())
-                        end
-                    else
-                        if self.set_visual_carry then
-                            self:set_visual_carry(nil)
-                        end
-                    end
-
-                    if alive(bag_unit) then
-                        bag_unit:set_visible(not unit)
                     end
 
                     local name_label_id = self._unit

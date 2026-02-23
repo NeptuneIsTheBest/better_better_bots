@@ -689,6 +689,10 @@ function CombatBehavior.execute_melee_attack(data, criminal)
         origin = my_pos,
     }
 
+    if not play_net_redirect(criminal, "melee") then
+        return
+    end
+
     if target_is_shield then
         damage_info.shield_knock = true
         safe_call(damage.damage_melee, damage, damage_info)
@@ -696,8 +700,6 @@ function CombatBehavior.execute_melee_attack(data, criminal)
         damage_info.knock_down = true
         safe_call(damage.damage_bullet, damage, damage_info)
     end
-
-    play_net_redirect(criminal, "melee")
 end
 
 function CombatBehavior.throw_concussion_grenade(data, criminal)

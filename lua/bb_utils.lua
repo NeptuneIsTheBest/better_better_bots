@@ -154,13 +154,19 @@ end
 function UnitOps.play_redirect(unit, variant)
     local mov = alive(unit) and unit:movement()
     if mov and mov.play_redirect then
-        Utils.safe_call(mov.play_redirect, mov, variant)
+        local ok, res = Utils.safe_call(mov.play_redirect, mov, variant)
+        if not (ok and res) then
+            return false
+        end
 
         local sess = managers.network and managers.network:session()
         if sess and sess.send_to_peers_synched and Network:is_server() then
             Utils.safe_call(sess.send_to_peers_synched, sess, "play_distance_interact_redirect", unit, variant)
         end
+
+        return true
     end
+    return false
 end
 
 function UnitOps.is_surrendering(unit)
