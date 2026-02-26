@@ -235,12 +235,14 @@ function CoopSystem.update_optimal_assignments()
     local bot_key_to_index = {}
     for u_key, status in pairs(CoopSystem.data.teammates_status) do
         if status.unit and alive(status.unit) then
+            local weapon_type, fire_mode = ThreatAssessment.get_weapon_archetype(status.unit)
             table.insert(active_bots, {
                 key = u_key,
                 unit = status.unit,
                 pos = status.position,
                 fwd = status.facing_direction,
-                weapon_type = ThreatAssessment.get_weapon_archetype(status.unit)
+                weapon_type = weapon_type,
+                fire_mode = fire_mode,
             })
             bot_key_to_index[u_key] = #active_bots
         end

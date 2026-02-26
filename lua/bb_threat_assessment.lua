@@ -23,33 +23,35 @@ function ThreatAssessment.get_weapon_archetype(unit)
     local inv = unit:inventory()
     local equipped_wep = inv and inv:equipped_unit()
     if not equipped_wep then
-        return "unknown"
+        return "unknown", "unknown"
     end
 
     local wep_base = equipped_wep:base()
     if not wep_base or not wep_base.is_category then
-        return "unknown"
+        return "unknown", "unknown"
     end
+
+    local fire_mode = wep_base.fire_mode and wep_base:fire_mode() or "unknown"
 
     if wep_base:is_category("snp") then
-        return "sniper"
+        return "sniper", fire_mode
     elseif wep_base:is_category("shotgun") then
-        return "shotgun"
+        return "shotgun", fire_mode
     elseif wep_base:is_category("lmg") then
-        return "lmg"
+        return "lmg", fire_mode
     elseif wep_base:is_category("smg") then
-        return "smg"
+        return "smg", fire_mode
     elseif wep_base:is_category("assault_rifle") then
-        return "assault_rifle"
+        return "assault_rifle", fire_mode
     elseif wep_base:is_category("akimbo") then
-        return "akimbo"
+        return "akimbo", fire_mode
     elseif wep_base:is_category("pistol") then
-        return "pistol"
+        return "pistol", fire_mode
     elseif wep_base:is_category("flamethrower") then
-        return "flamethrower"
+        return "flamethrower", fire_mode
     end
 
-    return "rifle"
+    return "rifle", fire_mode
 end
 
 function ThreatAssessment.get_archetype_damage_multiplier(bot_unit)

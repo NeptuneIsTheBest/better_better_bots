@@ -118,7 +118,7 @@ local CONSTANTS = {
     SHOTGUN_RANGE_DIVISOR = 50,
     SHOTGUN_EFFECTIVE_RANGE = 1000,
     SHOTGUN_SPECIAL_BONUS = 15,
-    DEFAULT_ARCHETYPE_MUL = 2,
+    DEFAULT_ARCHETYPE_MUL = 1,
 
     CONC_EVAL_INTERVAL = 1,
     CACHE_CLEANUP_INTERVAL = 10,
@@ -129,10 +129,10 @@ local CONSTANTS = {
 }
 
 local ARCHETYPE_DAMAGE_MULTIPLIERS = {
-    assault_rifle = 1.5,
-    lmg = 1.3,
-    sniper = 5,
-    shotgun = 2.5,
+    assault_rifle = 1,
+    lmg = 1,
+    sniper = 1,
+    shotgun = 1,
 }
 
 local THREAT_WEIGHTS = {
