@@ -1028,6 +1028,49 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
     end
 end
 
+if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
+    if Network:is_server() then
+        local _bb_orig_upd_aim = CopLogicAttack._upd_aim
+
+        function CopLogicAttack._upd_aim(data, my_data)
+            _bb_orig_upd_aim(data, my_data)
+
+            if not (data.unit and alive(data.unit) and is_team_ai(data.unit)) then
+                return
+            end
+
+            local focus_enemy = data.attention_obj
+            if not focus_enemy then return end
+            if focus_enemy.reaction < AIAttentionObject.REACT_SHOOT then return end
+            if not (focus_enemy.verified or focus_enemy.nearly_visible) then return end
+
+            if not my_data.attention_unit or my_data.attention_unit ~= focus_enemy.u_key then
+                CopLogicBase._set_attention(data, focus_enemy)
+                my_data.attention_unit = focus_enemy.u_key
+            end
+
+            if not my_data.shooting
+                and not my_data.spooc_attack
+                and not data.unit:anim_data().reload
+                and not data.unit:movement():chk_action_forbidden("action")
+            then
+                local shoot_action = {
+                    body_part = 3,
+                    type = "shoot"
+                }
+                if data.unit:brain():action_request(shoot_action) then
+                    my_data.shooting = true
+                end
+            end
+
+            if not my_data.firing then
+                data.unit:movement():set_allow_fire(true)
+                my_data.firing = true
+            end
+        end
+    end
+end
+
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
     if Network:is_server() then
         Hooks:PostHook(CopLogicIdle, "enter", "BB_CopLogicIdle_enter_CheckSmartReload", function(data, ...)
