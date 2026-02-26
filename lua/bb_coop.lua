@@ -181,7 +181,7 @@ function CoopSystem.calculate_dozer_penalty(enemy_key, bot_key)
     other_attackers = math.max(0, other_attackers)
 
     if other_attackers > 0 then
-        return math.pow(CONSTANTS.DOZER_PENALTY_BASE, other_attackers)
+        return CONSTANTS.DOZER_PENALTY_BASE ^ other_attackers
     end
     return 1
 end

@@ -267,6 +267,10 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                         self._unit:movement():throw_bag()
                     end
 
+                    if self._unit:unit_data() then
+                        managers.hud:set_mugshot_downed(self._unit:unit_data().mugshot_id)
+                    end
+
                     self:_die()
 
                     local dmg_info = {
@@ -1091,10 +1095,6 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 
                 if managers.groupai and managers.groupai:state() then
                     num_winners = num_winners + managers.groupai:state():amount_of_winning_ai_criminals()
-                end
-
-                if managers.network and managers.network:session() then
-                    managers.network:session():send_to_peers("mission_ended", true, num_winners)
                 end
 
                 if game_state_machine then
