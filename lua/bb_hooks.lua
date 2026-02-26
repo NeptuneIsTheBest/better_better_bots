@@ -263,6 +263,10 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                     managers.groupai:state():on_criminal_disabled(self._unit)
                     managers.groupai:state():report_criminal_downed(self._unit)
 
+                    if Network:is_server() and self._unit:movement():carrying_bag() then
+                        self._unit:movement():throw_bag()
+                    end
+
                     self:_die()
 
                     local dmg_info = {
@@ -635,7 +639,17 @@ end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
     if Network:is_server() then
-        TeamAILogicAssault.find_enemy_to_mark = CombatBehavior.find_enemy_to_mark
+        -- Wrap find_enemy_to_mark: vanilla _upd_enemy_detection only passes (enemies),
+        -- so my_unit would be nil. Use a PreHook to capture data.unit before the call.
+        local _bb_find_enemy_to_mark = CombatBehavior.find_enemy_to_mark
+        TeamAILogicAssault.find_enemy_to_mark = function(enemies, my_unit)
+            return _bb_find_enemy_to_mark(enemies, my_unit or TeamAILogicAssault._bb_detecting_unit)
+        end
+
+        Hooks:PreHook(TeamAILogicAssault, "_upd_enemy_detection", "BB_store_detection_unit", function(data)
+            TeamAILogicAssault._bb_detecting_unit = data and data.unit
+        end)
+
         TeamAILogicAssault.mark_enemy = CombatBehavior.mark_enemy
         TeamAILogicAssault.check_smart_reload = CombatBehavior.check_smart_reload
         TeamAILogicAssault._get_priority_attention = CombatBehavior.find_priority_attention
@@ -992,7 +1006,12 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                                             att_obj.identified = true
                                             att_obj.identified_t = t
                                             att_obj.reaction = new_reaction
-                                            att_obj.settings.reaction = new_reaction
+                                            if att_obj.settings.reaction ~= new_reaction then
+                                                local cloned = {}
+                                                for k, v in pairs(att_obj.settings) do cloned[k] = v end
+                                                cloned.reaction = new_reaction
+                                                att_obj.settings = cloned
+                                            end
                                             detected_obj[u_key] = att_obj
                                         end
                                     end
