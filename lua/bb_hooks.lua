@@ -643,8 +643,6 @@ end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
     if Network:is_server() then
-        -- Wrap find_enemy_to_mark: vanilla _upd_enemy_detection only passes (enemies),
-        -- so my_unit would be nil. Use a PreHook to capture data.unit before the call.
         local _bb_find_enemy_to_mark = CombatBehavior.find_enemy_to_mark
         TeamAILogicAssault.find_enemy_to_mark = function(enemies, my_unit)
             return _bb_find_enemy_to_mark(enemies, my_unit or TeamAILogicAssault._bb_detecting_unit)
