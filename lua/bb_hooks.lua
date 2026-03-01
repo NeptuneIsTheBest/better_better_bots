@@ -260,24 +260,35 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
             local old_checkbleedout = TeamAIDamage._check_bleed_out
             function TeamAIDamage:_check_bleed_out()
                 if self._health <= 0 and BB:get("instadwn", false) then
-                    managers.groupai:state():on_criminal_disabled(self._unit)
-                    managers.groupai:state():report_criminal_downed(self._unit)
+                    self._bleed_out = true
 
-                    if Network:is_server() and self._unit:movement():carrying_bag() then
-                        self._unit:movement():throw_bag()
+                    managers.groupai:state():on_criminal_disabled(self._unit)
+
+                    if Network:is_server() then
+                        managers.groupai:state():report_criminal_downed(self._unit)
+
+                        if self._unit:movement():carrying_bag() then
+                            self._unit:movement():throw_bag()
+                        end
                     end
 
                     if self._unit:unit_data() then
                         managers.hud:set_mugshot_downed(self._unit:unit_data().mugshot_id)
                     end
 
+                    managers.mission:call_global_event("ai_in_custody")
                     self:_die()
+
+                    if self._unit:network() then
+                        self._unit:network():send("from_server_damage_bleeding")
+                    end
 
                     local dmg_info = {
                         variant = "bleeding",
                         result = { type = "death" },
                     }
                     self:_call_listeners(dmg_info)
+                    self:_unregister_unit()
                     return
                 end
 
@@ -387,7 +398,7 @@ if RequiredScript == "lib/managers/criminalsmanager" then
                         v.always_face_enemy = true
                         v.crouch_move = true
 
-                        if char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
+                        if v.damage and char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
                             v.damage.hurt_severity = char_preset.hurt_severities.no_hurts
                         end
 
@@ -645,16 +656,15 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
     if Network:is_server() then
         local _bb_find_enemy_to_mark = CombatBehavior.find_enemy_to_mark
         TeamAILogicAssault.find_enemy_to_mark = function(enemies, my_unit)
-            return _bb_find_enemy_to_mark(enemies, my_unit or TeamAILogicAssault._bb_detecting_unit)
+            return _bb_find_enemy_to_mark(enemies, my_unit or TeamAILogicAssault._bb_detecting_data and TeamAILogicAssault._bb_detecting_data.unit)
         end
 
         Hooks:PreHook(TeamAILogicAssault, "_upd_enemy_detection", "BB_store_detection_unit", function(data)
-            TeamAILogicAssault._bb_detecting_unit = data and data.unit
+            TeamAILogicAssault._bb_detecting_data = data
         end)
 
         TeamAILogicAssault.mark_enemy = CombatBehavior.mark_enemy
         TeamAILogicAssault.check_smart_reload = CombatBehavior.check_smart_reload
-        TeamAILogicAssault._get_priority_attention = CombatBehavior.find_priority_attention
 
         Hooks:PostHook(
             TeamAILogicAssault,
@@ -662,7 +672,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             "BB_TeamAILogicAssault_update_CombatActions",
             function(data, ...)
                 local t = game_time()
-                local my_data = data.internal_data or {}
+                local my_data = data.internal_data
+                if not my_data then return end
                 local unit = data.unit
 
                 my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
@@ -723,6 +734,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
             end
         )
 
+        -- Intentional: vanilla uses <= REACT_SCARED, BB uses < REACT_COMBAT to keep bots
+        -- in idle at REACT_AIM/REACT_SHOOT levels for smoother combat transitions
         function TeamAILogicBase._get_logic_state_from_reaction(data, reaction)
             return (not reaction or reaction < REACT_COMBAT) and "idle" or "assault"
         end
@@ -742,7 +755,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 return target_pos, target_vec, target_dis, autotarget
             end
 
-            if attention and attention.unit and alive(attention.unit) then
+            if attention and not attention.handler and attention.unit and alive(attention.unit) then
                 local target_unit = attention.unit
                 local target_movement = target_unit:movement()
 
@@ -774,7 +787,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 return target_pos, target_vec, target_dis, autotarget
             end
 
-            if attention and attention.unit and alive(attention.unit) then
+            if attention and not attention.handler and attention.unit and alive(attention.unit) then
                 local target_unit = attention.unit
                 local target_movement = target_unit:movement()
 
@@ -1038,32 +1051,37 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
             end
 
             local focus_enemy = data.attention_obj
-            if not focus_enemy then return end
-            if focus_enemy.reaction < AIAttentionObject.REACT_SHOOT then return end
-            if not (focus_enemy.verified or focus_enemy.nearly_visible) then return end
+            local should_fire = focus_enemy
+                and focus_enemy.reaction >= AIAttentionObject.REACT_SHOOT
+                and (focus_enemy.verified or focus_enemy.nearly_visible)
 
-            if not my_data.attention_unit or my_data.attention_unit ~= focus_enemy.u_key then
-                CopLogicBase._set_attention(data, focus_enemy)
-                my_data.attention_unit = focus_enemy.u_key
-            end
-
-            if not my_data.shooting
-                and not my_data.spooc_attack
-                and not data.unit:anim_data().reload
-                and not data.unit:movement():chk_action_forbidden("action")
-            then
-                local shoot_action = {
-                    body_part = 3,
-                    type = "shoot"
-                }
-                if data.unit:brain():action_request(shoot_action) then
-                    my_data.shooting = true
+            if should_fire then
+                if not my_data.attention_unit or my_data.attention_unit ~= focus_enemy.u_key then
+                    CopLogicBase._set_attention(data, focus_enemy)
+                    my_data.attention_unit = focus_enemy.u_key
                 end
-            end
 
-            if not my_data.firing then
-                data.unit:movement():set_allow_fire(true)
-                my_data.firing = true
+                if not my_data.shooting
+                    and not my_data.spooc_attack
+                    and not data.unit:anim_data().reload
+                    and not data.unit:movement():chk_action_forbidden("action")
+                then
+                    local shoot_action = {
+                        body_part = 3,
+                        type = "shoot"
+                    }
+                    if data.unit:brain():action_request(shoot_action) then
+                        my_data.shooting = true
+                    end
+                end
+
+                if not my_data.firing then
+                    data.unit:movement():set_allow_fire(true)
+                    my_data.firing = true
+                end
+            elseif my_data.firing then
+                data.unit:movement():set_allow_fire(false)
+                my_data.firing = nil
             end
         end
     end

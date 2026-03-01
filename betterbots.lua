@@ -198,7 +198,11 @@ function BB:add_cop_to_intimidation_list(unit_key)
 
         local att_obj = brain._logic_data.attention_obj
         if att_obj and tostring(att_obj.u_key) == unit_key then
-            if CopLogicBase and CopLogicBase._set_attention_obj then
+            local logic = brain._logic_data.logic
+            local set_att = logic and logic._set_attention_obj
+            if set_att then
+                set_att(brain._logic_data, nil, nil)
+            elseif CopLogicBase and CopLogicBase._set_attention_obj then
                 CopLogicBase._set_attention_obj(brain._logic_data, nil, nil)
             end
         end

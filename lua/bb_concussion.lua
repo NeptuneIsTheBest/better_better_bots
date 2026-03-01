@@ -227,10 +227,10 @@ function ConcussionSystem.throw(data, criminal)
         return false
     end
 
-    local mvec_spread_direction = best_cluster_pos - from_pos
+    local mvec_spread_direction = Vector3()
+    local spread_dis = mvector3.direction(mvec_spread_direction, from_pos, best_cluster_pos)
 
-    if ProjectileBase and ProjectileBase.throw_projectile_npc then
-        mvector3.normalize(mvec_spread_direction)
+    if ProjectileBase and ProjectileBase.throw_projectile_npc and spread_dis > 0 then
         if not play_net_redirect(criminal, "throw_grenade") then
             return false
         end

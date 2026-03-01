@@ -119,7 +119,7 @@ local function _select_solo_target(data, potential_targets_map, old_target_u_key
 
     if best_local_target then
         _update_target_lock(data, best_local_target.data.u_key, old_target_u_key, t)
-        return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
+        return best_local_target.data, math.floor(500 / math.max(max_score, 1)), best_local_target.reaction
     end
 
     return nil, nil, nil
@@ -206,7 +206,7 @@ local function _select_coop_target(unit, data, potential_targets_map, old_target
         end
         _update_target_lock(data, best_coop_target.u_key, old_target_u_key, t)
 
-        return local_data.data, 300 / math.max(best_coop_score, 1), local_data.reaction
+        return local_data.data, math.floor(300 / math.max(best_coop_score, 1)), local_data.reaction
     end
 
     local best_local_target
@@ -243,7 +243,7 @@ local function _select_coop_target(unit, data, potential_targets_map, old_target
         _update_dozer_tracking(my_key_str, best_local_target.data.u_key, post_fb_flags.dozer, post_fb_flags.turret)
         _update_target_lock(data, best_local_target.data.u_key, old_target_u_key, t)
 
-        return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
+        return best_local_target.data, math.floor(500 / math.max(max_score, 1)), best_local_target.reaction
     end
 
     BB.coop_data.dozer_attackers[my_key_str] = nil
@@ -275,7 +275,7 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
         local locked = potential_targets_map[old_target_u_key]
         data._last_target_u_key = tostring(locked.data.u_key)
         data._last_target_t = t
-        return locked.data, 400 / math.max(locked.score or 1, 1), locked.reaction
+        return locked.data, math.floor(400 / math.max(locked.score or 1, 1)), locked.reaction
     end
 
     if not BB:get("coop", false) then
@@ -678,12 +678,13 @@ function CombatBehavior.execute_melee_attack(data, criminal)
         body = unit_body,
         position = best_melee_target.m_head_pos,
     }
+    mvector3.normalize(col_ray.ray)
 
     local target_is_shield = EnemyClassifier.is_shield(unit, best_melee_target)
     local damage_info = {
         attacker_unit = criminal,
         weapon_unit = current_wep,
-        variant = target_is_shield and "melee" or "bullet",
+        variant = "melee",
         damage = target_is_shield and 0 or health_damage,
         col_ray = col_ray,
         origin = my_pos,
@@ -698,7 +699,7 @@ function CombatBehavior.execute_melee_attack(data, criminal)
         safe_call(damage.damage_melee, damage, damage_info)
     else
         damage_info.knock_down = true
-        safe_call(damage.damage_bullet, damage, damage_info)
+        safe_call(damage.damage_melee, damage, damage_info)
     end
 end
 
