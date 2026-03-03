@@ -44,11 +44,9 @@ jobs:
 
           zip -r "$ZIP_NORMAL" "Better Bots" >/dev/null
 
-          cp -r "Better Bots" "Better Bots MWS"
+          sed -i 's/DAMAGE_MULTIPLIER = true/DAMAGE_MULTIPLIER = false/' "Better Bots/lua/bb_constants.lua"
 
-          sed -i 's/DAMAGE_MULTIPLIER = true/DAMAGE_MULTIPLIER = false/' "Better Bots MWS/lua/bb_constants.lua"
-
-          zip -r "$ZIP_MWS" "Better Bots MWS" >/dev/null
+          zip -r "$ZIP_MWS" "Better Bots" >/dev/null
 
       - name: Generate release notes (commits between previous tag and this tag)
         shell: bash
