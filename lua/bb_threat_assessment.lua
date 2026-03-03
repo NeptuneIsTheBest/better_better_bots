@@ -53,7 +53,7 @@ function ThreatAssessment.get_weapon_archetype(unit)
 end
 
 function ThreatAssessment.get_archetype_damage_multiplier(bot_unit)
-    if not BB:get("combat", false) then
+    if not BB.FEATURE_FLAGS.DAMAGE_MULTIPLIER or not BB:get("combat", false) then
         return 1
     end
     local dmg_mul = BB:get("dmgmul", 5)

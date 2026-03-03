@@ -20,20 +20,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Prepare "Better Bots" folder and move sources, then ZIP
+      - name: Prepare both versions and ZIP
         shell: bash
         run: |
           set -euo pipefail
-      
+
           TAG="${GITHUB_REF_NAME}"
-      
           SAFE_TAG="${TAG##*/}"
-      
-          ZIP="bb${SAFE_TAG}.zip"
-          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
-      
+
+          ZIP_NORMAL="bb${SAFE_TAG}.zip"
+          ZIP_MWS="bb${SAFE_TAG}-mws.zip"
+          echo "ZIP_NORMAL=$ZIP_NORMAL" >> "$GITHUB_ENV"
+          echo "ZIP_MWS=$ZIP_MWS" >> "$GITHUB_ENV"
+
           mkdir -p "Better Bots"
-      
           shopt -s dotglob nullglob
           for path in *; do
             case "$path" in
@@ -41,8 +41,14 @@ jobs:
             esac
             mv -- "$path" "Better Bots"/
           done
-      
-          zip -r "$ZIP" "Better Bots" >/dev/null
+
+          zip -r "$ZIP_NORMAL" "Better Bots" >/dev/null
+
+          cp -r "Better Bots" "Better Bots MWS"
+
+          sed -i 's/DAMAGE_MULTIPLIER = true/DAMAGE_MULTIPLIER = false/' "Better Bots MWS/lua/bb_constants.lua"
+
+          zip -r "$ZIP_MWS" "Better Bots MWS" >/dev/null
 
       - name: Generate release notes (commits between previous tag and this tag)
         shell: bash
@@ -83,7 +89,7 @@ jobs:
           echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
           echo "NOTES_FILE=$NOTES_FILE" >> "$GITHUB_ENV"
 
-      - name: Create/Update GitHub Release and upload asset
+      - name: Create/Update GitHub Release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -91,7 +97,8 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           TITLE="Better Better Bots Version ${TAG}"
-          ZIP="${ZIP_NAME}"
+          ZIP_NORMAL="${ZIP_NORMAL}"
+          ZIP_MWS="${ZIP_MWS}"
           NOTES_FILE="${NOTES_FILE}"
 
           PRERELEASE_FLAG=""
@@ -99,7 +106,6 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
 
-          # Use unquoted variable expansion to ignore if empty
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" \
               --title "$TITLE" \
@@ -112,4 +118,4 @@ jobs:
               $PRERELEASE_FLAG
           fi
 
-          gh release upload "$TAG" "$ZIP" --clobber
+          gh release upload "$TAG" "$ZIP_NORMAL" "$ZIP_MWS" --clobber

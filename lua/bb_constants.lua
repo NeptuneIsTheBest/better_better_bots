@@ -1,5 +1,9 @@
 local BB = _G.BB
 
+local FEATURE_FLAGS = {
+    DAMAGE_MULTIPLIER = true,
+}
+
 local CONSTANTS = {
     GRACE_PERIOD = 10,
     INTIMIDATE_DISTANCE = 1200,
@@ -69,10 +73,10 @@ local CONSTANTS = {
     ANGLE_FACTOR_BASE = 0.5,
     ANGLE_FACTOR_SCALE = 0.5,
 
-    ACC_MUL_DEFAULT = 1.5,
+    ACC_MUL_DEFAULT = 1.25,
     ACC_MUL_SNIPER = 1.75,
-    ACC_MUL_ASSAULT_RIFLE = 2.0,
-    ACC_MUL_LMG = 2.5,
+    ACC_MUL_ASSAULT_RIFLE = 1.2,
+    ACC_MUL_LMG = 1.1,
 
     RELOAD_SPEED_MUL = 2,
 
@@ -129,9 +133,9 @@ local CONSTANTS = {
 }
 
 local ARCHETYPE_DAMAGE_MULTIPLIERS = {
-    assault_rifle = 10,
-    lmg = 8,
-    sniper = 5,
+    assault_rifle = 1.5,
+    lmg = 1.25,
+    sniper = 3,
     shotgun = 2.5,
 }
 
@@ -221,6 +225,7 @@ local CLASSIFY_TAG_MAP = {
     phalanx = "captain",
 }
 
+BB.FEATURE_FLAGS = FEATURE_FLAGS
 BB.CONSTANTS = CONSTANTS
 BB.THREAT_WEIGHTS = THREAT_WEIGHTS
 BB.SLOTS = SLOTS
