@@ -215,12 +215,13 @@ function CoopCacheManager.init()
         cleanup_interval = 2,
         name = "ConcAreaCooldown"
     })
+    CoopCacheManager._next_cleanup_t = 0
 end
 
-function CoopCacheManager.cleanup_all()
+function CoopCacheManager.cleanup_all(force)
     for _, name in ipairs(CACHE_NAMES) do
         if CoopCacheManager[name] then
-            CoopCacheManager[name]:cleanup(true)
+            CoopCacheManager[name]:cleanup(force)
         end
     end
 end
