@@ -47,6 +47,7 @@ jobs:
           cp -r "Better Bots" "Better Bots MWS"
 
           sed -i 's/DAMAGE_MULTIPLIER = true/DAMAGE_MULTIPLIER = false/' "Better Bots MWS/lua/bb_constants.lua"
+          sed -i 's/HEALTH_MULTIPLIER = true/HEALTH_MULTIPLIER = false/' "Better Bots MWS/lua/bb_constants.lua"
 
           zip -r "$ZIP_MWS" "Better Bots MWS" >/dev/null
 
