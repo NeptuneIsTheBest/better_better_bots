@@ -22,10 +22,6 @@ local move_shoot_path_vec = Vector3()
 local move_shoot_enemy_vec = Vector3()
 local move_shoot_watch_vec = Vector3()
 local move_shoot_walk_vec = Vector3()
-local bb_traceback = debug and debug.traceback or function(err)
-    return tostring(err)
-end
-
 local function is_team_ai_move_shoot_unit(unit)
     return alive(unit) and is_team_ai(unit)
 end
@@ -964,9 +960,9 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                     return forced_lod
                 end
 
-                local ok, err = xpcall(function()
+                local ok, err = pcall(function()
                     return _bb_orig_update(self, t)
-                end, bb_traceback)
+                end)
 
                 ext_base.lod_stage = original_lod_stage
 
