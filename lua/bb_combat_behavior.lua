@@ -130,122 +130,69 @@ local function _select_coop_target(unit, data, potential_targets_map, old_target
     local THREAT_WEIGHTS = BB.THREAT_WEIGHTS
 
     local global_priority_targets = BB.CoopSystem.get_priority_targets()
+    local assignment_snapshot = BB.CoopSystem.get_assignment_snapshot()
+    local assigned_target_key = assignment_snapshot.by_bot[my_key_str]
+    local assigned_local_target = assigned_target_key and potential_targets_map[assigned_target_key]
     local best_coop_target
     local best_coop_score = -1
 
-    for u_key, global_target in pairs(global_priority_targets) do
-        local local_target_info = potential_targets_map[u_key]
-        if local_target_info then
-            local dynamic_prio = global_target.priority
-            if global_target.state == "tasing_teammate" then
-                dynamic_prio = dynamic_prio * 3
-            end
-
-            local target_unit = global_target.unit
+    for u_key, local_target_info in pairs(potential_targets_map) do
+        local global_target = global_priority_targets[u_key]
+        local target_unit = local_target_info.data.unit
+        if target_unit and alive(target_unit) then
             local flags = EnemyClassifier.classify(target_unit)
             local is_turret = flags.turret
             local is_dozer = flags.dozer
             local is_cloaker = flags.cloaker
             local is_taser = flags.taser
+            local is_high_threat = is_dozer or is_turret or is_taser or is_cloaker
 
+            local dynamic_prio = math.max((global_target and global_target.priority) or 0, local_target_info.score or 0)
             if is_dozer and not is_turret then
                 dynamic_prio = dynamic_prio * BB.CoopSystem.calculate_dozer_penalty(u_key, my_key_str)
             end
 
-            local claimed_penalty = 1
-            if not is_dozer and not is_turret and not is_cloaker and not is_taser
-                    and global_target.targeted_by
-                    and tostring(global_target.targeted_by) ~= my_key_str
-            then
-                claimed_penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
-            end
-
             local suitability = ThreatAssessment.calculate_suitability(unit, local_target_info.data)
-
             local is_special = EnemyClassifier.is_special(local_target_info.data.unit)
+            local target_owner = assignment_snapshot.by_target[u_key]
+            local assignment_factor = 1
 
-            if BB.CoopSystem.is_my_assigned_target(u_key, data.key) then
-                suitability = suitability + CONSTANTS.ASSIGNED_TARGET_BONUS
-            else
-                local target_owner = BB.CoopSystem.get_target_owner(u_key)
-                local is_high_threat = is_dozer or is_turret or is_taser or is_cloaker
-
-                if not is_high_threat then
-                    if not target_owner then
-                        suitability = suitability + CONSTANTS.UNASSIGNED_TARGET_BONUS
-                    elseif target_owner ~= my_key_str then
-                        suitability = suitability * CONSTANTS.OTHER_ASSIGNMENT_PENALTY
-                    end
-                end
+            if assigned_target_key and u_key == assigned_target_key then
+                assignment_factor = CONSTANTS.ASSIGNED_TARGET_MUL
+            elseif not target_owner then
+                assignment_factor = CONSTANTS.UNASSIGNED_TARGET_MUL
+            elseif target_owner ~= my_key_str and not is_high_threat then
+                assignment_factor = CONSTANTS.OTHER_ASSIGNMENT_MUL
             end
 
             if is_special then
-                 suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
+                suitability = suitability + THREAT_WEIGHTS.DIRECTION_BONUS
             end
 
-            local final_score = dynamic_prio * suitability * claimed_penalty
+            local final_score = math.max(dynamic_prio, 1) * math.max(suitability, 1) * assignment_factor
             if final_score > best_coop_score then
-                best_coop_target = global_target
+                best_coop_target = local_target_info
                 best_coop_score = final_score
             end
         end
     end
 
     if best_coop_target then
-        best_coop_target.targeted_by = my_key_str
-        best_coop_target.claimed_at = t
-
-        local target_unit = best_coop_target.unit
+        local target_unit = best_coop_target.data.unit
         local post_flags = EnemyClassifier.classify(target_unit)
-        _update_dozer_tracking(my_key_str, best_coop_target.u_key, post_flags.dozer, post_flags.turret)
+        _update_dozer_tracking(my_key_str, best_coop_target.data.u_key, post_flags.dozer, post_flags.turret)
 
-        local local_data = potential_targets_map[tostring(best_coop_target.u_key)]
-                or potential_targets_map[tostring(best_coop_target.unit and best_coop_target.unit:key() or "")]
-        if not local_data then
-            return nil, nil, nil
+        if assigned_target_key and (not assigned_local_target or tostring(best_coop_target.data.u_key) ~= tostring(assigned_target_key)) then
+            BB.CoopSystem.note_local_fallback()
         end
-        _update_target_lock(data, best_coop_target.u_key, old_target_u_key, t)
+        _update_target_lock(data, best_coop_target.data.u_key, old_target_u_key, t)
 
-        return local_data.data, 300 / math.max(best_coop_score, 1), local_data.reaction
+        return best_coop_target.data, 300 / math.max(best_coop_score, 1), best_coop_target.reaction
     end
 
-    local best_local_target
-    local max_score = 0
-
-    for u_key, target in pairs(potential_targets_map) do
-        local g = global_priority_targets[u_key]
-        local target_unit = target.data.unit
-        local fb_flags = EnemyClassifier.classify(target_unit)
-        local is_turret = fb_flags.turret
-        local is_dozer = fb_flags.dozer
-        local is_cloaker = fb_flags.cloaker
-        local is_taser = fb_flags.taser
-
-        local penalty = 1
-        if g and g.targeted_by and tostring(g.targeted_by) ~= my_key_str then
-            if is_dozer and not is_turret then
-                penalty = penalty * BB.CoopSystem.calculate_dozer_penalty(u_key, my_key_str)
-            elseif not is_turret and not is_cloaker and not is_taser then
-                penalty = THREAT_WEIGHTS.SAME_TARGET_PENALTY
-            end
-        end
-
-        local effective = target.score * penalty
-        if effective > max_score then
-            max_score = effective
-            best_local_target = target
-        end
+    if assigned_target_key then
+        BB.CoopSystem.note_local_fallback()
     end
-
-    if best_local_target then
-        local target_unit = best_local_target.data.unit
-        local post_fb_flags = EnemyClassifier.classify(target_unit)
-        _update_dozer_tracking(my_key_str, best_local_target.data.u_key, post_fb_flags.dozer, post_fb_flags.turret)
-        _update_target_lock(data, best_local_target.data.u_key, old_target_u_key, t)
-
-        return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
-    end
-
     BB.coop_data.dozer_attackers[my_key_str] = nil
     return nil, nil, nil
 end
@@ -270,6 +217,12 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
     local potential_targets_map, force_unlock = _filter_potential_targets(unit, data, attention_objects, t)
 
     local lock_active = data._target_lock_until and (t < data._target_lock_until)
+    if lock_active and BB:get("coop", false) then
+        local assigned_target_key = BB.CoopSystem.get_assigned_target(my_key_str)
+        if old_target_u_key and assigned_target_key ~= old_target_u_key then
+            lock_active = false
+        end
+    end
 
     if lock_active and not force_unlock and old_target_u_key and potential_targets_map[old_target_u_key] then
         local locked = potential_targets_map[old_target_u_key]

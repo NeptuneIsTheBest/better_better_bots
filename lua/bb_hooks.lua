@@ -1134,10 +1134,29 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                                 BB.coop_data.priority_targets[u_key_str] = nil
                             end
 
+                            if BB.coop_data and BB.coop_data.bot_observations then
+                                for _, snapshot in pairs(BB.coop_data.bot_observations) do
+                                    if snapshot and snapshot.targets then
+                                        snapshot.targets[u_key_str] = nil
+                                    end
+                                end
+                            end
+
                             if BB.coop_data and BB.coop_data.dozer_attackers then
                                 for bot_key, target_key in pairs(BB.coop_data.dozer_attackers) do
                                     if tostring(target_key) == u_key_str then
                                         BB.coop_data.dozer_attackers[bot_key] = nil
+                                    end
+                                end
+                            end
+
+                            if BB.coop_data and BB.coop_data.assignment_snapshot then
+                                local snapshot = BB.coop_data.assignment_snapshot
+                                if snapshot.by_target then
+                                    local owner = snapshot.by_target[u_key_str]
+                                    snapshot.by_target[u_key_str] = nil
+                                    if owner and snapshot.by_bot then
+                                        snapshot.by_bot[owner] = nil
                                     end
                                 end
                             end
