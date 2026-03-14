@@ -22,6 +22,7 @@ local move_shoot_path_vec = Vector3()
 local move_shoot_enemy_vec = Vector3()
 local move_shoot_watch_vec = Vector3()
 local move_shoot_walk_vec = Vector3()
+local follow_eval_vec = Vector3()
 local function is_team_ai_move_shoot_unit(unit)
     return alive(unit) and is_team_ai(unit)
 end
@@ -69,6 +70,67 @@ local function get_head_target_pos(shoot_from_pos, attention)
     local new_target_vec = Vector3()
     local new_target_dis = mvector3.direction(new_target_vec, shoot_from_pos, new_target_pos)
     return new_target_pos, new_target_vec, new_target_dis
+end
+
+local function get_follow_target_pos(follow_unit)
+    if not alive(follow_unit) then
+        return nil, nil
+    end
+
+    local movement = follow_unit:movement()
+    if not movement then
+        return nil, nil
+    end
+
+    local tracker = movement:nav_tracker()
+    if tracker and tracker.lost and tracker:lost() and tracker.field_position then
+        return tracker:field_position(), tracker
+    end
+
+    if movement.m_newest_pos then
+        return movement:m_newest_pos(), tracker
+    end
+
+    return nil, tracker
+end
+
+local function eval_follow_distance_state(data, follow_unit, max_xy, max_z)
+    local unit = data and data.unit
+    local movement = alive(unit) and unit:movement()
+    local my_tracker = movement and movement:nav_tracker()
+    local follow_pos, follow_tracker = get_follow_target_pos(follow_unit)
+
+    if not (data and data.m_pos and my_tracker and follow_pos) then
+        return nil
+    end
+
+    mvector3.set(follow_eval_vec, follow_pos)
+    mvector3.subtract(follow_eval_vec, data.m_pos)
+
+    local z_diff = math.abs(mvector3.z(follow_eval_vec))
+
+    mvector3.set_z(follow_eval_vec, 0)
+    local xy_dist = mvector3.length(follow_eval_vec)
+
+    local ray_blocked = false
+    if managers.navigation and managers.navigation.raycast then
+        ray_blocked = not not managers.navigation:raycast({
+            tracker_from = my_tracker,
+            pos_to = follow_pos
+        })
+    end
+
+    local my_nav_seg = my_tracker.nav_segment and my_tracker:nav_segment() or nil
+    local follow_nav_seg = follow_tracker and follow_tracker.nav_segment and follow_tracker:nav_segment() or nil
+
+    return {
+        my_nav_seg = my_nav_seg,
+        follow_nav_seg = follow_nav_seg,
+        xy_dist = xy_dist,
+        z_diff = z_diff,
+        ray_blocked = ray_blocked,
+        within_distance = z_diff <= max_z and xy_dist <= max_xy,
+    }
 end
 
 Hooks:Add("LocalizationManagerPostInit", "BB_LocalizationManager_PostInit", function(loc)
@@ -176,6 +238,52 @@ if RequiredScript == "lib/units/player_team/teamaibase" then
 
         function TeamAIBase:upgrade_level(category, upgrade)
             return self._upgrade_levels and self._upgrade_levels[category] and self._upgrade_levels[category][upgrade]
+        end
+    end
+end
+
+if RequiredScript == "lib/units/enemies/cop/logics/coplogictravel" then
+    if Network:is_server() then
+        local _bb_orig_chk_stop_for_follow_unit = CopLogicTravel._chk_stop_for_follow_unit
+
+        function CopLogicTravel._chk_stop_for_follow_unit(data, my_data)
+            if not is_team_ai(data and data.unit) then
+                return _bb_orig_chk_stop_for_follow_unit(data, my_data)
+            end
+
+            local objective = data and data.objective
+            if not objective then
+                return _bb_orig_chk_stop_for_follow_unit(data, my_data)
+            end
+
+            if objective.type ~= "follow" or data.unit:movement():chk_action_forbidden("walk") or data.unit:anim_data().act_idle then
+                return
+            end
+
+            if not my_data.coarse_path_index then
+                debug_pause_unit(data.unit, "[CopLogicTravel._chk_stop_for_follow_unit]", data.unit, inspect(data), inspect(my_data))
+
+                return
+            end
+
+            local state = eval_follow_distance_state(
+                data,
+                objective.follow_unit,
+                CONSTANTS.FOLLOW_STOP_MAX_XY,
+                CONSTANTS.FOLLOW_STOP_MAX_Z
+            )
+
+            if not state then
+                return _bb_orig_chk_stop_for_follow_unit(data, my_data)
+            end
+
+            local same_nav_seg = state.my_nav_seg and state.follow_nav_seg and state.my_nav_seg == state.follow_nav_seg
+
+            if state.within_distance and (same_nav_seg or not state.ray_blocked) then
+                objective.in_place = true
+
+                data.logic.on_new_objective(data)
+            end
         end
     end
 end
@@ -425,16 +533,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
             local is_private = settings and settings.permission and settings.permission ~= "public"
             local is_offline = settings and settings.single_player
 
-            local function ensure_visual_carry_methods()
-                if not HuskPlayerMovement then
-                    return
-                end
-
-                TeamAIMovement.set_visual_carry = TeamAIMovement.set_visual_carry or HuskPlayerMovement.set_visual_carry
-                TeamAIMovement._destroy_current_carry_unit = TeamAIMovement._destroy_current_carry_unit or HuskPlayerMovement._destroy_current_carry_unit
-                TeamAIMovement._create_carry_unit = TeamAIMovement._create_carry_unit or HuskPlayerMovement._create_carry_unit
-            end
-
             if TeamAIMovement.on_SPOOCed then
                 local old_spooc = TeamAIMovement.on_SPOOCed
 
@@ -448,8 +546,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
             end
 
             if not BotWeapons then
-                ensure_visual_carry_methods()
-
                 local orig_check_visual_equipment = TeamAIMovement.check_visual_equipment
 
                 function TeamAIMovement:check_visual_equipment(...)
@@ -487,30 +583,10 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                     local orig_set_carrying_bag = TeamAIMovement.set_carrying_bag
 
                     function TeamAIMovement:set_carrying_bag(unit, ...)
-                        local old_carry_unit = self._carry_unit
-
                         orig_set_carrying_bag(self, unit, ...)
 
                         if not managers.hud then
                             return
-                        end
-
-                        local bag_unit = unit or old_carry_unit
-                        local carry_data = unit and unit:carry_data()
-
-                        if carry_data then
-                            ensure_visual_carry_methods()
-                            if self.set_visual_carry then
-                                self:set_visual_carry(carry_data:carry_id())
-                            end
-                        else
-                            if self.set_visual_carry then
-                                self:set_visual_carry(nil)
-                            end
-                        end
-
-                        if alive(bag_unit) then
-                            bag_unit:set_visible(not unit)
                         end
 
                         local name_label_id = self._unit
@@ -625,6 +701,33 @@ if RequiredScript == "lib/units/player_team/actions/lower_body/criminalactionwal
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
         if Network:is_server() then
+            local _bb_orig_check_should_relocate = TeamAILogicIdle._check_should_relocate
+
+            function TeamAILogicIdle._check_should_relocate(data, my_data, objective)
+                if not is_team_ai(data and data.unit) then
+                    return _bb_orig_check_should_relocate(data, my_data, objective)
+                end
+
+                local state = objective and eval_follow_distance_state(
+                    data,
+                    objective.follow_unit,
+                    CONSTANTS.FOLLOW_RELOCATE_MAX_XY,
+                    CONSTANTS.FOLLOW_RELOCATE_MAX_Z
+                )
+
+                if not state then
+                    return _bb_orig_check_should_relocate(data, my_data, objective)
+                end
+
+                if not state.within_distance then
+                    return true
+                end
+
+                if state.ray_blocked then
+                    return true
+                end
+            end
+
             function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
                 return CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
             end
