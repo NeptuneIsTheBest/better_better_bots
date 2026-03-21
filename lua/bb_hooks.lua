@@ -22,7 +22,6 @@ local move_shoot_path_vec = Vector3()
 local move_shoot_enemy_vec = Vector3()
 local move_shoot_watch_vec = Vector3()
 local move_shoot_walk_vec = Vector3()
-local follow_eval_vec = Vector3()
 local function is_team_ai_move_shoot_unit(unit)
     return alive(unit) and is_team_ai(unit)
 end
@@ -57,6 +56,66 @@ local function apply_team_ai_weapon_responsiveness(char_tweak)
     end
 end
 
+local function get_team_ai_player_color_limit()
+    local chat_colors = tweak_data and tweak_data.chat_colors
+    local max_players = tweak_data and tweak_data.max_players or 4
+    local chat_color_count = type(chat_colors) == "table" and #chat_colors or 0
+
+    return math.max(math.min(max_players, chat_color_count - 1), 0)
+end
+
+local function get_team_ai_player_color_id(manager, unit)
+    if not (manager and alive(unit)) then
+        return nil
+    end
+
+    local target_character = manager.character_by_unit and manager:character_by_unit(unit)
+    if not (target_character and target_character.taken and target_character.data and target_character.data.ai) then
+        return nil
+    end
+
+    local chat_colors = tweak_data and tweak_data.chat_colors
+    local fallback_color_id = type(chat_colors) == "table" and #chat_colors or nil
+    local player_color_limit = get_team_ai_player_color_limit()
+    if player_color_limit < 1 then
+        return fallback_color_id
+    end
+
+    local characters = manager.characters and manager:characters() or manager._characters or {}
+    local used_human_color_ids = {}
+
+    for _, character in ipairs(characters) do
+        if character and character.taken and character.data and not character.data.ai then
+            local peer_id = character.peer_id
+            if type(peer_id) == "number" and peer_id >= 1 and peer_id <= player_color_limit then
+                used_human_color_ids[peer_id] = true
+            end
+        end
+    end
+
+    local next_color_id = 1
+
+    for _, character in ipairs(characters) do
+        if character and character.taken and character.data and character.data.ai and alive(character.unit) then
+            while next_color_id <= player_color_limit and used_human_color_ids[next_color_id] do
+                next_color_id = next_color_id + 1
+            end
+
+            local resolved_color_id = next_color_id <= player_color_limit and next_color_id or fallback_color_id
+            if character == target_character then
+                return resolved_color_id
+            end
+
+            if resolved_color_id and resolved_color_id <= player_color_limit then
+                used_human_color_ids[resolved_color_id] = true
+                next_color_id = next_color_id + 1
+            end
+        end
+    end
+
+    return fallback_color_id
+end
+
 local function get_head_target_pos(shoot_from_pos, attention)
     if not (attention and attention.unit and alive(attention.unit)) then
         return nil
@@ -70,67 +129,6 @@ local function get_head_target_pos(shoot_from_pos, attention)
     local new_target_vec = Vector3()
     local new_target_dis = mvector3.direction(new_target_vec, shoot_from_pos, new_target_pos)
     return new_target_pos, new_target_vec, new_target_dis
-end
-
-local function get_follow_target_pos(follow_unit)
-    if not alive(follow_unit) then
-        return nil, nil
-    end
-
-    local movement = follow_unit:movement()
-    if not movement then
-        return nil, nil
-    end
-
-    local tracker = movement:nav_tracker()
-    if tracker and tracker.lost and tracker:lost() and tracker.field_position then
-        return tracker:field_position(), tracker
-    end
-
-    if movement.m_newest_pos then
-        return movement:m_newest_pos(), tracker
-    end
-
-    return nil, tracker
-end
-
-local function eval_follow_distance_state(data, follow_unit, max_xy, max_z)
-    local unit = data and data.unit
-    local movement = alive(unit) and unit:movement()
-    local my_tracker = movement and movement:nav_tracker()
-    local follow_pos, follow_tracker = get_follow_target_pos(follow_unit)
-
-    if not (data and data.m_pos and my_tracker and follow_pos) then
-        return nil
-    end
-
-    mvector3.set(follow_eval_vec, follow_pos)
-    mvector3.subtract(follow_eval_vec, data.m_pos)
-
-    local z_diff = math.abs(mvector3.z(follow_eval_vec))
-
-    mvector3.set_z(follow_eval_vec, 0)
-    local xy_dist = mvector3.length(follow_eval_vec)
-
-    local ray_blocked = false
-    if managers.navigation and managers.navigation.raycast then
-        ray_blocked = not not managers.navigation:raycast({
-            tracker_from = my_tracker,
-            pos_to = follow_pos
-        })
-    end
-
-    local my_nav_seg = my_tracker.nav_segment and my_tracker:nav_segment() or nil
-    local follow_nav_seg = follow_tracker and follow_tracker.nav_segment and follow_tracker:nav_segment() or nil
-
-    return {
-        my_nav_seg = my_nav_seg,
-        follow_nav_seg = follow_nav_seg,
-        xy_dist = xy_dist,
-        z_diff = z_diff,
-        ray_blocked = ray_blocked,
-        within_distance = z_diff <= max_z and xy_dist <= max_xy,
-    }
 end
 
 Hooks:Add("LocalizationManagerPostInit", "BB_LocalizationManager_PostInit", function(loc)
@@ -238,52 +236,6 @@ if RequiredScript == "lib/units/player_team/teamaibase" then
 
         function TeamAIBase:upgrade_level(category, upgrade)
             return self._upgrade_levels and self._upgrade_levels[category] and self._upgrade_levels[category][upgrade]
-        end
-    end
-end
-
-if RequiredScript == "lib/units/enemies/cop/logics/coplogictravel" then
-    if Network:is_server() then
-        local _bb_orig_chk_stop_for_follow_unit = CopLogicTravel._chk_stop_for_follow_unit
-
-        function CopLogicTravel._chk_stop_for_follow_unit(data, my_data)
-            if not is_team_ai(data and data.unit) then
-                return _bb_orig_chk_stop_for_follow_unit(data, my_data)
-            end
-
-            local objective = data and data.objective
-            if not objective then
-                return _bb_orig_chk_stop_for_follow_unit(data, my_data)
-            end
-
-            if objective.type ~= "follow" or data.unit:movement():chk_action_forbidden("walk") or data.unit:anim_data().act_idle then
-                return
-            end
-
-            if not my_data.coarse_path_index then
-                debug_pause_unit(data.unit, "[CopLogicTravel._chk_stop_for_follow_unit]", data.unit, inspect(data), inspect(my_data))
-
-                return
-            end
-
-            local state = eval_follow_distance_state(
-                data,
-                objective.follow_unit,
-                CONSTANTS.FOLLOW_STOP_MAX_XY,
-                CONSTANTS.FOLLOW_STOP_MAX_Z
-            )
-
-            if not state then
-                return _bb_orig_chk_stop_for_follow_unit(data, my_data)
-            end
-
-            local same_nav_seg = state.my_nav_seg and state.follow_nav_seg and state.my_nav_seg == state.follow_nav_seg
-
-            if state.within_distance and (same_nav_seg or not state.ray_blocked) then
-                objective.in_place = true
-
-                data.logic.on_new_objective(data)
-            end
         end
     end
 end
@@ -445,55 +397,70 @@ if RequiredScript == "lib/units/interactions/interactionext" then
 end
 
 if RequiredScript == "lib/managers/criminalsmanager" then
-        if Network:is_server() then
-            local total_chars = CriminalsManager.get_num_characters and CriminalsManager.get_num_characters() or 4
+    if CriminalsManager.character_color_id_by_unit and not BB._team_ai_player_colors_hooked then
+        BB._team_ai_player_colors_hooked = true
 
-            if BB:get("biglob", false) then
-                CriminalsManager.MAX_NR_TEAM_AI = total_chars
+        local old_character_color_id_by_unit = CriminalsManager.character_color_id_by_unit
+
+        function CriminalsManager:character_color_id_by_unit(unit, ...)
+            local team_ai_color_id = get_team_ai_player_color_id(self, unit)
+            if team_ai_color_id then
+                return team_ai_color_id
             end
 
-            if tweak_data and tweak_data.character and tweak_data.character.presets then
-                local char_preset = tweak_data.character.presets
-                local dodge_options = { "poor", "average", "heavy", "athletic", "ninja" }
+            return old_character_color_id_by_unit(self, unit, ...)
+        end
+    end
 
-                local gang_weapon = char_preset.weapon and (char_preset.weapon.bot_weapons or char_preset.weapon.gang_member)
+    if Network:is_server() then
+        local total_chars = CriminalsManager.get_num_characters and CriminalsManager.get_num_characters() or 4
 
-                if gang_weapon then
-                    local dodge_idx = BB:get("dodge", 4)
-                    local dodge_preset = dodge_options[dodge_idx]
+        if BB:get("biglob", false) then
+            CriminalsManager.MAX_NR_TEAM_AI = total_chars
+        end
 
-                    for _, v in pairs(tweak_data.character) do
-                        if type(v) == "table" and v.access == "teamAI1" then
-                            v.no_run_start = true
-                            v.no_run_stop = true
-                            v.always_face_enemy = true
-                            v.crouch_move = true
-                            apply_team_ai_weapon_responsiveness(v)
+        if tweak_data and tweak_data.character and tweak_data.character.presets then
+            local char_preset = tweak_data.character.presets
+            local dodge_options = { "poor", "average", "heavy", "athletic", "ninja" }
 
-                            if char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
-                                v.damage.hurt_severity = char_preset.hurt_severities.no_hurts
-                            end
+            local gang_weapon = char_preset.weapon and (char_preset.weapon.bot_weapons or char_preset.weapon.gang_member)
 
-                            if char_preset.move_speed and char_preset.move_speed.lightning then
-                                v.move_speed = char_preset.move_speed.lightning
-                            end
+            if gang_weapon then
+                local dodge_idx = BB:get("dodge", 4)
+                local dodge_preset = dodge_options[dodge_idx]
 
-                            local move_choice = BB:get("move", 1)
-                            if move_choice == 2
-                                    and dodge_preset
-                                    and char_preset.dodge
-                                    and char_preset.dodge[dodge_preset]
-                            then
-                                v.dodge = char_preset.dodge[dodge_preset]
-                            elseif move_choice == 3 then
-                                v.allowed_poses = { stand = true }
-                            end
+                for _, v in pairs(tweak_data.character) do
+                    if type(v) == "table" and v.access == "teamAI1" then
+                        v.no_run_start = true
+                        v.no_run_stop = true
+                        v.always_face_enemy = true
+                        v.crouch_move = true
+                        apply_team_ai_weapon_responsiveness(v)
+
+                        if char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
+                            v.damage.hurt_severity = char_preset.hurt_severities.no_hurts
+                        end
+
+                        if char_preset.move_speed and char_preset.move_speed.lightning then
+                            v.move_speed = char_preset.move_speed.lightning
+                        end
+
+                        local move_choice = BB:get("move", 1)
+                        if move_choice == 2
+                                and dodge_preset
+                                and char_preset.dodge
+                                and char_preset.dodge[dodge_preset]
+                        then
+                            v.dodge = char_preset.dodge[dodge_preset]
+                        elseif move_choice == 3 then
+                            v.allowed_poses = { stand = true }
                         end
                     end
                 end
             end
         end
     end
+end
 
 if RequiredScript == "lib/tweak_data/playertweakdata" then
         if Network:is_server() then
@@ -701,33 +668,6 @@ if RequiredScript == "lib/units/player_team/actions/lower_body/criminalactionwal
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
         if Network:is_server() then
-            local _bb_orig_check_should_relocate = TeamAILogicIdle._check_should_relocate
-
-            function TeamAILogicIdle._check_should_relocate(data, my_data, objective)
-                if not is_team_ai(data and data.unit) then
-                    return _bb_orig_check_should_relocate(data, my_data, objective)
-                end
-
-                local state = objective and eval_follow_distance_state(
-                    data,
-                    objective.follow_unit,
-                    CONSTANTS.FOLLOW_RELOCATE_MAX_XY,
-                    CONSTANTS.FOLLOW_RELOCATE_MAX_Z
-                )
-
-                if not state then
-                    return _bb_orig_check_should_relocate(data, my_data, objective)
-                end
-
-                if not state.within_distance then
-                    return true
-                end
-
-                if state.ray_blocked then
-                    return true
-                end
-            end
-
             function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
                 return CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
             end
