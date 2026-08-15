@@ -1102,37 +1102,45 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             TeamAILogicAssault.check_smart_reload = CombatBehavior.check_smart_reload
             TeamAILogicAssault._get_priority_attention = CombatBehavior.find_priority_attention
 
-            Hooks:PostHook(
-                    TeamAILogicAssault,
-                    "update",
-                    "BB_TeamAILogicAssault_update_CombatActions",
-                    function(data, ...)
-                        local t = game_time()
-                        local my_data = data.internal_data or {}
-                        local unit = data.unit
+            local _bb_orig_team_ai_logic_assault_update = TeamAILogicAssault.update
 
-                        my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
-                        if t >= my_data._next_conc_eval_t then
-                            my_data._next_conc_eval_t = t + CONSTANTS.CONC_EVAL_INTERVAL
-                            if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
-                                local success, thrown = safe_call(CombatBehavior.throw_concussion_grenade, data, unit)
-                                if success and thrown then
-                                    my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
-                                end
-                            end
-                        end
+            function TeamAILogicAssault.update(data, ...)
+                local my_data = data and data.internal_data
+                local result = _bb_orig_team_ai_logic_assault_update(data, ...)
 
-                        if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
-                            my_data.melee_t = t
-                            safe_call(CombatBehavior.execute_melee_attack, data, unit)
-                        end
+                if not my_data
+                        or my_data ~= data.internal_data
+                        or data.name ~= "assault"
+                then
+                    return result
+                end
 
-                        if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
-                            my_data.reload_t = t
-                            safe_call(CombatBehavior.check_smart_reload, data)
+                local t = game_time()
+                local unit = data.unit
+
+                my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
+                if t >= my_data._next_conc_eval_t then
+                    my_data._next_conc_eval_t = t + CONSTANTS.CONC_EVAL_INTERVAL
+                    if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
+                        local success, thrown = safe_call(CombatBehavior.throw_concussion_grenade, data, unit)
+                        if success and thrown then
+                            my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
                         end
                     end
-            )
+                end
+
+                if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
+                    my_data.melee_t = t
+                    safe_call(CombatBehavior.execute_melee_attack, data, unit)
+                end
+
+                if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
+                    my_data.reload_t = t
+                    safe_call(CombatBehavior.check_smart_reload, data)
+                end
+
+                return result
+            end
 
             Hooks:PostHook(
                     TeamAILogicAssault,
