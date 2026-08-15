@@ -759,8 +759,8 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 
                 function TeamAIMovement:throw_bag(...)
                     if self:carrying_bag() then
-                        local carry_tweak = self:carry_tweak()
-                        if carry_tweak and managers.player then
+                        local carry_type_tweak = self:carry_type_tweak()
+                        if carry_type_tweak and managers.player then
                             local data = self._ext_brain and self._ext_brain._logic_data
                             local objective = data and data.objective
 
@@ -768,7 +768,7 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                                 local no_cooldown = managers.player.is_custom_cooldown_not_active
                                         and managers.player:is_custom_cooldown_not_active("team", "crew_inspire")
 
-                                if no_cooldown or carry_tweak.can_run then
+                                if no_cooldown or carry_type_tweak.can_run then
                                     return
                                 end
                             end
