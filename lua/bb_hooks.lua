@@ -1252,23 +1252,28 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                                 if attention_pos then
                                     local vis_ray = World:raycast("ray", my_pos, attention_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
                                     if not vis_ray or (vis_ray.unit and vis_ray.unit:key() == u_key) then
-                                        local ok, att_obj = safe_call(CopLogicBase._create_detected_attention_object_data, t, unit, u_key, attention_info, settings)
+                                        local new_reaction = settings.reaction or AIAttentionObject.REACT_IDLE
+                                        if new_reaction < REACT_COMBAT then
+                                            local their_team = attention_info.team
+                                            local foes = my_team and my_team.foes
+                                            if their_team and foes and foes[their_team.id] then
+                                                new_reaction = REACT_COMBAT
+                                            end
+                                        end
+
+                                        local detected_settings = settings
+                                        if new_reaction ~= settings.reaction then
+                                            detected_settings = clone(settings)
+                                            detected_settings.reaction = new_reaction
+                                        end
+
+                                        local ok, att_obj = safe_call(CopLogicBase._create_detected_attention_object_data, t, unit, u_key, attention_info, detected_settings)
                                         if not ok then att_obj = nil end
 
                                         if att_obj then
-                                            local new_reaction = (settings and settings.reaction) or AIAttentionObject.REACT_IDLE
-                                            if new_reaction < REACT_COMBAT then
-                                                local their_team = attention_info.team
-                                                local foes = my_team and my_team.foes
-                                                if their_team and foes and foes[their_team.id] then
-                                                    new_reaction = REACT_COMBAT
-                                                end
-                                            end
-
                                             att_obj.identified = true
                                             att_obj.identified_t = t
                                             att_obj.reaction = new_reaction
-                                            att_obj.settings.reaction = new_reaction
                                             detected_obj[u_key] = att_obj
                                         end
                                     end
