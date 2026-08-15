@@ -13,6 +13,7 @@ local play_net_redirect = UnitOps.play_redirect
 local is_surrendering = UnitOps.is_surrendering
 
 local ConcussionSystem = {}
+local CONCUSSION_PROJECTILE_ENTRY = "concussion"
 
 local function get_conc_area_key(pos)
     local grid_size = CONSTANTS.CONC_AREA_RADIUS or 1500
@@ -23,11 +24,11 @@ local function get_conc_area_key(pos)
 end
 
 function ConcussionSystem.throw(data, criminal)
-    if not (alive(criminal) and BB:get("conc", false)) then
+    if not (Network:is_server() and alive(criminal) and BB:get("conc", false)) then
         return false
     end
 
-    local conc_tweak = tweak_data.blackmarket.projectiles.concussion
+    local conc_tweak = tweak_data.blackmarket.projectiles[CONCUSSION_PROJECTILE_ENTRY]
 
     local pkg_ready = managers.dyn_resource:is_resource_ready(
             Idstring("unit"),
@@ -228,20 +229,28 @@ function ConcussionSystem.throw(data, criminal)
     end
 
     local mvec_spread_direction = best_cluster_pos - from_pos
+    local throw_projectile_npc = ProjectileBase and ProjectileBase.throw_projectile_npc
+    local network_session = managers.network and managers.network:session()
 
-    if ProjectileBase and ProjectileBase.spawn then
-        local success, cc_unit = safe_call(ProjectileBase.spawn, conc_tweak.unit, from_pos, Rotation())
-        if success and cc_unit then
-            local base_ext = cc_unit:base()
-            if base_ext then
-                mvector3.normalize(mvec_spread_direction)
-                play_net_redirect(criminal, "throw_grenade")
-                safe_say(criminal, "g43", true, true)
-                safe_call(base_ext.throw, base_ext, { dir = mvec_spread_direction, owner = criminal })
-                CoopCacheManager.conc_area_cooldown:set(area_key, true)
-                return true
-            end
-        end
+    if type(throw_projectile_npc) ~= "function" or not network_session then
+        return false
+    end
+
+    mvector3.normalize(mvec_spread_direction)
+
+    local success, cc_unit = safe_call(
+            throw_projectile_npc,
+            CONCUSSION_PROJECTILE_ENTRY,
+            from_pos,
+            mvec_spread_direction,
+            criminal
+    )
+
+    if success and alive(cc_unit) then
+        play_net_redirect(criminal, "throw_grenade")
+        safe_say(criminal, "g43", true, true)
+        CoopCacheManager.conc_area_cooldown:set(area_key, true)
+        return true
     end
 
     return false
