@@ -304,21 +304,22 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
         if TeamAIDamage._check_bleed_out then
             local old_checkbleedout = TeamAIDamage._check_bleed_out
             function TeamAIDamage:_check_bleed_out()
-                if self._health <= 0 and BB:get("instadwn", false) then
-                    managers.groupai:state():on_criminal_disabled(self._unit)
-                    managers.groupai:state():report_criminal_downed(self._unit)
+                local was_bleed_out = self._bleed_out
+                local result = old_checkbleedout(self)
 
-                    self:_die()
+                if not was_bleed_out
+                and self._bleed_out
+                and self._to_dead_clbk_id
+                and BB:get("instadwn", false)
+                then
+                    -- Finish the current damage flow before the native custody transition runs.
+                    self._to_dead_t = TimerManager:game():time()
+                    self._revive_reminder_line_t = nil
 
-                    local dmg_info = {
-                        variant = "bleeding",
-                        result = { type = "death" },
-                    }
-                    self:_call_listeners(dmg_info)
-                    return
+                    managers.enemy:reschedule_delayed_clbk(self._to_dead_clbk_id, self._to_dead_t)
                 end
 
-                return old_checkbleedout(self)
+                return result
             end
         end
 
