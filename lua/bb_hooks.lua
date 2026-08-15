@@ -742,6 +742,19 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                 end
             end
 
+            if TeamAIMovement.set_carry_speed_modifier then
+                local old_set_carry_speed_modifier = TeamAIMovement.set_carry_speed_modifier
+
+                function TeamAIMovement:set_carry_speed_modifier(...)
+                    old_set_carry_speed_modifier(self, ...)
+
+                    if self._carry_speed_modifier then
+                        local modifier = math.min(1, self._carry_speed_modifier * CONSTANTS.BAG_SPEED_MUL)
+                        self._carry_speed_modifier = modifier < 1 and modifier or nil
+                    end
+                end
+            end
+
             if TeamAIMovement.get_reload_speed_multiplier then
                 local old_get_reload_speed_multiplier = TeamAIMovement.get_reload_speed_multiplier
 
@@ -777,60 +790,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 
                     return old_throw(self, ...)
                 end
-            end
-        end
-    end
-
-if RequiredScript == "lib/units/player_team/actions/lower_body/criminalactionwalk" then
-        if Network:is_server() then
-            local function get_bag_speed_modifier(ext_movement)
-                if not ext_movement or not ext_movement:carrying_bag() then
-                    return 1
-                end
-
-                local carry_id = ext_movement:carry_id()
-                local carry_data = carry_id and tweak_data.carry and tweak_data.carry[carry_id]
-                local carry_type = carry_data and carry_data.type
-                local type_data = carry_type and tweak_data.carry.types and tweak_data.carry.types[carry_type]
-
-                if type_data then
-                    return math.min(1, (type_data.move_speed_modifier or 1) * CONSTANTS.BAG_SPEED_MUL)
-                end
-
-                return 1
-            end
-
-            local old_get_max_walk_speed = CriminalActionWalk._get_max_walk_speed
-            function CriminalActionWalk:_get_max_walk_speed(...)
-                if not old_get_max_walk_speed then
-                    return { 150 }
-                end
-
-                local speeds = old_get_max_walk_speed(self, ...)
-                local mod = get_bag_speed_modifier(self._ext_movement)
-
-                if mod == 1 then
-                    return speeds
-                end
-
-                if not self._ext_movement:speed_modifier() then
-                    speeds = deep_clone(speeds)
-                end
-
-                for k, v in pairs(speeds) do
-                    speeds[k] = v * mod
-                end
-
-                return speeds
-            end
-
-            local old_get_current_max_walk_speed = CriminalActionWalk._get_current_max_walk_speed
-            function CriminalActionWalk:_get_current_max_walk_speed(move_dir, ...)
-                if not old_get_current_max_walk_speed then
-                    return 150
-                end
-
-                return old_get_current_max_walk_speed(self, move_dir, ...) * get_bag_speed_modifier(self._ext_movement)
             end
         end
     end
