@@ -643,6 +643,7 @@ function CombatBehavior.execute_melee_attack(data, criminal)
     }
 
     if target_is_shield then
+        damage_info.damage_effect = 1
         damage_info.shield_knock = true
         safe_call(damage.damage_melee, damage, damage_info)
     else
