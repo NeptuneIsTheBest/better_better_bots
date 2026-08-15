@@ -1299,7 +1299,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                         CopDamage,
                         "sync_damage_melee",
                         "BB_CopDamage_syncDamageMelee_AddToIntimList",
-                        function(self, variant, ...)
+                        function(self, attacker_unit, damage_percent, damage_effect_percent, i_body, hit_offset_height, variant, death)
                             handle_taser_damage(self, variant)
                         end
                 )
