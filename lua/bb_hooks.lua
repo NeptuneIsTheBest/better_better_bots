@@ -22,17 +22,185 @@ local move_shoot_path_vec = Vector3()
 local move_shoot_enemy_vec = Vector3()
 local move_shoot_watch_vec = Vector3()
 local move_shoot_walk_vec = Vector3()
+local DEFAULT_TEAM_AI_FIRE_RANGE = 500
+
 local function is_team_ai_move_shoot_unit(unit)
     return alive(unit) and is_team_ai(unit)
 end
 
-local function get_team_ai_running_fire_range(weapon_range)
-    if type(weapon_range) ~= "table" then
-        return 500
+local function get_valid_weapon_range(value)
+    return type(value) == "number" and value > 0 and value or nil
+end
+
+local function get_team_ai_weapon_ranges(weapon_range)
+    if type(weapon_range) == "number" then
+        local range = get_valid_weapon_range(weapon_range) or DEFAULT_TEAM_AI_FIRE_RANGE
+
+        return range, range, range
     end
 
-    local range_key = CONSTANTS.MOVE_SHOOT_RUNNING_RANGE or "optimal"
-    return weapon_range[range_key] or weapon_range.close or 500
+    if type(weapon_range) ~= "table" then
+        return DEFAULT_TEAM_AI_FIRE_RANGE, DEFAULT_TEAM_AI_FIRE_RANGE, DEFAULT_TEAM_AI_FIRE_RANGE
+    end
+
+    local close_range = get_valid_weapon_range(weapon_range.close)
+    local optimal_range = get_valid_weapon_range(weapon_range.optimal)
+    local far_range = get_valid_weapon_range(weapon_range.far)
+
+    close_range = close_range or optimal_range or far_range or DEFAULT_TEAM_AI_FIRE_RANGE
+    optimal_range = math.max(optimal_range or close_range, close_range)
+    far_range = math.max(far_range or optimal_range, optimal_range)
+
+    return close_range, optimal_range, far_range
+end
+
+local function get_team_ai_running_fire_range(weapon_range)
+    local close_range, optimal_range, far_range = get_team_ai_weapon_ranges(weapon_range)
+
+    if type(weapon_range) == "table" then
+        local range_key = CONSTANTS.MOVE_SHOOT_RUNNING_RANGE or "optimal"
+        local configured_range = get_valid_weapon_range(weapon_range[range_key])
+
+        if configured_range then
+            return math.min(configured_range, far_range)
+        end
+    end
+
+    return optimal_range or close_range
+end
+
+local function is_team_ai_running(unit, my_data)
+    local advancing = my_data and my_data.advancing
+
+    if advancing and advancing.stopping and advancing.haste then
+        return not advancing:stopping() and advancing:haste() == "run"
+    end
+
+    local anim_data = unit and unit:anim_data()
+
+    return anim_data and anim_data.run or false
+end
+
+local function get_team_ai_attention_distance(data, focus_enemy)
+    local distance = focus_enemy and (focus_enemy.verified_dis or focus_enemy.dis)
+
+    if type(distance) == "number" and distance >= 0 then
+        return distance
+    end
+
+    if data and data.m_pos and focus_enemy and focus_enemy.m_pos then
+        return mvector3.distance(data.m_pos, focus_enemy.m_pos)
+    end
+
+    return math.huge
+end
+
+local function is_team_ai_move_direction_allowed(data, movement, target_pos, target_dis, running_range)
+    if target_dis <= running_range then
+        return true
+    end
+
+    local walk_to_pos = movement and movement:get_walk_to_pos()
+
+    if not (data and data.m_pos and walk_to_pos and target_pos) then
+        return true
+    end
+
+    local path_dis = mvector3.direction(move_shoot_path_vec, data.m_pos, walk_to_pos)
+    local enemy_dis = mvector3.direction(move_shoot_enemy_vec, data.m_pos, target_pos)
+
+    if path_dis <= 0 or enemy_dis <= 0 then
+        return true
+    end
+
+    return mvector3.dot(move_shoot_path_vec, move_shoot_enemy_vec) >= CONSTANTS.MOVE_SHOOT_BACKWARD_DOT
+end
+
+local function can_team_ai_watch_position_while_running(data, movement, watch_pos)
+    local walk_to_pos = movement and movement:get_walk_to_pos()
+
+    if not (data and data.m_pos and walk_to_pos and watch_pos) then
+        return false
+    end
+
+    mvector3.set(move_shoot_watch_vec, watch_pos)
+    mvector3.subtract(move_shoot_watch_vec, data.m_pos)
+    mvector3.set_z(move_shoot_watch_vec, 0)
+
+    local watch_pos_dis = mvector3.normalize(move_shoot_watch_vec)
+
+    mvector3.set(move_shoot_walk_vec, walk_to_pos)
+    mvector3.subtract(move_shoot_walk_vec, data.m_pos)
+    mvector3.set_z(move_shoot_walk_vec, 0)
+
+    local walk_dis = mvector3.normalize(move_shoot_walk_vec)
+
+    if watch_pos_dis <= 0 then
+        return true
+    elseif walk_dis <= 0 then
+        return false
+    end
+
+    local watch_walk_dot = mvector3.dot(move_shoot_watch_vec, move_shoot_walk_vec)
+
+    return watch_pos_dis < 500 or (watch_pos_dis < 1000 and watch_walk_dot > 0.85)
+end
+
+local function get_team_ai_attention_key(focus_enemy)
+    if focus_enemy.u_key then
+        return focus_enemy.u_key
+    end
+
+    local focus_unit = focus_enemy.unit
+
+    return alive(focus_unit) and focus_unit:key() or nil
+end
+
+local function set_team_ai_attention_on_unit(data, my_data, focus_enemy)
+    local attention_key = get_team_ai_attention_key(focus_enemy)
+
+    if my_data._bb_aim_attention_kind ~= "unit"
+            or my_data._bb_aim_attention_key ~= attention_key
+            or my_data.attention_unit ~= attention_key
+    then
+        CopLogicBase._set_attention(data, focus_enemy)
+    end
+
+    my_data.attention_unit = attention_key
+    my_data._bb_aim_attention_kind = "unit"
+    my_data._bb_aim_attention_key = attention_key
+    my_data._bb_aim_attention_pos = nil
+end
+
+local function set_team_ai_attention_on_pos(data, my_data, focus_enemy, attention_pos)
+    local attention_key = get_team_ai_attention_key(focus_enemy)
+    local cached_pos = my_data._bb_aim_attention_pos
+    local epsilon = CONSTANTS.AIM_ATTENTION_POS_EPSILON or 25
+    local needs_update = my_data._bb_aim_attention_kind ~= "pos"
+            or my_data._bb_aim_attention_key ~= attention_key
+            or not cached_pos
+            or mvector3.distance_sq(cached_pos, attention_pos) >= epsilon * epsilon
+
+    if needs_update then
+        cached_pos = mvector3.copy(attention_pos)
+        CopLogicBase._set_attention_on_pos(data, cached_pos)
+    end
+
+    my_data.attention_unit = cached_pos
+    my_data._bb_aim_attention_kind = "pos"
+    my_data._bb_aim_attention_key = attention_key
+    my_data._bb_aim_attention_pos = cached_pos
+end
+
+local function reset_team_ai_attention(data, my_data)
+    if my_data.attention_unit or my_data._bb_aim_attention_kind then
+        CopLogicBase._reset_attention(data)
+    end
+
+    my_data.attention_unit = nil
+    my_data._bb_aim_attention_kind = nil
+    my_data._bb_aim_attention_key = nil
+    my_data._bb_aim_attention_pos = nil
 end
 
 local function apply_team_ai_weapon_responsiveness(char_tweak)
@@ -710,176 +878,202 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                     return _bb_orig_upd_aim(data, my_data)
                 end
 
-                local shoot, aim, expected_pos = nil
                 local focus_enemy = data.attention_obj
+                local reaction = focus_enemy and focus_enemy.reaction
+                local focus_unit = focus_enemy and focus_enemy.unit
+                local focus_alive = alive(focus_unit)
+                local movement = unit:movement()
+                local brain = unit:brain()
+                local anim_data = unit:anim_data()
+                local shoot = false
+                local aim = false
+                local attention_pos
+                local movement_blocked = false
 
-                if focus_enemy and AIAttentionObject.REACT_AIM <= focus_enemy.reaction then
-                    local last_sup_t = unit:character_damage():last_suppression_t()
+                if focus_alive and type(reaction) == "number" then
+                    local weapon_range = my_data.weapon_range
+                    local _, _, far_range = get_team_ai_weapon_ranges(weapon_range)
+                    local running_range = get_team_ai_running_fire_range(weapon_range)
+                    local running = is_team_ai_running(unit, my_data)
+                    local target_dis = get_team_ai_attention_distance(data, focus_enemy)
+                    local verified = focus_enemy.verified == true
+                    local target_pos = focus_enemy.m_pos or focus_enemy.verified_pos or focus_enemy.last_verified_pos
+                    local look_pos = focus_enemy.last_verified_pos or focus_enemy.verified_pos
 
-                    if focus_enemy.verified or focus_enemy.nearly_visible then
-                        local running_fire_range = get_team_ai_running_fire_range(my_data.weapon_range)
-                        local focus_enemy_dis = focus_enemy.dis or focus_enemy.verified_dis or 0
+                    far_range = math.max(far_range, running_range)
 
-                        if unit:anim_data().run and running_fire_range < focus_enemy_dis then
-                            local walk_to_pos = unit:movement():get_walk_to_pos()
+                    if verified and running then
+                        movement_blocked = not is_team_ai_move_direction_allowed(
+                                data,
+                                movement,
+                                target_pos,
+                                target_dis,
+                                running_range
+                        )
+                    end
 
-                            if walk_to_pos then
-                                mvector3.direction(move_shoot_path_vec, data.m_pos, walk_to_pos)
-                                mvector3.direction(move_shoot_enemy_vec, data.m_pos, focus_enemy.m_pos)
+                    if reaction >= AIAttentionObject.REACT_AIM then
+                        if verified then
+                            if not movement_blocked then
+                                aim = true
 
-                                local dot = mvector3.dot(move_shoot_path_vec, move_shoot_enemy_vec)
+                                if reaction >= AIAttentionObject.REACT_SHOOT then
+                                    local firing_range = running and running_range or far_range
+                                    local t = data.t or game_time()
+                                    local damage_ext = unit:character_damage()
+                                    local last_sup_t = damage_ext
+                                            and damage_ext.last_suppression_t
+                                            and damage_ext:last_suppression_t()
+                                    local suppression_window = running and 2.1 or 7
+                                    local recently_suppressed = last_sup_t
+                                            and t - last_sup_t < suppression_window
+                                    local criminal_record = focus_enemy.criminal_record
+                                    local assault_t = criminal_record and criminal_record.assault_t
+                                    local recently_assaulted = assault_t and t - assault_t < 2
 
-                                if dot < CONSTANTS.MOVE_SHOOT_BACKWARD_DOT then
-                                    shoot = false
-                                    aim = false
-                                end
-                            end
-                        end
-
-                        if aim == nil and AIAttentionObject.REACT_AIM <= focus_enemy.reaction then
-                            if AIAttentionObject.REACT_SHOOT <= focus_enemy.reaction then
-                                local running = my_data.advancing and not my_data.advancing:stopping() and my_data.advancing:haste() == "run"
-                                local weapon_range = data.internal_data and data.internal_data.weapon_range or my_data.weapon_range
-                                local running_range = get_team_ai_running_fire_range(weapon_range)
-                                local far_range = weapon_range and weapon_range.far or running_range
-                                local firing_range = running and running_range or far_range
-
-                                if last_sup_t and data.t - last_sup_t < 7 * (running and 0.3 or 1) * (focus_enemy.verified and 1 or focus_enemy.vis_ray and firing_range < focus_enemy.vis_ray.distance and 0.5 or 0.2) then
-                                    shoot = true
-                                elseif focus_enemy.verified and focus_enemy.verified_dis and focus_enemy.verified_dis < firing_range then
-                                    shoot = true
-                                elseif focus_enemy.verified and focus_enemy.criminal_record and focus_enemy.criminal_record.assault_t and data.t - focus_enemy.criminal_record.assault_t < 2 then
-                                    shoot = true
-                                end
-
-                                if not shoot and my_data.attitude == "engage" then
-                                    if focus_enemy.verified then
-                                        local in_range = focus_enemy.verified_dis and focus_enemy.verified_dis < firing_range
-
-                                        if in_range or focus_enemy.reaction == AIAttentionObject.REACT_SHOOT then
-                                            shoot = true
-                                        end
-                                    else
-                                        local time_since_verification = focus_enemy.verified_t and data.t - focus_enemy.verified_t
-
-                                        if my_data.firing and time_since_verification and time_since_verification < 3.5 then
-                                            shoot = true
-                                        else
-                                            data.brain:search_for_path_to_unit("hunt" .. tostring(data.key), focus_enemy.unit)
-                                        end
+                                    if running and (recently_suppressed or recently_assaulted) then
+                                        firing_range = far_range
                                     end
+
+                                    shoot = target_dis <= firing_range
                                 end
-
-                                aim = aim or shoot
-
-                                if not aim and focus_enemy.verified_dis and focus_enemy.verified_dis < firing_range then
-                                    aim = true
-                                end
-                            else
-                                aim = true
-                            end
-                        end
-                    elseif AIAttentionObject.REACT_AIM <= focus_enemy.reaction then
-                        local time_since_verification = focus_enemy.verified_t and data.t - focus_enemy.verified_t
-                        local running = my_data.advancing and not my_data.advancing:stopping() and my_data.advancing:haste() == "run"
-
-                        if running then
-                            if time_since_verification and time_since_verification < math.lerp(5, 1, math.max(0, (focus_enemy.verified_dis or 0) - 500) / 600) then
-                                aim = true
                             end
                         else
-                            aim = true
-                        end
+                            local t = data.t or game_time()
+                            local time_since_verification = focus_enemy.verified_t
+                                    and t - focus_enemy.verified_t
 
-                        if aim and my_data.shooting and AIAttentionObject.REACT_SHOOT <= focus_enemy.reaction and time_since_verification and time_since_verification < (running and 2 or 3) then
-                            shoot = true
-                        end
+                            if running then
+                                local distance_lerp = math.min(
+                                        math.max((target_dis - 500) / 600, 0),
+                                        1
+                                )
+                                local tracking_window = math.lerp(5, 1, distance_lerp)
+                                local recently_visible = focus_enemy.nearly_visible
+                                        or time_since_verification
+                                        and time_since_verification < tracking_window
 
-                        if not aim then
-                            expected_pos = CopLogicAttack._get_expected_attention_position(data, my_data)
+                                if recently_visible and look_pos then
+                                    local direction_allowed = is_team_ai_move_direction_allowed(
+                                            data,
+                                            movement,
+                                            look_pos,
+                                            target_dis,
+                                            running_range
+                                    )
 
-                            if expected_pos then
-                                if running then
-                                    local walk_to_pos = unit:movement():get_walk_to_pos()
+                                    movement_blocked = not direction_allowed
 
-                                    if walk_to_pos then
-                                        mvector3.set(move_shoot_watch_vec, expected_pos)
-                                        mvector3.subtract(move_shoot_watch_vec, data.m_pos)
-                                        mvector3.set_z(move_shoot_watch_vec, 0)
-
-                                        local watch_pos_dis = mvector3.normalize(move_shoot_watch_vec)
-
-                                        mvector3.set(move_shoot_walk_vec, walk_to_pos)
-                                        mvector3.subtract(move_shoot_walk_vec, data.m_pos)
-                                        mvector3.set_z(move_shoot_walk_vec, 0)
-                                        mvector3.normalize(move_shoot_walk_vec)
-
-                                        local watch_walk_dot = mvector3.dot(move_shoot_watch_vec, move_shoot_walk_vec)
-
-                                        if watch_pos_dis < 500 or (watch_pos_dis < 1000 and watch_walk_dot > 0.85) then
-                                            aim = true
-                                        end
+                                    if direction_allowed then
+                                        aim = true
+                                        attention_pos = look_pos
                                     end
                                 else
-                                    aim = true
+                                    local expected_pos = CopLogicAttack._get_expected_attention_position(data, my_data)
+
+                                    if expected_pos then
+                                        local watch_allowed = can_team_ai_watch_position_while_running(
+                                                data,
+                                                movement,
+                                                expected_pos
+                                        )
+
+                                        movement_blocked = not watch_allowed
+
+                                        if watch_allowed then
+                                            aim = true
+                                            attention_pos = expected_pos
+                                        end
+                                    end
                                 end
+                            else
+                                attention_pos = look_pos
+
+                                if not attention_pos then
+                                    attention_pos = CopLogicAttack._get_expected_attention_position(data, my_data)
+                                end
+
+                                aim = attention_pos and true or false
                             end
                         end
-                    else
-                        expected_pos = CopLogicAttack._get_expected_attention_position(data, my_data)
+                    end
 
-                        if expected_pos then
+                    if not aim
+                            and not movement_blocked
+                            and data.char_tweak
+                            and data.char_tweak.always_face_enemy
+                            and reaction >= AIAttentionObject.REACT_COMBAT
+                    then
+                        if verified then
                             aim = true
+                        else
+                            attention_pos = attention_pos or look_pos
+
+                            if attention_pos and running then
+                                local direction_allowed = is_team_ai_move_direction_allowed(
+                                        data,
+                                        movement,
+                                        attention_pos,
+                                        target_dis,
+                                        running_range
+                                )
+
+                                movement_blocked = not direction_allowed
+                                aim = direction_allowed
+                            else
+                                aim = attention_pos and true or false
+                            end
+                        end
+                    end
+
+                    if aim and not verified and not attention_pos then
+                        aim = false
+                    end
+
+                    if aim and data.logic.chk_should_turn(data, my_data) then
+                        local turn_pos = verified and target_pos or attention_pos
+
+                        if turn_pos then
+                            CopLogicAttack._chk_request_action_turn_to_enemy(
+                                    data,
+                                    my_data,
+                                    data.m_pos,
+                                    turn_pos
+                            )
+                        end
+                    end
+
+                    if aim then
+                        if verified then
+                            set_team_ai_attention_on_unit(data, my_data, focus_enemy)
+                        else
+                            set_team_ai_attention_on_pos(data, my_data, focus_enemy, attention_pos)
                         end
                     end
                 end
 
-                if not aim and data.char_tweak.always_face_enemy and focus_enemy and AIAttentionObject.REACT_COMBAT <= focus_enemy.reaction then
-                    aim = true
-                end
+                if aim then
+                    my_data._bb_aim_stop_requested = nil
 
-                if data.logic.chk_should_turn(data, my_data) and (focus_enemy or expected_pos) then
-                    local enemy_pos = expected_pos or (focus_enemy.verified or focus_enemy.nearly_visible) and focus_enemy.m_pos or focus_enemy.verified_pos
-
-                    CopLogicAttack._chk_request_action_turn_to_enemy(data, my_data, data.m_pos, enemy_pos)
-                end
-
-                if aim or shoot then
-                    if expected_pos then
-                        if my_data.attention_unit ~= expected_pos then
-                            CopLogicBase._set_attention_on_pos(data, mvector3.copy(expected_pos))
-
-                            my_data.attention_unit = mvector3.copy(expected_pos)
-                        end
-                    elseif focus_enemy.verified or focus_enemy.nearly_visible then
-                        if my_data.attention_unit ~= focus_enemy.u_key then
-                            CopLogicBase._set_attention(data, focus_enemy)
-
-                            my_data.attention_unit = focus_enemy.u_key
-                        end
-                    else
-                        local look_pos = focus_enemy.last_verified_pos or focus_enemy.verified_pos
-
-                        if my_data.attention_unit ~= look_pos then
-                            CopLogicBase._set_attention_on_pos(data, mvector3.copy(look_pos))
-
-                            my_data.attention_unit = mvector3.copy(look_pos)
-                        end
-                    end
-
-                    if not my_data.shooting and not my_data.spooc_attack and not unit:anim_data().reload and not unit:movement():chk_action_forbidden("action") then
+                    if not my_data.shooting
+                            and not my_data.spooc_attack
+                            and not anim_data.reload
+                            and not movement:chk_action_forbidden("action")
+                    then
                         local shoot_action = {
                             body_part = 3,
                             type = "shoot",
                         }
 
-                        if unit:brain():action_request(shoot_action) then
+                        if brain:action_request(shoot_action) then
                             my_data.shooting = true
                         end
                     end
                 else
-                    if my_data.shooting then
-                        local new_action = unit:anim_data().reload and {
+                    shoot = false
+
+                    if my_data.shooting and not my_data._bb_aim_stop_requested then
+                        local new_action = anim_data.reload and {
                             body_part = 3,
                             type = "reload",
                         } or {
@@ -887,14 +1081,14 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                             type = "idle",
                         }
 
-                        unit:brain():action_request(new_action)
+                        if brain:action_request(new_action) then
+                            my_data._bb_aim_stop_requested = true
+                        end
+                    elseif not my_data.shooting then
+                        my_data._bb_aim_stop_requested = nil
                     end
 
-                    if my_data.attention_unit then
-                        CopLogicBase._reset_attention(data)
-
-                        my_data.attention_unit = nil
-                    end
+                    reset_team_ai_attention(data, my_data)
                 end
 
                 CopLogicAttack.aim_allow_fire(shoot, aim, data, my_data)
