@@ -1098,7 +1098,6 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
         if Network:is_server() then
-            TeamAILogicAssault.find_enemy_to_mark = CombatBehavior.find_enemy_to_mark
             TeamAILogicAssault.mark_enemy = CombatBehavior.mark_enemy
             TeamAILogicAssault.check_smart_reload = CombatBehavior.check_smart_reload
             TeamAILogicAssault._get_priority_attention = CombatBehavior.find_priority_attention
