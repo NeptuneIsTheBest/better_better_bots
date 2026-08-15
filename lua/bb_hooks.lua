@@ -1502,8 +1502,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
 
                         BB:add_cop_to_intimidation_list(u_key)
 
-                        if surrender and unit:base() and unit:base().set_slot then
-                            unit:base():set_slot(unit, SLOTS.HOSTAGES)
+                        if surrender then
                             BB:clear_cop_state(u_key)
                         end
                     end
