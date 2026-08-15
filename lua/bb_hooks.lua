@@ -665,15 +665,17 @@ if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
 
 if RequiredScript == "lib/units/player_team/teamaimovement" then
         if Network:is_server() then
-            local settings = Global and Global.game_settings
-            local is_private = settings and settings.permission and settings.permission ~= "public"
-            local is_offline = settings and settings.single_player
-
             if TeamAIMovement.on_SPOOCed then
                 local old_spooc = TeamAIMovement.on_SPOOCed
 
                 function TeamAIMovement:on_SPOOCed(...)
-                    if BB:get("clkarrest", false) and (is_private or is_offline) then
+                    local settings = Global and Global.game_settings
+                    local is_non_public = settings
+                            and settings.permission
+                            and settings.permission ~= "public"
+                    local is_offline = settings and settings.single_player
+
+                    if BB:get("clkarrest", false) and (is_non_public or is_offline) then
                         return self:on_cuffed()
                     end
 
