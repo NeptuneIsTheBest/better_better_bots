@@ -9,6 +9,7 @@ local CombatBehavior = BB.CombatBehavior
 local IntimidationSystem = BB.IntimidationSystem
 local CoopCacheManager = BB.CoopCacheManager
 local EnemyClassifier = BB.EnemyClassifier
+local RuntimeSettings = BB.RuntimeSettings
 
 local bb_log = Utils.log
 local safe_call = Utils.safe_call
@@ -322,6 +323,12 @@ Hooks:Add("LocalizationManagerPostInit", "BB_LocalizationManager_PostInit", func
     safe_call(loc.load_localization_file, loc, BB._path .. "loc/english.txt", false)
 end)
 if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
+    Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_ApplyRuntimeSettings", function(self, ...)
+        if RuntimeSettings then
+            RuntimeSettings:apply_all()
+        end
+    end)
+
     if Network:is_server() then
         Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_PreloadConcussion", function(self, ...)
             if BB:get("conc", false) then
@@ -582,22 +589,11 @@ if RequiredScript == "lib/managers/criminalsmanager" then
     end
 
     if Network:is_server() then
-        local total_chars = CriminalsManager.get_num_characters and CriminalsManager.get_num_characters() or 4
-
-        if BB:get("biglob", false) then
-            CriminalsManager.MAX_NR_TEAM_AI = total_chars
-        end
-
         if tweak_data and tweak_data.character and tweak_data.character.presets then
             local char_preset = tweak_data.character.presets
-            local dodge_options = { "poor", "average", "heavy", "athletic", "ninja" }
-
             local gang_weapon = char_preset.weapon and (char_preset.weapon.bot_weapons or char_preset.weapon.gang_member)
 
             if gang_weapon then
-                local dodge_idx = BB:get("dodge", 4)
-                local dodge_preset = dodge_options[dodge_idx]
-
                 for _, v in pairs(tweak_data.character) do
                     if type(v) == "table" and v.access == "teamAI1" then
                         v.no_run_start = true
@@ -613,20 +609,13 @@ if RequiredScript == "lib/managers/criminalsmanager" then
                         if char_preset.move_speed and char_preset.move_speed.lightning then
                             v.move_speed = char_preset.move_speed.lightning
                         end
-
-                        local move_choice = BB:get("move", 1)
-                        if move_choice == 2
-                                and dodge_preset
-                                and char_preset.dodge
-                                and char_preset.dodge[dodge_preset]
-                        then
-                            v.dodge = char_preset.dodge[dodge_preset]
-                        elseif move_choice == 3 then
-                            v.allowed_poses = { stand = true }
-                        end
                     end
                 end
             end
+        end
+
+        if RuntimeSettings then
+            RuntimeSettings:apply_all()
         end
     end
 end

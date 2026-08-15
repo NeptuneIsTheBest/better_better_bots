@@ -23,6 +23,7 @@ local MASK = {
 BB.MASK = MASK
 
 dofile(ModPath .. "lua/bb_state.lua")
+dofile(ModPath .. "lua/bb_runtime_settings.lua")
 dofile(ModPath .. "lua/bb_hungarian.lua")
 dofile(ModPath .. "lua/bb_coop.lua")
 dofile(ModPath .. "lua/bb_combat_behavior.lua")

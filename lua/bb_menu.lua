@@ -1,11 +1,17 @@
 local BB = _G.BB
 local Utils = BB.Utils
+local RuntimeSettings = BB.RuntimeSettings
 
 local bb_log = Utils.log
 
 local MENU_ID = "bb_menu"
 local MENU_TITLE = "bb_menu_title"
 local MENU_DESC = "bb_menu_desc"
+local RUNTIME_SETTING_KEYS = {
+    move = true,
+    dodge = true,
+    biglob = true,
+}
 local MENU_ITEMS = {
     {
         type = "multiple_choice",
@@ -238,6 +244,12 @@ local function add_dynamic_menu_item(item_def, priority)
     end
 end
 
+local function apply_runtime_setting(key)
+    if RUNTIME_SETTING_KEYS[key] and RuntimeSettings and RuntimeSettings.apply then
+        RuntimeSettings:apply(key)
+    end
+end
+
 Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_manager)
     if not menu_manager then
         bb_log("MenuManager is nil", "WARN")
@@ -248,6 +260,7 @@ Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_ma
         MenuCallbackHandler[cb_name] = function(_, item)
             BB._data[key] = Utils.as_bool_from_item(item)
             BB:Save()
+            apply_runtime_setting(key)
         end
     end
 
@@ -255,6 +268,7 @@ Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_ma
         MenuCallbackHandler[cb_name] = function(_, item)
             BB._data[key] = Utils.as_number_from_item(item, default_num)
             BB:Save()
+            apply_runtime_setting(key)
         end
     end
 
