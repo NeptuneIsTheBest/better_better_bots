@@ -13,6 +13,7 @@ local RuntimeSettings = BB.RuntimeSettings
 
 local bb_log = Utils.log
 local safe_call = Utils.safe_call
+local install_method_patch = Utils.install_method_patch
 local game_time = Utils.game_time
 local is_team_ai = UnitOps.is_team_ai
 local is_law_unit = UnitOps.is_law_unit
@@ -341,21 +342,27 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             end
         end)
 
-        local _bb_old_upd_team_AI_distance = GroupAIStateBase.upd_team_AI_distance
-        function GroupAIStateBase:upd_team_AI_distance(...)
+        install_method_patch(
+                "BB_GroupAIStateBase_updTeamAIDistance",
+                GroupAIStateBase,
+                "upd_team_AI_distance",
+                function(original, self, ...)
             if BB:get("keepstaying", false) then
                 return
             end
-            return _bb_old_upd_team_AI_distance(self, ...)
-        end
+            return original(self, ...)
+        end)
 
-        local _bb_old_chk_say_teamAI_combat_chatter = GroupAIStateBase.chk_say_teamAI_combat_chatter
-        function GroupAIStateBase:chk_say_teamAI_combat_chatter(...)
+        install_method_patch(
+                "BB_GroupAIStateBase_chkSayTeamAICombatChatter",
+                GroupAIStateBase,
+                "chk_say_teamAI_combat_chatter",
+                function(original, self, ...)
             if BB:get("chat", false) then
                 return
             end
-            return _bb_old_chk_say_teamAI_combat_chatter(self, ...)
-        end
+            return original(self, ...)
+        end)
 
         function GroupAIStateBase:_get_balancing_multiplier(balance_multipliers, ...)
             if not balance_multipliers then return 1 end
@@ -477,10 +484,13 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
         end)
 
         if TeamAIDamage._check_bleed_out then
-            local old_checkbleedout = TeamAIDamage._check_bleed_out
-            function TeamAIDamage:_check_bleed_out()
+            install_method_patch(
+                    "BB_TeamAIDamage_checkBleedOut",
+                    TeamAIDamage,
+                    "_check_bleed_out",
+                    function(original, self)
                 local was_bleed_out = self._bleed_out
-                local result = old_checkbleedout(self)
+                local result = original(self)
 
                 if not was_bleed_out
                 and self._bleed_out
@@ -495,7 +505,7 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 end
 
                 return result
-            end
+            end)
         end
 
         function TeamAIDamage:friendly_fire_hit()
@@ -503,8 +513,11 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
         end
 
         if TeamAIDamage.accuracy_multiplier then
-            local old_accuracy_multiplier = TeamAIDamage.accuracy_multiplier
-            function TeamAIDamage:accuracy_multiplier(...)
+            install_method_patch(
+                    "BB_TeamAIDamage_accuracyMultiplier",
+                    TeamAIDamage,
+                    "accuracy_multiplier",
+                    function(original, self, ...)
                 if BB:get("combat", false)
                 and self._unit and alive(self._unit)
                 and is_team_ai(self._unit)
@@ -519,10 +532,10 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                      elseif archetype == "lmg" then
                          acc_mul = CONSTANTS.ACC_MUL_LMG
                      end
-                     return old_accuracy_multiplier(self, ...) * acc_mul
+                     return original(self, ...) * acc_mul
                 end
-                return old_accuracy_multiplier(self, ...)
-            end
+                return original(self, ...)
+            end)
         end
     end
 end
@@ -573,19 +586,19 @@ if RequiredScript == "lib/units/interactions/interactionext" then
 end
 
 if RequiredScript == "lib/managers/criminalsmanager" then
-    if CriminalsManager.character_color_id_by_unit and not BB._team_ai_player_colors_hooked then
-        BB._team_ai_player_colors_hooked = true
-
-        local old_character_color_id_by_unit = CriminalsManager.character_color_id_by_unit
-
-        function CriminalsManager:character_color_id_by_unit(unit, ...)
+    if CriminalsManager.character_color_id_by_unit then
+        install_method_patch(
+                "BB_CriminalsManager_characterColorIdByUnit",
+                CriminalsManager,
+                "character_color_id_by_unit",
+                function(original, self, unit, ...)
             local team_ai_color_id = get_team_ai_player_color_id(self, unit)
             if team_ai_color_id then
                 return team_ai_color_id
             end
 
-            return old_character_color_id_by_unit(self, unit, ...)
-        end
+            return original(self, unit, ...)
+        end)
     end
 
     if Network:is_server() then
@@ -655,9 +668,11 @@ if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
 if RequiredScript == "lib/units/player_team/teamaimovement" then
         if Network:is_server() then
             if TeamAIMovement.on_SPOOCed then
-                local old_spooc = TeamAIMovement.on_SPOOCed
-
-                function TeamAIMovement:on_SPOOCed(...)
+                install_method_patch(
+                        "BB_TeamAIMovement_onSPOOCed",
+                        TeamAIMovement,
+                        "on_SPOOCed",
+                        function(original, self, ...)
                     local settings = Global and Global.game_settings
                     local is_non_public = settings
                             and settings.permission
@@ -668,16 +683,18 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                         return self:on_cuffed()
                     end
 
-                    return old_spooc(self, ...)
-                end
+                    return original(self, ...)
+                end)
             end
 
             if not BotWeapons then
-                local orig_check_visual_equipment = TeamAIMovement.check_visual_equipment
-
-                function TeamAIMovement:check_visual_equipment(...)
-                    if BB:get("equip", false) and orig_check_visual_equipment then
-                        return orig_check_visual_equipment(self, ...)
+                install_method_patch(
+                        "BB_TeamAIMovement_checkVisualEquipment",
+                        TeamAIMovement,
+                        "check_visual_equipment",
+                        function(original, self, ...)
+                    if BB:get("equip", false) then
+                        return original(self, ...)
                     end
 
                     if not (tweak_data.levels and managers.job) then
@@ -704,13 +721,15 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                             safe_call(damage_ext.run_sequence_simple, damage_ext, "var_model_02")
                         end
                     end
-                end
+                end)
 
                 if TeamAIMovement.set_carrying_bag then
-                    local orig_set_carrying_bag = TeamAIMovement.set_carrying_bag
-
-                    function TeamAIMovement:set_carrying_bag(unit, ...)
-                        orig_set_carrying_bag(self, unit, ...)
+                    install_method_patch(
+                            "BB_TeamAIMovement_setCarryingBag",
+                            TeamAIMovement,
+                            "set_carrying_bag",
+                            function(original, self, unit, ...)
+                        original(self, unit, ...)
 
                         if not managers.hud then
                             return
@@ -729,39 +748,45 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                                 bag_panel:set_visible(unit and true or false)
                             end
                         end
-                    end
+                    end)
                 end
             end
 
             if TeamAIMovement.set_carry_speed_modifier then
-                local old_set_carry_speed_modifier = TeamAIMovement.set_carry_speed_modifier
-
-                function TeamAIMovement:set_carry_speed_modifier(...)
-                    old_set_carry_speed_modifier(self, ...)
+                install_method_patch(
+                        "BB_TeamAIMovement_setCarrySpeedModifier",
+                        TeamAIMovement,
+                        "set_carry_speed_modifier",
+                        function(original, self, ...)
+                    original(self, ...)
 
                     if self._carry_speed_modifier then
                         local modifier = math.min(1, self._carry_speed_modifier * CONSTANTS.BAG_SPEED_MUL)
                         self._carry_speed_modifier = modifier < 1 and modifier or nil
                     end
-                end
+                end)
             end
 
             if TeamAIMovement.get_reload_speed_multiplier then
-                local old_get_reload_speed_multiplier = TeamAIMovement.get_reload_speed_multiplier
-
-                function TeamAIMovement:get_reload_speed_multiplier(...)
-                    local multiplier = old_get_reload_speed_multiplier(self, ...)
+                install_method_patch(
+                        "BB_TeamAIMovement_getReloadSpeedMultiplier",
+                        TeamAIMovement,
+                        "get_reload_speed_multiplier",
+                        function(original, self, ...)
+                    local multiplier = original(self, ...)
                     if BB:get("combat", false) and not BotWeapons and self._unit and is_team_ai(self._unit) then
                         return (multiplier or 1) * CONSTANTS.RELOAD_SPEED_MUL
                     end
                     return multiplier
-                end
+                end)
             end
 
             if TeamAIMovement.throw_bag then
-                local old_throw = TeamAIMovement.throw_bag
-
-                function TeamAIMovement:throw_bag(...)
+                install_method_patch(
+                        "BB_TeamAIMovement_throwBag",
+                        TeamAIMovement,
+                        "throw_bag",
+                        function(original, self, ...)
                     if self:carrying_bag() then
                         local carry_type_tweak = self:carry_type_tweak()
                         if carry_type_tweak and managers.player then
@@ -779,8 +804,8 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                         end
                     end
 
-                    return old_throw(self, ...)
-                end
+                    return original(self, ...)
+                end)
             end
         end
     end
@@ -819,13 +844,15 @@ end
 
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
         if Network:is_server() then
-            local _bb_orig_upd_aim = CopLogicAttack._upd_aim
-
-            function CopLogicAttack._upd_aim(data, my_data)
+            install_method_patch(
+                    "BB_CopLogicAttack_updAim",
+                    CopLogicAttack,
+                    "_upd_aim",
+                    function(original, data, my_data)
                 local unit = data and data.unit
 
                 if not is_team_ai_move_shoot_unit(unit) then
-                    return _bb_orig_upd_aim(data, my_data)
+                    return original(data, my_data)
                 end
 
                 local focus_enemy = data.attention_obj
@@ -1042,7 +1069,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                 end
 
                 CopLogicAttack.aim_allow_fire(shoot, aim, data, my_data)
-            end
+            end)
         end
     end
 
@@ -1052,11 +1079,13 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             TeamAILogicAssault.check_smart_reload = CombatBehavior.check_smart_reload
             TeamAILogicAssault._get_priority_attention = CombatBehavior.find_priority_attention
 
-            local _bb_orig_team_ai_logic_assault_update = TeamAILogicAssault.update
-
-            function TeamAILogicAssault.update(data, ...)
+            install_method_patch(
+                    "BB_TeamAILogicAssault_update",
+                    TeamAILogicAssault,
+                    "update",
+                    function(original, data, ...)
                 local my_data = data and data.internal_data
-                local result = _bb_orig_team_ai_logic_assault_update(data, ...)
+                local result = original(data, ...)
 
                 if not my_data
                         or my_data ~= data.internal_data
@@ -1090,7 +1119,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 end
 
                 return result
-            end
+            end)
 
             Hooks:PostHook(
                     TeamAILogicAssault,
@@ -1134,19 +1163,20 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 
 if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" then
         if Network:is_server() then
-            local _bb_orig_update = CopActionShoot.update
-            local _bb_orig_get_target_pos = CopActionShoot._get_target_pos
-
-            function CopActionShoot:update(t)
+            install_method_patch(
+                    "BB_CopActionShoot_update",
+                    CopActionShoot,
+                    "update",
+                    function(original, self, t)
                 if not is_team_ai_move_shoot_unit(self._unit) then
-                    return _bb_orig_update(self, t)
+                    return original(self, t)
                 end
 
                 local forced_lod = CONSTANTS.TEAMAI_SHOOT_LOD_FORCE
                 local ext_base = self._ext_base
 
                 if not forced_lod or not ext_base or type(ext_base.lod_stage) ~= "function" then
-                    return _bb_orig_update(self, t)
+                    return original(self, t)
                 end
 
                 local original_lod_stage = ext_base.lod_stage
@@ -1156,7 +1186,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 end
 
                 local ok, err = pcall(function()
-                    return _bb_orig_update(self, t)
+                    return original(self, t)
                 end)
 
                 ext_base.lod_stage = original_lod_stage
@@ -1164,10 +1194,14 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 if not ok then
                     error(err)
                 end
-            end
+            end)
 
-            function CopActionShoot:_get_target_pos(shoot_from_pos, attention, ...)
-                local target_pos, target_vec, target_dis, autotarget = _bb_orig_get_target_pos(self, shoot_from_pos, attention, ...)
+            install_method_patch(
+                    "BB_CopActionShoot_getTargetPos",
+                    CopActionShoot,
+                    "_get_target_pos",
+                    function(original, self, shoot_from_pos, attention, ...)
+                local target_pos, target_vec, target_dis, autotarget = original(self, shoot_from_pos, attention, ...)
 
                 if not BB:get("combat", false) or not (self._unit and alive(self._unit) and is_team_ai(self._unit)) then
                     return target_pos, target_vec, target_dis, autotarget
@@ -1179,12 +1213,14 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 end
 
                 return target_pos, target_vec, target_dis, autotarget
-            end
+            end)
 
-            local _bb_orig_get_transition_target_pos = CopActionShoot._get_transition_target_pos
-
-            function CopActionShoot:_get_transition_target_pos(shoot_from_pos, attention, t, ...)
-                local target_pos, target_vec, target_dis, autotarget = _bb_orig_get_transition_target_pos(self, shoot_from_pos, attention, t, ...)
+            install_method_patch(
+                    "BB_CopActionShoot_getTransitionTargetPos",
+                    CopActionShoot,
+                    "_get_transition_target_pos",
+                    function(original, self, shoot_from_pos, attention, t, ...)
+                local target_pos, target_vec, target_dis, autotarget = original(self, shoot_from_pos, attention, t, ...)
 
                 if not BB:get("combat", false) or not (self._unit and alive(self._unit) and is_team_ai(self._unit)) then
                     return target_pos, target_vec, target_dis, autotarget
@@ -1204,7 +1240,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 end
 
                 return target_pos, target_vec, target_dis, autotarget
-            end
+            end)
         end
     end
 
@@ -1275,14 +1311,16 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
             end
 
             if CopDamage.stun_hit then
-                local old_stun = CopDamage.stun_hit
-
-                CopDamage.stun_hit = function(self, ...)
+                install_method_patch(
+                        "BB_CopDamage_stunHit",
+                        CopDamage,
+                        "stun_hit",
+                        function(original, self, ...)
                     if self._unit and alive(self._unit) and not is_law_unit(self._unit) then
                         return
                     end
-                    return old_stun(self, ...)
-                end
+                    return original(self, ...)
+                end)
             end
 
             Hooks:PreHook(
@@ -1446,10 +1484,12 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
             end)
 
             if CopLogicIdle.on_intimidated then
-                local old_intim = CopLogicIdle.on_intimidated
-
-                CopLogicIdle.on_intimidated = function(data, ...)
-                    local surrender = old_intim(data, ...)
+                install_method_patch(
+                        "BB_CopLogicIdle_onIntimidated",
+                        CopLogicIdle,
+                        "on_intimidated",
+                        function(original, data, ...)
+                    local surrender = original(data, ...)
                     local unit = data.unit
                     if alive(unit) then
                         local u_key = unit:key()
@@ -1465,28 +1505,32 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
                         end
                     end
                     return surrender
-                end
+                end)
             end
 
             if CopLogicIdle._get_priority_attention then
-                local old_prio = CopLogicIdle._get_priority_attention
-
-                CopLogicIdle._get_priority_attention = function(data, attention_objects, reaction_func)
+                install_method_patch(
+                        "BB_CopLogicIdle_getPriorityAttention",
+                        CopLogicIdle,
+                        "_get_priority_attention",
+                        function(original, data, attention_objects, reaction_func)
                     if data.is_converted and TeamAILogicIdle and TeamAILogicIdle._get_priority_attention then
                         return TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
                     end
 
-                    return old_prio(data, attention_objects, reaction_func)
-                end
+                    return original(data, attention_objects, reaction_func)
+                end)
             end
         end
     end
 
 if RequiredScript == "lib/managers/mission/elementmissionend" then
         if Network:is_server() then
-            local old_ElementMissionEnd_on_executed = ElementMissionEnd.on_executed
-
-            ElementMissionEnd.on_executed = function(self, instigator)
+            install_method_patch(
+                    "BB_ElementMissionEnd_onExecuted",
+                    ElementMissionEnd,
+                    "on_executed",
+                    function(original, self, instigator)
                 local is_offline = Global and Global.game_settings and Global.game_settings.single_player
 
                 if is_offline
@@ -1521,9 +1565,9 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
                         ElementMissionEnd.super.on_executed(self, instigator)
                     end
                 else
-                    return old_ElementMissionEnd_on_executed(self, instigator)
+                    return original(self, instigator)
                 end
-            end
+            end)
         end
     end
 

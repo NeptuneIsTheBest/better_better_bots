@@ -1,11 +1,54 @@
 local BB = _G.BB
 
 local ENEMY_TWEAK_MAP = BB.ENEMY_TWEAK_MAP
+local METHOD_PATCHES = BB._method_patches or {}
+BB._method_patches = METHOD_PATCHES
 
 local Utils = {}
 
 function Utils.log(msg, level)
     log(string.format("[Better Bots][%s] %s", level or "INFO", tostring(msg)))
+end
+
+function Utils.install_method_patch(patch_id, target, method_name, handler)
+    if type(patch_id) ~= "string"
+            or type(target) ~= "table"
+            or type(method_name) ~= "string"
+            or type(handler) ~= "function"
+    then
+        return false
+    end
+
+    local current = target[method_name]
+    if type(current) ~= "function" then
+        return false
+    end
+
+    local existing = METHOD_PATCHES[patch_id]
+    if existing
+            and existing.target == target
+            and existing.method_name == method_name
+    then
+        -- Keep the trampoline stable in case another hook has wrapped it.
+        existing.handler = handler
+        return true
+    end
+
+    local patch = {
+        target = target,
+        method_name = method_name,
+        original = current,
+        handler = handler,
+    }
+
+    patch.wrapper = function(...)
+        return patch.handler(patch.original, ...)
+    end
+
+    target[method_name] = patch.wrapper
+    METHOD_PATCHES[patch_id] = patch
+
+    return true
 end
 
 function Utils.safe_call(func, ...)
