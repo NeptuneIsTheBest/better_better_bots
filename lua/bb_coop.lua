@@ -549,10 +549,6 @@ CoopSystem.STATE_PRIORITY = {
     spooc_attacking = 4,
 }
 
-function CoopSystem.update_priority_target(unit, priority, state_info)
-    return CoopSystem.record_target_observation(nil, unit, priority, state_info, nil)
-end
-
 function CoopSystem.record_target_observation(observer_key, unit, priority, state_info, target_meta)
     if not (observer_key and alive(unit) and CoopSystem.is_enabled()) then
         return
