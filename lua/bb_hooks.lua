@@ -26,6 +26,10 @@ local move_shoot_watch_vec = Vector3()
 local move_shoot_walk_vec = Vector3()
 local DEFAULT_TEAM_AI_FIRE_RANGE = 500
 
+local function is_bot_weapons_active()
+    return rawget(_G, "BotWeapons") ~= nil
+end
+
 local function is_team_ai_move_shoot_unit(unit)
     return alive(unit) and is_team_ai(unit)
 end
@@ -687,69 +691,67 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                 end)
             end
 
-            if not BotWeapons then
-                install_method_patch(
-                        "BB_TeamAIMovement_checkVisualEquipment",
-                        TeamAIMovement,
-                        "check_visual_equipment",
-                        function(original, self, ...)
-                    if BB:get("equip", false) then
-                        return original(self, ...)
-                    end
+            install_method_patch(
+                    "BB_TeamAIMovement_checkVisualEquipment",
+                    TeamAIMovement,
+                    "check_visual_equipment",
+                    function(original, self, ...)
+                if is_bot_weapons_active() or BB:get("equip", false) then
+                    return original(self, ...)
+                end
 
-                    if not (tweak_data.levels and managers.job) then
+                if not (tweak_data.levels and managers.job) then
+                    return
+                end
+
+                local lvl_td = tweak_data.levels[managers.job:current_level_id()]
+                local bags = {
+                    { g_medicbag = true },
+                    { g_ammobag = true },
+                }
+                local bag = bags[math.random(#bags)]
+
+                for k, v in pairs(bag) do
+                    local mesh_obj = self._unit:get_object(Idstring(k))
+                    if mesh_obj then
+                        mesh_obj:set_visibility(v)
+                    end
+                end
+
+                if lvl_td and not lvl_td.player_sequence then
+                    local damage_ext = self._unit:damage()
+                    if damage_ext then
+                        safe_call(damage_ext.run_sequence_simple, damage_ext, "var_model_02")
+                    end
+                end
+            end)
+
+            if TeamAIMovement.set_carrying_bag then
+                install_method_patch(
+                        "BB_TeamAIMovement_setCarryingBag",
+                        TeamAIMovement,
+                        "set_carrying_bag",
+                        function(original, self, unit, ...)
+                    original(self, unit, ...)
+
+                    if is_bot_weapons_active() or not managers.hud then
                         return
                     end
 
-                    local lvl_td = tweak_data.levels[managers.job:current_level_id()]
-                    local bags = {
-                        { g_medicbag = true },
-                        { g_ammobag = true },
-                    }
-                    local bag = bags[math.random(#bags)]
+                    local name_label_id = self._unit
+                            and self._unit:unit_data()
+                            and self._unit:unit_data().name_label_id
 
-                    for k, v in pairs(bag) do
-                        local mesh_obj = self._unit:get_object(Idstring(k))
-                        if mesh_obj then
-                            mesh_obj:set_visibility(v)
-                        end
-                    end
+                    local name_label = name_label_id
+                            and managers.hud:_get_name_label(name_label_id)
 
-                    if lvl_td and not lvl_td.player_sequence then
-                        local damage_ext = self._unit:damage()
-                        if damage_ext then
-                            safe_call(damage_ext.run_sequence_simple, damage_ext, "var_model_02")
+                    if name_label and name_label.panel then
+                        local bag_panel = name_label.panel:child("bag")
+                        if bag_panel then
+                            bag_panel:set_visible(unit and true or false)
                         end
                     end
                 end)
-
-                if TeamAIMovement.set_carrying_bag then
-                    install_method_patch(
-                            "BB_TeamAIMovement_setCarryingBag",
-                            TeamAIMovement,
-                            "set_carrying_bag",
-                            function(original, self, unit, ...)
-                        original(self, unit, ...)
-
-                        if not managers.hud then
-                            return
-                        end
-
-                        local name_label_id = self._unit
-                                and self._unit:unit_data()
-                                and self._unit:unit_data().name_label_id
-
-                        local name_label = name_label_id
-                                and managers.hud:_get_name_label(name_label_id)
-
-                        if name_label and name_label.panel then
-                            local bag_panel = name_label.panel:child("bag")
-                            if bag_panel then
-                                bag_panel:set_visible(unit and true or false)
-                            end
-                        end
-                    end)
-                end
             end
 
             if TeamAIMovement.set_carry_speed_modifier then
@@ -774,7 +776,11 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
                         "get_reload_speed_multiplier",
                         function(original, self, ...)
                     local multiplier = original(self, ...)
-                    if BB:get("combat", false) and not BotWeapons and self._unit and is_team_ai(self._unit) then
+                    if BB:get("combat", false)
+                            and not is_bot_weapons_active()
+                            and self._unit
+                            and is_team_ai(self._unit)
+                    then
                         return (multiplier or 1) * CONSTANTS.RELOAD_SPEED_MUL
                     end
                     return multiplier
