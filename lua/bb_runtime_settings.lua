@@ -1,6 +1,7 @@
 local BB = _G.BB
 
 local RuntimeSettings = BB.RuntimeSettings or {}
+local CombatHelper = BB.CombatHelper
 BB.RuntimeSettings = RuntimeSettings
 
 local DODGE_OPTIONS = {
@@ -33,6 +34,14 @@ local function ensure_loadout_slots(limit)
             loadout_slots[i] = {}
         end
     end
+end
+
+local function get_concussion_unit_path()
+    local blackmarket = tweak_data and tweak_data.blackmarket
+    local projectiles = blackmarket and blackmarket.projectiles
+    local concussion = projectiles and projectiles.concussion
+
+    return concussion and concussion.unit
 end
 
 function RuntimeSettings:apply_team_ai_movement()
@@ -137,11 +146,55 @@ function RuntimeSettings:apply_big_lobby()
     return true
 end
 
+function RuntimeSettings:release_concussion_resource()
+    local unit_path = self._concussion_resource_path or get_concussion_unit_path()
+    if not unit_path or not CombatHelper then
+        return true
+    end
+
+    local released = CombatHelper.release_dyn_unit(unit_path)
+    if released then
+        self._concussion_resource_path = nil
+    end
+
+    return released
+end
+
+function RuntimeSettings:apply_concussion(allow_acquire)
+    if not BB:get("conc", false) or not is_server() then
+        return self:release_concussion_resource()
+    end
+
+    if not allow_acquire and not (managers and managers.groupai) then
+        return false
+    end
+
+    local unit_path = get_concussion_unit_path()
+    if not unit_path or not CombatHelper then
+        return false
+    end
+
+    if self._concussion_resource_path and self._concussion_resource_path ~= unit_path then
+        if not self:release_concussion_resource() then
+            return false
+        end
+    end
+
+    local acquired = CombatHelper.acquire_dyn_unit(unit_path)
+    if acquired then
+        self._concussion_resource_path = unit_path
+    end
+
+    return acquired
+end
+
 function RuntimeSettings:apply(key)
     if key == "move" or key == "dodge" then
         return self:apply_team_ai_movement()
     elseif key == "biglob" then
         return self:apply_big_lobby()
+    elseif key == "conc" then
+        return self:apply_concussion(false)
     end
 
     return false

@@ -11,6 +11,7 @@ local RUNTIME_SETTING_KEYS = {
     move = true,
     dodge = true,
     biglob = true,
+    conc = true,
 }
 local MENU_ITEMS = {
     {

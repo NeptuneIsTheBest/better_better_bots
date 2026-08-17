@@ -3,7 +3,10 @@ local BB = _G.BB
 local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 
-local CombatHelper = {}
+local CombatHelper = BB.CombatHelper or {}
+local owned_dyn_units = BB._owned_dyn_units or {}
+
+BB._owned_dyn_units = owned_dyn_units
 
 function CombatHelper.shield_blocks(attacker, target_head_pos, mask)
     if not (attacker and target_head_pos and mask) then
@@ -33,16 +36,86 @@ function CombatHelper.has_ap_ammo()
         or false
 end
 
-function CombatHelper.ensure_dyn_unit_loaded(unit_path)
-    local dyn_res = managers.dyn_resource
-    if not dyn_res or not unit_path then
-        return
+function CombatHelper.acquire_dyn_unit(unit_path)
+    if type(unit_path) ~= "string" or unit_path == "" then
+        return false
     end
 
-    local unit_id = Idstring(unit_path)
-    if not dyn_res:is_resource_ready(Idstring("unit"), unit_id, dyn_res.DYN_RESOURCES_PACKAGE) then
-        Utils.safe_call(dyn_res.load, dyn_res, Idstring("unit"), unit_id, dyn_res.DYN_RESOURCES_PACKAGE, false)
+    if owned_dyn_units[unit_path] then
+        return true
     end
+
+    local dyn_res = managers and managers.dyn_resource
+    local package_name = dyn_res and dyn_res.DYN_RESOURCES_PACKAGE
+    if not (dyn_res and package_name) then
+        return false
+    end
+
+    local resource_type = Idstring("unit")
+    local resource_name = Idstring(unit_path)
+    local success = Utils.safe_call(
+            dyn_res.load,
+            dyn_res,
+            resource_type,
+            resource_name,
+            package_name,
+            false
+    )
+
+    if success then
+        owned_dyn_units[unit_path] = {
+            resource_type = resource_type,
+            resource_name = resource_name,
+            package_name = package_name,
+        }
+    end
+
+    return success
+end
+
+function CombatHelper.release_dyn_unit(unit_path)
+    local resource = owned_dyn_units[unit_path]
+    if not resource then
+        return true
+    end
+
+    local dyn_res = managers and managers.dyn_resource
+    if not dyn_res then
+        return false
+    end
+
+    local success = Utils.safe_call(
+            dyn_res.unload,
+            dyn_res,
+            resource.resource_type,
+            resource.resource_name,
+            resource.package_name,
+            false
+    )
+
+    if success then
+        owned_dyn_units[unit_path] = nil
+    end
+
+    return success
+end
+
+function CombatHelper.release_all_dyn_units()
+    local unit_paths = {}
+
+    for unit_path in pairs(owned_dyn_units) do
+        table.insert(unit_paths, unit_path)
+    end
+
+    local success = true
+
+    for _, unit_path in ipairs(unit_paths) do
+        if not CombatHelper.release_dyn_unit(unit_path) then
+            success = false
+        end
+    end
+
+    return success
 end
 
 BB.CombatHelper = CombatHelper

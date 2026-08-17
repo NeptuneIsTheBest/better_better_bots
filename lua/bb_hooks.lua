@@ -336,13 +336,8 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 
     if Network:is_server() then
         Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_PreloadConcussion", function(self, ...)
-            if BB:get("conc", false) then
-                if tweak_data.blackmarket and tweak_data.blackmarket.projectiles then
-                    local conc_data = tweak_data.blackmarket.projectiles.concussion
-                    if conc_data and conc_data.unit then
-                        CombatHelper.ensure_dyn_unit_loaded(conc_data.unit)
-                    end
-                end
+            if RuntimeSettings and RuntimeSettings.apply_concussion then
+                RuntimeSettings:apply_concussion(true)
             end
         end)
 
@@ -1529,6 +1524,21 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
             end
         end
     end
+
+if RequiredScript == "lib/setups/gamesetup" then
+    Hooks:PreHook(
+            GameSetup,
+            "gather_packages_to_unload",
+            "BB_GameSetup_gatherPackagesToUnload_ReleaseResources",
+            function(self, ...)
+                if RuntimeSettings and RuntimeSettings.release_concussion_resource then
+                    RuntimeSettings:release_concussion_resource()
+                elseif CombatHelper and CombatHelper.release_all_dyn_units then
+                    CombatHelper.release_all_dyn_units()
+                end
+            end
+    )
+end
 
 if RequiredScript == "lib/managers/mission/elementmissionend" then
         if Network:is_server() then

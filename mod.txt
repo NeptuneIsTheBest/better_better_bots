@@ -10,6 +10,7 @@
 	"updates" : [ { "identifier" : "BB" } ],
 	"hooks" : [
 		{ "hook_id" : "lib/managers/menumanager", "script_path" : "betterbots.lua" },
+		{ "hook_id" : "lib/setups/gamesetup", "script_path" : "betterbots.lua" },
 		{ "hook_id" : "lib/managers/criminalsmanager", "script_path" : "betterbots.lua" },
 		{ "hook_id" : "lib/managers/group_ai_states/groupaistatebase", "script_path" : "betterbots.lua" },
 		{ "hook_id" : "lib/managers/mission/elementmissionend", "script_path" : "betterbots.lua" },
