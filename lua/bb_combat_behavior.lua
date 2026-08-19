@@ -485,7 +485,7 @@ function CombatBehavior.check_smart_reload(data)
 
     local unit_movement = unit:movement()
     local anim = unit:anim_data()
-    if unit_movement:chk_action_forbidden("reload") or (anim and anim.reload) then
+    if unit_movement:chk_action_forbidden("action") or (anim and anim.reload) then
         return
     end
 
