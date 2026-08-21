@@ -11,6 +11,58 @@ local safe_say = UnitOps.say
 local request_act = UnitOps.request_act
 
 local IntimidationSystem = {}
+local EMPTY_RAY_IGNORE_UNITS = {}
+
+local function get_interaction_geometry(data, target_unit)
+    local unit = data and data.unit
+    if not (alive(unit) and alive(target_unit)) then
+        return nil
+    end
+
+    local my_mov = unit:movement()
+    local target_mov = target_unit:movement()
+    if not (my_mov and target_mov) then
+        return nil
+    end
+
+    local my_pos = my_mov:m_head_pos()
+    local target_head_pos = target_mov:m_head_pos()
+    local my_rot = my_mov:m_rot()
+    local look_vec = my_rot and my_rot:y()
+    if not (my_pos and target_head_pos and look_vec) then
+        return nil
+    end
+
+    local target_pos = target_head_pos + math.UP * 30
+    local target_vec = target_pos - my_pos
+    local distance = mvector3.distance(my_pos, target_pos)
+    local angle = mvector3.angle(target_vec, look_vec)
+
+    return my_pos, target_pos, distance, angle
+end
+
+local function has_interaction_line_of_sight(data, my_pos, target_pos)
+    local visibility_mask = (data and data.visibility_slotmask)
+            or (BB.MASK and BB.MASK.AI_visibility)
+    if not (visibility_mask and my_pos and target_pos) then
+        return false
+    end
+
+    local ray = World:raycast(
+            "ray",
+            my_pos,
+            target_pos,
+            "slot_mask",
+            visibility_mask,
+            "ray_type",
+            "ai_vision mover",
+            "ignore_unit",
+            EMPTY_RAY_IGNORE_UNITS
+    )
+
+    return not ray
+            or (ray.position and mvector3.distance_sq(ray.position, target_pos) < 900)
+end
 
 function IntimidationSystem.get_intimidate_range()
     local ldi = tweak_data and tweak_data.player and tweak_data.player.long_dis_interaction
@@ -47,6 +99,17 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
     end
 
     local anim = target_unit:anim_data() or {}
+    if anim.long_dis_interact_disabled then
+        return false
+    end
+
+    local dmg = type(target_unit.character_damage) == "function"
+            and target_unit:character_damage()
+            or nil
+    if dmg and dmg.dead and dmg:dead() then
+        return false
+    end
+
     local char_tweak = IntimidationSystem.get_char_tweak(target_unit)
     local surrender = char_tweak and char_tweak.surrender
 
@@ -105,7 +168,6 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
         end
     end
 
-    local dmg = target_unit:character_damage()
     local hr = (dmg and dmg.health_ratio and dmg:health_ratio()) or 1
 
     if health_max > 0 and hr > (health_max / 2) then
@@ -147,12 +209,6 @@ function IntimidationSystem.find_enemy_to_intimidate(data)
     end
 
     local unit = data.unit
-    local my_mov = unit:movement()
-    local my_pos = data.m_pos or (my_mov and (my_mov:m_pos() or my_mov:m_head_pos()))
-    local look_vec = my_mov and my_mov:m_rot():y()
-    if not (my_pos and look_vec) then
-        return nil
-    end
 
     local consider_all = BB:get("dom", false)
     local intimidate_range = IntimidationSystem.get_intimidate_range()
@@ -181,35 +237,32 @@ function IntimidationSystem.find_enemy_to_intimidate(data)
     local best_score = math.huge
 
     for _, u_char in pairs(candidates) do
-        if u_char and u_char.identified and alive(u_char.unit) then
+        if u_char and u_char.identified and u_char.verified and alive(u_char.unit) then
             local cop = u_char.unit
             if not BB:is_blacklisted_cop(cop:key()) then
                 local anim_data = cop:anim_data() or {}
                 local is_surrender_state = anim_data.hands_back or anim_data.surrender
 
                 if are_units_foes(unit, cop) or is_surrender_state then
-                    local dis = u_char.verified_dis
-                            or (u_char.m_head_pos and my_pos and mvector3.distance(my_pos, u_char.m_head_pos))
+                    local my_pos, target_pos, dis, angle = get_interaction_geometry(data, cop)
+                    if dis
+                            and dis <= intimidate_range
+                            and angle <= CONSTANTS.INTIMIDATE_ANGLE
+                            and IntimidationSystem.is_valid_target(cop, data, dis, consider_all)
+                            and has_interaction_line_of_sight(data, my_pos, target_pos)
+                    then
+                        local health_ratio = UnitOps.health_ratio(cop)
+                        local is_hurt = health_ratio < 1
 
-                    if dis and dis <= intimidate_range and u_char.m_pos then
-                        local vec = u_char.m_pos - my_pos
-                        if mvector3.angle(vec, look_vec) <= CONSTANTS.INTIMIDATE_ANGLE then
-                            local valid = IntimidationSystem.is_valid_target(cop, data, dis, consider_all)
-                            if valid then
-                                local health_ratio = UnitOps.health_ratio(cop)
-                                local is_hurt = health_ratio < 1
+                        local priority = anim_data.hands_back and 3
+                                or anim_data.surrender and 2
+                                or (is_hurt and 1)
+                                or 0.5
 
-                                local priority = anim_data.hands_back and 3
-                                        or anim_data.surrender and 2
-                                        or (is_hurt and 1)
-                                        or 0.5
-
-                                local score = dis / priority
-                                if score < best_score then
-                                    best_score = score
-                                    best_unit = cop
-                                end
-                            end
+                        local score = dis / priority
+                        if score < best_score then
+                            best_score = score
+                            best_unit = cop
                         end
                     end
                 end
@@ -222,24 +275,38 @@ end
 
 function IntimidationSystem.intimidate_law_enforcement(data, intim_unit, play_action)
     if not alive(intim_unit) or BB:is_blacklisted_cop(intim_unit:key()) then
-        return
+        return false
     end
 
-    local my_pos = data.m_pos
-            or (data.unit:movement()
-            and (data.unit:movement():m_pos() or data.unit:movement():m_head_pos()))
-
-    local tgt_pos = intim_unit:movement() and intim_unit:movement():m_head_pos()
-    local dis = (my_pos and tgt_pos) and mvector3.distance(my_pos, tgt_pos) or nil
-    local allow_new = BB:get("dom", false)
-
-    if not IntimidationSystem.is_valid_target(intim_unit, data, dis, allow_new) then
-        return
+    local unit = data.unit
+    if not alive(unit) then
+        return false
     end
 
     local anim_data = intim_unit:anim_data()
     if not anim_data then
-        return
+        return false
+    end
+
+    local is_surrender_state = anim_data.hands_back or anim_data.surrender
+    if not (are_units_foes(unit, intim_unit) or is_surrender_state) then
+        return false
+    end
+
+    local my_pos, target_pos, dis, angle = get_interaction_geometry(data, intim_unit)
+    local allow_new = BB:get("dom", false)
+
+    if not dis
+            or angle > CONSTANTS.INTIMIDATE_ANGLE
+            or not IntimidationSystem.is_valid_target(intim_unit, data, dis, allow_new)
+            or not has_interaction_line_of_sight(data, my_pos, target_pos)
+    then
+        return false
+    end
+
+    local intim_brain = intim_unit:brain()
+    if not (intim_brain and intim_brain.on_intimidated) then
+        return false
     end
 
     local actions = {
@@ -252,11 +319,6 @@ function IntimidationSystem.intimidate_law_enforcement(data, intim_unit, play_ac
             or anim_data.surrender and actions.surrender
             or actions.default
 
-    local unit = data.unit
-    if not alive(unit) then
-        return
-    end
-
     safe_say(unit, action.sound, true, true)
 
     if play_action then
@@ -264,11 +326,9 @@ function IntimidationSystem.intimidate_law_enforcement(data, intim_unit, play_ac
     end
 
     BB:on_intimidation_attempt(intim_unit:key())
+    intim_brain:on_intimidated(1, unit)
 
-    local intim_brain = intim_unit:brain()
-    if intim_brain and intim_brain.on_intimidated then
-        intim_brain:on_intimidated(1, unit)
-    end
+    return true
 end
 
 function IntimidationSystem.perform_interaction_check(data)
@@ -302,8 +362,6 @@ function IntimidationSystem.perform_interaction_check(data)
         return
     end
 
-    my_data._intimidate_t = t
-
     local carrying = unit:movement() and unit:movement():carrying_bag()
     local allow_actions = (not anim_data.reload) and (not carrying)
 
@@ -315,14 +373,36 @@ function IntimidationSystem.perform_interaction_check(data)
             IntimidationSystem.get_intimidate_range()
     )
 
-    local dom = IntimidationSystem.find_enemy_to_intimidate(data)
-    local nmy = CombatBehavior.find_enemy_to_mark(data.detected_attention_objects, unit)
-
     if alive(civ) and TeamAILogicIdle and TeamAILogicIdle.intimidate_civilians then
-        safe_call(TeamAILogicIdle.intimidate_civilians, data, unit, true, allow_actions)
-    elseif alive(dom) then
-        safe_call(IntimidationSystem.intimidate_law_enforcement, data, dom, allow_actions)
-    elseif alive(nmy) then
+        local ok, intimidated = safe_call(
+                TeamAILogicIdle.intimidate_civilians,
+                data,
+                unit,
+                true,
+                allow_actions
+        )
+        if ok and intimidated then
+            my_data._intimidate_t = t
+            return
+        end
+    end
+
+    local dom = IntimidationSystem.find_enemy_to_intimidate(data)
+    if alive(dom) then
+        local ok, intimidated = safe_call(
+                IntimidationSystem.intimidate_law_enforcement,
+                data,
+                dom,
+                allow_actions
+        )
+        if ok and intimidated then
+            my_data._intimidate_t = t
+            return
+        end
+    end
+
+    local nmy = CombatBehavior.find_enemy_to_mark(data.detected_attention_objects, unit)
+    if alive(nmy) then
         data._last_mark_t = data._last_mark_t or 0
         if data._last_mark_t + CONSTANTS.MARK_COOLDOWN < t then
             safe_call(CombatBehavior.mark_enemy, data, unit, nmy, true, allow_actions)
