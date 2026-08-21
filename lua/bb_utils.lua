@@ -151,11 +151,6 @@ function UnitOps.are_foes(a, b)
     return (ta.foes and ta.foes[tb.id]) or false
 end
 
-function UnitOps.is_law_unit(unit)
-    local t = UnitOps.team(unit)
-    return t and t.id == "law1"
-end
-
 function UnitOps.health_ratio(unit)
     if not alive(unit) then
         return 0

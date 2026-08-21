@@ -16,7 +16,6 @@ local safe_call = Utils.safe_call
 local install_method_patch = Utils.install_method_patch
 local game_time = Utils.game_time
 local is_team_ai = UnitOps.is_team_ai
-local is_law_unit = UnitOps.is_law_unit
 local is_unit_in_slot = UnitOps.is_in_slot
 local unit_head_pos = UnitOps.head_pos
 local safe_say = UnitOps.say
@@ -1309,19 +1308,6 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                         end
                     end
                 )
-            end
-
-            if CopDamage.stun_hit then
-                install_method_patch(
-                        "BB_CopDamage_stunHit",
-                        CopDamage,
-                        "stun_hit",
-                        function(original, self, ...)
-                    if self._unit and alive(self._unit) and not is_law_unit(self._unit) then
-                        return
-                    end
-                    return original(self, ...)
-                end)
             end
 
             Hooks:PreHook(
