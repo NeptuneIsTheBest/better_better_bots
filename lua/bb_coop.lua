@@ -150,8 +150,7 @@ function CoopSystem.update_teammate_status(unit)
     local pos = unit_movement and unit_movement:m_head_pos()
     local anim_data = unit:anim_data()
     local is_reloading = anim_data and anim_data.reload
-    local head_rot = unit_movement and unit_movement:m_head_rot()
-    local facing_dir = head_rot and head_rot:y()
+    local facing_dir = unit_movement and unit_movement:m_head_fwd()
 
     local status = {
         unit = unit,
@@ -724,7 +723,7 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
 
         if pos and my_head then
             local e_mov = enemy:movement()
-            local e_fwd = e_mov and e_mov:m_head_rot() and e_mov:m_head_rot():y()
+            local e_fwd = e_mov and e_mov:m_head_fwd()
             if e_fwd then
                 local to_me = my_head - pos
                 mvector3.normalize(to_me)

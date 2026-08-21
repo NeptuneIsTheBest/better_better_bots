@@ -259,8 +259,7 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
         end
     end
 
-    local bot_rot = bot_mov:m_head_rot()
-    local bot_fwd = bot_rot and bot_rot:y()
+    local bot_fwd = bot_mov:m_head_fwd()
     if not bot_fwd then
         CoopCacheManager.suitability:set(cache_key, score, 0.3)
         return score
