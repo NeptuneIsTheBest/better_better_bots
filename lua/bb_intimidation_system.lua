@@ -325,10 +325,13 @@ function IntimidationSystem.intimidate_law_enforcement(data, intim_unit, play_ac
         request_act(unit, action.act, data)
     end
 
-    BB:on_intimidation_attempt(intim_unit:key())
-    intim_brain:on_intimidated(1, unit)
+    local u_key = intim_unit:key()
+    local attempt = BB:on_intimidation_attempt(u_key, unit:key())
+    local ok = safe_call(intim_brain.on_intimidated, intim_brain, 1, unit)
 
-    return true
+    BB:clear_intimidation_attempt(u_key, attempt)
+
+    return ok
 end
 
 function IntimidationSystem.perform_interaction_check(data)

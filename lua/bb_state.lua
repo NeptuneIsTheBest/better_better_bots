@@ -16,6 +16,14 @@ BB.dom_failures = BB.dom_failures or {}
 BB.dom_blacklist = BB.dom_blacklist or {}
 BB.dom_pending = BB.dom_pending or {}
 
+-- Older versions stored an unscoped timestamp here. It cannot be safely
+-- attributed after a hot reload, so discard legacy pending entries.
+for u_key, pending in pairs(BB.dom_pending) do
+    if type(pending) ~= "table" or pending.aggressor_key == nil then
+        BB.dom_pending[u_key] = nil
+    end
+end
+
 function BB:Save()
     local ok, encoded = safe_call(json.encode, self._data)
     if not ok then
@@ -78,27 +86,54 @@ function BB:clear_cop_state(u_key)
     self.dom_pending[u_key] = nil
 end
 
-function BB:on_intimidation_attempt(u_key)
-    if not u_key or self:is_blacklisted_cop(u_key) then
+function BB:on_intimidation_attempt(u_key, aggressor_key)
+    if not u_key or not aggressor_key or self:is_blacklisted_cop(u_key) then
         return
     end
 
-    self.dom_pending[tostring(u_key)] = game_time()
+    local attempt = {
+        aggressor_key = tostring(aggressor_key),
+    }
+
+    self.dom_pending[tostring(u_key)] = attempt
+
+    return attempt
 end
 
-function BB:on_intimidation_result(u_key, success)
-    if not u_key then
-        return
+function BB:clear_intimidation_attempt(u_key, attempt)
+    if not u_key or type(attempt) ~= "table" then
+        return false
     end
 
     u_key = tostring(u_key)
+
+    if self.dom_pending[u_key] ~= attempt then
+        return false
+    end
+
+    self.dom_pending[u_key] = nil
+
+    return true
+end
+
+function BB:on_intimidation_result(u_key, success, aggressor_key)
+    if not u_key or not aggressor_key then
+        return false
+    end
+
+    u_key = tostring(u_key)
+
+    local pending = self.dom_pending[u_key]
+    if type(pending) ~= "table" or pending.aggressor_key ~= tostring(aggressor_key) then
+        return false
+    end
 
     self.dom_pending[u_key] = nil
 
     if success then
         self.dom_failures[u_key] = nil
         self.dom_blacklist[u_key] = nil
-        return
+        return true
     end
 
     local rec = self.dom_failures[u_key] or { attempts = 0 }
@@ -110,6 +145,8 @@ function BB:on_intimidation_result(u_key, success)
         self.dom_blacklist[u_key] = true
         self.cops_to_intimidate[u_key] = nil
     end
+
+    return true
 end
 
 function BB:add_cop_to_intimidation_list(unit_key)

@@ -1475,15 +1475,14 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
                         "BB_CopLogicIdle_onIntimidated",
                         CopLogicIdle,
                         "on_intimidated",
-                        function(original, data, ...)
-                    local surrender = original(data, ...)
+                        function(original, data, amount, aggressor_unit, ...)
+                    local aggressor_key = alive(aggressor_unit) and aggressor_unit:key()
+                    local surrender = original(data, amount, aggressor_unit, ...)
                     local unit = data.unit
                     if alive(unit) then
                         local u_key = unit:key()
 
-                        if BB.dom_pending and BB.dom_pending[tostring(u_key)] then
-                            BB:on_intimidation_result(u_key, surrender and true or false)
-                        end
+                        BB:on_intimidation_result(u_key, surrender and true or false, aggressor_key)
 
                         BB:add_cop_to_intimidation_list(u_key)
 
