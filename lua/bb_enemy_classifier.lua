@@ -5,6 +5,37 @@ local ENEMY_TWEAK_MAP = BB.ENEMY_TWEAK_MAP
 local EnemyClassifier = {}
 EnemyClassifier._cache_manager = nil
 
+local function has_tag(tags, tag)
+    local tags_type = type(tags)
+
+    if tags_type == "string" then
+        return tags == tag
+    elseif tags_type ~= "table" then
+        return false
+    end
+
+    if tags[tag] then
+        return true
+    end
+
+    for _, value in ipairs(tags) do
+        if value == tag then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function update_dynamic_flags(flags, unit)
+    local brain = unit:brain()
+    local logic_data = brain and brain._logic_data
+    local internal_data = logic_data and logic_data.internal_data
+
+    flags.tasing = internal_data and internal_data.tasing or false
+    flags.spooc_attack = internal_data and internal_data.spooc_attack or false
+end
+
 function EnemyClassifier._init_cache()
     if not EnemyClassifier._cache_manager and BB.CacheManager then
         EnemyClassifier._cache_manager = BB.CacheManager.new({
@@ -53,23 +84,20 @@ function EnemyClassifier.classify(unit, att_obj)
         return result_default
     end
 
-    EnemyClassifier._init_cache()
-
+    local base = unit:base()
+    local tweak_name = base and base._tweak_table
     local u_key = tostring(unit:key())
+
+    EnemyClassifier._init_cache()
 
     if EnemyClassifier._cache_manager then
         local cached = EnemyClassifier._cache_manager:get(u_key)
-        if cached then
-            local brain = unit:brain()
-            local logic_data = brain and brain._logic_data
-            local internal_data = logic_data and logic_data.internal_data
-            cached.tasing = internal_data and internal_data.tasing or false
-            cached.spooc_attack = internal_data and internal_data.spooc_attack or false
-            return cached
+        if cached and cached.tweak_name == tweak_name and cached.flags then
+            update_dynamic_flags(cached.flags, unit)
+            return cached.flags
         end
     end
 
-    local base = unit:base()
     local flags = {
         turret = base and base.sentry_gun or false,
         shield = false,
@@ -84,17 +112,7 @@ function EnemyClassifier.classify(unit, att_obj)
         spooc_attack = false,
     }
 
-    local brain = unit:brain()
-    local logic_data = brain and brain._logic_data
-    local internal_data = logic_data and logic_data.internal_data
-    if internal_data then
-        if internal_data.tasing then
-            flags.tasing = true
-        end
-        if internal_data.spooc_attack then
-            flags.spooc_attack = true
-        end
-    end
+    update_dynamic_flags(flags, unit)
 
     if att_obj then
         if att_obj.is_shield then
@@ -113,7 +131,6 @@ function EnemyClassifier.classify(unit, att_obj)
         end
     end
 
-    local tweak_name = base and base._tweak_table
     local char_tweak = (att_obj and att_obj.char_tweak)
             or (base and base.char_tweak and base:char_tweak())
             or (tweak_data and tweak_data.character and tweak_name and tweak_data.character[tweak_name])
@@ -129,7 +146,7 @@ function EnemyClassifier.classify(unit, att_obj)
 
     if char_tweak and char_tweak.tags then
         for tag, flag in pairs(BB.CLASSIFY_TAG_MAP) do
-            if char_tweak.tags[tag] then
+            if has_tag(char_tweak.tags, tag) then
                 flags[flag] = true
             end
         end
@@ -151,7 +168,10 @@ function EnemyClassifier.classify(unit, att_obj)
     end
 
     if EnemyClassifier._cache_manager then
-        EnemyClassifier._cache_manager:set(u_key, flags)
+        EnemyClassifier._cache_manager:set(u_key, {
+            tweak_name = tweak_name,
+            flags = flags,
+        })
     end
 
     return flags

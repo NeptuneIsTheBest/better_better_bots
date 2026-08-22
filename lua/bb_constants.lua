@@ -196,6 +196,7 @@ local ENEMY_TWEAK_MAP = {
     shield = { shield = true },
     fbi_shield = { shield = true },
     heavy_swat_shield = { shield = true },
+    marshal_shield_break = { special = true },
     tank = { dozer = true },
     tank_medic = { dozer = true, medic = true },
     tank_hw = { dozer = true },
@@ -226,6 +227,7 @@ local INFER_FLAGS_PATTERNS = {
 
 local CLASSIFY_TAG_MAP = {
     shield = "shield",
+    marksman = "sniper",
     tank = "dozer",
     taser = "taser",
     spooc = "cloaker",
