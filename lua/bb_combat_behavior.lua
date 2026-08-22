@@ -21,6 +21,32 @@ local CombatHelper = BB.CombatHelper
 
 local CombatBehavior = {}
 
+local MARK_CONTOUR_IDS = {
+    "mark_enemy",
+    "mark_enemy_damage_bonus",
+    "mark_enemy_damage_bonus_distance",
+    "mark_unit_dangerous",
+    "mark_unit_dangerous_damage_bonus",
+    "mark_unit_dangerous_damage_bonus_distance",
+}
+
+local function _get_mark_contour_id(unit)
+    local base = unit:base()
+    local enemy_type = base and base.get_type and base:get_type()
+
+    return managers.player:get_contour_for_marked_enemy(enemy_type)
+end
+
+local function _has_mark_contour(contour)
+    for _, contour_id in ipairs(MARK_CONTOUR_IDS) do
+        if contour:has_id(contour_id) then
+            return true
+        end
+    end
+
+    return false
+end
+
 local function _update_dozer_tracking(my_key_str, target_u_key, is_dozer, is_turret)
     if is_dozer and not is_turret then
         BB.coop_data.dozer_attackers[my_key_str] = tostring(target_u_key)
@@ -246,8 +272,6 @@ function CombatBehavior.find_enemy_to_mark(enemies, my_unit)
     end
 
     local unit_movement = my_unit:movement()
-    local player_manager = managers.player
-    local contour_id = player_manager:get_contour_for_marked_enemy()
     local has_ap = CombatHelper.has_ap_ammo()
 
     local my_head = unit_movement:m_head_pos()
@@ -271,10 +295,8 @@ function CombatBehavior.find_enemy_to_mark(enemies, my_unit)
 
                         if dis and dis <= CONSTANTS.MARK_DISTANCE then
                             local u_contour = att_unit:contour()
-                            local already_marked = u_contour
-                                    and (u_contour:has_id(contour_id)
-                                    or u_contour:has_id("mark_unit_dangerous")
-                                    or u_contour:has_id("mark_enemy"))
+                            local contour_id = _get_mark_contour_id(att_unit)
+                            local already_marked = u_contour and _has_mark_contour(u_contour)
 
                             if contour_id and contour_id ~= "" and u_contour and not already_marked then
                                 local shield_blocked = target_head and CombatHelper.shield_blocks_default(my_unit, target_head)
@@ -340,11 +362,9 @@ function CombatBehavior.mark_enemy(data, criminal, to_mark, play_sound, play_act
 
     local contour = to_mark:contour()
     if contour then
-        local prefer_id = managers.player:get_contour_for_marked_enemy()
+        local c_id = _get_mark_contour_id(to_mark)
 
-        local c_id = is_turret and "mark_unit_dangerous" or prefer_id
-
-        if c_id and not contour:has_id(c_id) then
+        if c_id and not _has_mark_contour(contour) then
             safe_call(contour.add, contour, c_id, true)
         end
     end
