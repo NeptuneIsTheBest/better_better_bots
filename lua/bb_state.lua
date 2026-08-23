@@ -50,6 +50,10 @@ function BB:reset_level_state()
         self.CoopSystem.reset_level_state()
     end
 
+    if self.RescueCoordinator and self.RescueCoordinator.reset_level_state then
+        self.RescueCoordinator.reset_level_state()
+    end
+
     if self.CacheManager and self.CacheManager.reset_all_instances then
         self.CacheManager.reset_all_instances()
     end

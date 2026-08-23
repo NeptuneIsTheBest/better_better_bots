@@ -6,6 +6,7 @@ local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 local CoopCacheManager = BB.CoopCacheManager
 local HoldPosition = BB.HoldPosition
+local RescueCoordinator = BB.RescueCoordinator
 
 local clamp = Utils.clamp
 local game_time = Utils.game_time
@@ -242,6 +243,21 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
     local my_key_str = tostring(data.key)
 
     local potential_targets_map, force_unlock = _filter_potential_targets(unit, data, attention_objects, t)
+
+    if RescueCoordinator and RescueCoordinator.select_role_target then
+        local role_target, restrict_to_role = RescueCoordinator.select_role_target(
+                data,
+                potential_targets_map
+        )
+        if role_target then
+            _update_target_lock(data, role_target.data.u_key, old_target_u_key, t)
+            return role_target.data,
+                    200 / math.max(role_target.score or 1, 1),
+                    role_target.reaction
+        elseif restrict_to_role then
+            return nil, nil, nil
+        end
+    end
 
     local lock_active = data._target_lock_until and (t < data._target_lock_until)
     if lock_active and BB:get("coop", false) then

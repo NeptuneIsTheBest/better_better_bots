@@ -11,6 +11,7 @@ local CoopCacheManager = BB.CoopCacheManager
 local EnemyClassifier = BB.EnemyClassifier
 local RuntimeSettings = BB.RuntimeSettings
 local HoldPosition = BB.HoldPosition
+local RescueCoordinator = BB.RescueCoordinator
 
 local bb_log = Utils.log
 local safe_call = Utils.safe_call
@@ -357,6 +358,10 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
                 GroupAIStateBase,
                 "upd_team_AI_distance",
                 function(original, self, ...)
+            if RescueCoordinator and RescueCoordinator.update then
+                safe_call(RescueCoordinator.update, self)
+            end
+
             if BB:get("keepstaying", false) then
                 if HoldPosition then
                     HoldPosition:apply_setting(self)
@@ -612,6 +617,34 @@ if RequiredScript == "lib/units/interactions/interactionext" then
                 function(self, player, ...)
                     if self.tweak_data == "revive" or self.tweak_data == "free" then
                         cancel_other_rescue_objectives(self._unit, player)
+
+                        if RescueCoordinator and RescueCoordinator.on_rescue_interaction then
+                            safe_call(
+                                    RescueCoordinator.on_rescue_interaction,
+                                    self._unit,
+                                    player,
+                                    false
+                            )
+                        end
+                    end
+                end
+        )
+
+        Hooks:PostHook(
+                ReviveInteractionExt,
+                "_at_interact_interupt",
+                "BB_ReviveInteractionExt_atInteractInterrupt_RescueGuard",
+                function(self, player, complete, ...)
+                    if (self.tweak_data == "revive" or self.tweak_data == "free")
+                            and RescueCoordinator
+                            and RescueCoordinator.on_rescue_interaction
+                    then
+                        safe_call(
+                                RescueCoordinator.on_rescue_interaction,
+                                self._unit,
+                                player,
+                                complete == true
+                        )
                     end
                 end
         )
@@ -877,6 +910,34 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
                 return CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
             end
+
+            install_method_patch(
+                    "BB_TeamAILogicIdle_enter_RescueGuard",
+                    TeamAILogicIdle,
+                    "enter",
+                    function(original, data, ...)
+                local result = original(data, ...)
+
+                if RescueCoordinator and RescueCoordinator.maybe_interrupt_rescue then
+                    safe_call(RescueCoordinator.maybe_interrupt_rescue, data)
+                end
+
+                return result
+            end)
+
+            install_method_patch(
+                    "BB_TeamAILogicIdle_updEnemyDetection_RescueGuard",
+                    TeamAILogicIdle,
+                    "_upd_enemy_detection",
+                    function(original, data, ...)
+                local result = original(data, ...)
+
+                if RescueCoordinator and RescueCoordinator.maybe_interrupt_rescue then
+                    safe_call(RescueCoordinator.maybe_interrupt_rescue, data)
+                end
+
+                return result
+            end)
 
             Hooks:PreHook(
                     TeamAILogicIdle,
@@ -1146,6 +1207,16 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     TeamAILogicAssault,
                     "update",
                     function(original, data, ...)
+                if RescueCoordinator and RescueCoordinator.update_solo_fallback then
+                    local ok, handled = safe_call(
+                            RescueCoordinator.update_solo_fallback,
+                            data
+                    )
+                    if ok and handled then
+                        return
+                    end
+                end
+
                 local my_data = data and data.internal_data
                 local result = original(data, ...)
 
