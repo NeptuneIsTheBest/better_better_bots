@@ -83,6 +83,58 @@ local function _make_assignment_snapshot(t)
     }
 end
 
+local function _clear_table(value)
+    if type(value) ~= "table" then
+        return {}
+    end
+
+    for key in pairs(value) do
+        value[key] = nil
+    end
+
+    return value
+end
+
+function CoopSystem.reset_level_state()
+    local data = CoopSystem.data
+
+    data.priority_targets = _clear_table(data.priority_targets)
+    data.teammates_status = _clear_table(data.teammates_status)
+    data.bot_observations = _clear_table(data.bot_observations)
+    data.dozer_attackers = _clear_table(data.dozer_attackers)
+    data.team_pressure_cache = _clear_table(data.team_pressure_cache)
+    data.optimal_assignments = _clear_table(data.optimal_assignments)
+
+    data.reloading_count_cache = _clear_table(data.reloading_count_cache)
+    data.reloading_count_cache.count = 0
+    data.reloading_count_cache.last_update = 0
+
+    data.assignment_snapshot = _clear_table(data.assignment_snapshot)
+    for key, value in pairs(_make_assignment_snapshot(0)) do
+        data.assignment_snapshot[key] = value
+    end
+
+    data.assignment_debug = _clear_table(data.assignment_debug)
+    data.assignment_debug.dummy_assignments = 0
+    data.assignment_debug.local_fallbacks = 0
+    data.last_assignment_update = 0
+
+    local last_scan = BB._last_coop_scan
+    if type(last_scan) ~= "table" then
+        last_scan = {}
+        BB._last_coop_scan = last_scan
+    else
+        _clear_table(last_scan)
+    end
+
+    if CoopSystem._last_scan ~= last_scan then
+        _clear_table(CoopSystem._last_scan)
+        CoopSystem._last_scan = last_scan
+    end
+
+    return true
+end
+
 local function _drop_bot_state(bot_key)
     CoopSystem.data.teammates_status[bot_key] = nil
     CoopSystem.data.dozer_attackers[bot_key] = nil

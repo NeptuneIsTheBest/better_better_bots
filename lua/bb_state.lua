@@ -24,6 +24,35 @@ for u_key, pending in pairs(BB.dom_pending) do
     end
 end
 
+local function clear_table(value)
+    if type(value) ~= "table" then
+        return {}
+    end
+
+    for key in pairs(value) do
+        value[key] = nil
+    end
+
+    return value
+end
+
+function BB:reset_level_state()
+    self.cops_to_intimidate = clear_table(self.cops_to_intimidate)
+    self.dom_failures = clear_table(self.dom_failures)
+    self.dom_blacklist = clear_table(self.dom_blacklist)
+    self.dom_pending = clear_table(self.dom_pending)
+
+    if self.CoopSystem and self.CoopSystem.reset_level_state then
+        self.CoopSystem.reset_level_state()
+    end
+
+    if self.CacheManager and self.CacheManager.reset_all_instances then
+        self.CacheManager.reset_all_instances()
+    end
+
+    return true
+end
+
 function BB:Save()
     local ok, encoded = safe_call(json.encode, self._data)
     if not ok then

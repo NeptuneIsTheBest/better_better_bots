@@ -333,6 +333,17 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
         end
     end)
 
+    Hooks:PostHook(
+            GroupAIStateBase,
+            "on_simulation_ended",
+            "BB_GroupAIStateBase_onSimulationEnded_ResetLevelState",
+            function(self, ...)
+                if BB.reset_level_state then
+                    BB:reset_level_state()
+                end
+            end
+    )
+
     if Network:is_server() then
         Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_PreloadConcussion", function(self, ...)
             if RuntimeSettings and RuntimeSettings.apply_concussion then
@@ -1516,6 +1527,10 @@ if RequiredScript == "lib/setups/gamesetup" then
             "gather_packages_to_unload",
             "BB_GameSetup_gatherPackagesToUnload_ReleaseResources",
             function(self, ...)
+                if BB.reset_level_state then
+                    BB:reset_level_state()
+                end
+
                 if RuntimeSettings and RuntimeSettings.release_concussion_resource then
                     RuntimeSettings:release_concussion_resource()
                 elseif CombatHelper and CombatHelper.release_all_dyn_units then

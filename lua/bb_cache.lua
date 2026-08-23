@@ -1,6 +1,14 @@
 local BB = _G.BB
 
 local Utils = BB.Utils
+local CACHE_INSTANCES = BB._cache_instances
+
+if type(CACHE_INSTANCES) ~= "table" then
+    CACHE_INSTANCES = setmetatable({}, { __mode = "k" })
+    BB._cache_instances = CACHE_INSTANCES
+elseif not getmetatable(CACHE_INSTANCES) then
+    setmetatable(CACHE_INSTANCES, { __mode = "k" })
+end
 
 local CacheManager = {}
 CacheManager.__index = CacheManager
@@ -19,7 +27,30 @@ function CacheManager.new(options)
     self._hits = 0
     self._misses = 0
 
+    CACHE_INSTANCES[self] = true
+
     return self
+end
+
+function CacheManager:reset()
+    self._cache = {}
+    self._last_cleanup = 0
+    self._count = 0
+    self._hits = 0
+    self._misses = 0
+end
+
+function CacheManager.reset_all_instances()
+    local reset_count = 0
+
+    for cache in pairs(CACHE_INSTANCES) do
+        if cache.reset then
+            cache:reset()
+            reset_count = reset_count + 1
+        end
+    end
+
+    return reset_count
 end
 
 function CacheManager:get(key)
@@ -232,6 +263,8 @@ function CoopCacheManager.clear_all()
             CoopCacheManager[name]:clear()
         end
     end
+
+    CoopCacheManager._next_cleanup_t = 0
 end
 
 function CoopCacheManager.all_stats()
