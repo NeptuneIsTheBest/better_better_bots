@@ -2,6 +2,7 @@ local BB = _G.BB
 
 local RuntimeSettings = BB.RuntimeSettings or {}
 local CombatHelper = BB.CombatHelper
+local HoldPosition = BB.HoldPosition
 BB.RuntimeSettings = RuntimeSettings
 
 local DODGE_OPTIONS = {
@@ -188,6 +189,17 @@ function RuntimeSettings:apply_concussion(allow_acquire)
     return acquired
 end
 
+function RuntimeSettings:apply_hold_position()
+    if not is_server() or not HoldPosition then
+        return false
+    end
+
+    local group_ai = managers and managers.groupai
+    local group_state = group_ai and group_ai:state() or nil
+
+    return HoldPosition:apply_setting(group_state)
+end
+
 function RuntimeSettings:apply(key)
     if key == "move" or key == "dodge" then
         return self:apply_team_ai_movement()
@@ -195,6 +207,8 @@ function RuntimeSettings:apply(key)
         return self:apply_big_lobby()
     elseif key == "conc" then
         return self:apply_concussion(false)
+    elseif key == "keepstaying" then
+        return self:apply_hold_position()
     end
 
     return false
@@ -203,6 +217,7 @@ end
 function RuntimeSettings:apply_all()
     local movement_applied = self:apply_team_ai_movement()
     local big_lobby_applied = self:apply_big_lobby()
+    local hold_position_applied = self:apply_hold_position()
 
-    return movement_applied or big_lobby_applied
+    return movement_applied or big_lobby_applied or hold_position_applied
 end

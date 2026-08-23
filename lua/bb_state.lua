@@ -42,6 +42,10 @@ function BB:reset_level_state()
     self.dom_blacklist = clear_table(self.dom_blacklist)
     self.dom_pending = clear_table(self.dom_pending)
 
+    if self.HoldPosition and self.HoldPosition.reset_level_state then
+        self.HoldPosition:reset_level_state()
+    end
+
     if self.CoopSystem and self.CoopSystem.reset_level_state then
         self.CoopSystem.reset_level_state()
     end

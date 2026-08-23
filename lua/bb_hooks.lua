@@ -10,6 +10,7 @@ local IntimidationSystem = BB.IntimidationSystem
 local CoopCacheManager = BB.CoopCacheManager
 local EnemyClassifier = BB.EnemyClassifier
 local RuntimeSettings = BB.RuntimeSettings
+local HoldPosition = BB.HoldPosition
 
 local bb_log = Utils.log
 local safe_call = Utils.safe_call
@@ -357,10 +358,33 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
                 "upd_team_AI_distance",
                 function(original, self, ...)
             if BB:get("keepstaying", false) then
+                if HoldPosition then
+                    HoldPosition:apply_setting(self)
+                    HoldPosition:update_all(self)
+                end
                 return
             end
+
+            if HoldPosition then
+                HoldPosition:apply_setting(self)
+            end
+
             return original(self, ...)
         end)
+
+        if GroupAIStateBase.on_criminal_objective_complete then
+            install_method_patch(
+                    "BB_GroupAIStateBase_onCriminalObjectiveComplete_HoldPosition",
+                    GroupAIStateBase,
+                    "on_criminal_objective_complete",
+                    function(original, self, unit, objective, ...)
+                if HoldPosition then
+                    HoldPosition:prepare_objective_completion(unit, objective)
+                end
+
+                return original(self, unit, objective, ...)
+            end)
+        end
 
         install_method_patch(
                 "BB_GroupAIStateBase_chkSayTeamAICombatChatter",
@@ -676,6 +700,33 @@ if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
 
 if RequiredScript == "lib/units/player_team/teamaimovement" then
         if Network:is_server() then
+            if TeamAIMovement.set_should_stay then
+                install_method_patch(
+                        "BB_TeamAIMovement_setShouldStay_HoldPosition",
+                        TeamAIMovement,
+                        "set_should_stay",
+                        function(original, self, should_stay, ...)
+                    if not should_stay
+                            and HoldPosition
+                            and HoldPosition:should_preserve_temporary_release(self._unit)
+                    then
+                        return
+                    end
+
+                    if should_stay and HoldPosition then
+                        HoldPosition:capture(self._unit, true)
+                    end
+
+                    local result = original(self, should_stay, ...)
+
+                    if not should_stay and HoldPosition then
+                        HoldPosition:clear(self._unit, true)
+                    end
+
+                    return result
+                end)
+            end
+
             if TeamAIMovement.on_SPOOCed then
                 install_method_patch(
                         "BB_TeamAIMovement_onSPOOCed",
@@ -1127,6 +1178,10 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
                     my_data.reload_t = t
                     safe_call(CombatBehavior.check_smart_reload, data)
+                end
+
+                if HoldPosition and HoldPosition.update_combat_pose then
+                    safe_call(HoldPosition.update_combat_pose, HoldPosition, data)
                 end
 
                 return result
@@ -1589,6 +1644,33 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 
 if RequiredScript == "lib/units/player_team/teamaibrain" then
         if Network:is_server() then
+            if TeamAIBrain.on_long_dis_interacted then
+                install_method_patch(
+                        "BB_TeamAIBrain_onLongDisInteracted_HoldPosition",
+                        TeamAIBrain,
+                        "on_long_dis_interacted",
+                        function(original, self, amount, other_unit, secondary, ...)
+                    if HoldPosition then
+                        HoldPosition:begin_long_distance_interaction(self._unit, other_unit, secondary)
+                    end
+
+                    local results = {
+                        pcall(original, self, amount, other_unit, secondary, ...)
+                    }
+
+                    if HoldPosition then
+                        HoldPosition:end_long_distance_interaction(self._unit)
+                    end
+
+                    local ok = table.remove(results, 1)
+                    if not ok then
+                        error(results[1])
+                    end
+
+                    return unpack(results)
+                end)
+            end
+
             Hooks:PostHook(TeamAIBrain, "_reset_logic_data", "BB_TeamAIBrain_resetLogicData_AddTurretMask", function(self)
                 if self._logic_data and self._logic_data.enemy_slotmask and SLOTS and SLOTS.TURRETS then
                     local turrets_mask = World:make_slot_mask(SLOTS.TURRETS)

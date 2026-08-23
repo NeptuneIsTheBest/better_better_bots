@@ -52,5 +52,5 @@
   "coop_toggle_title": "Bottar samarbetar för att döda fiender",
   "coop_toggle_desc": "Om markerad, kommer bottar att använda den ungerska algoritmen för att optimalt tilldela mål och koordinera eldgivning. Varje bot tilldelas det bästa målet baserat på avstånd, vinkel och hotprioritet, ge understödseld för omladdande lagkamrater och täcka olika attackvinklar.",
   "keepstaying_toggle_title": "Stanna Kvar",
-  "keepstaying_toggle_desc": "Om markerad, kommer bottar alltid att stanna kvar på plats, oavsett avståndet till spelaren.\nNotera: Om du använder modden Keepers är det bättre att lämna detta inaktiverat."
+  "keepstaying_toggle_desc": "Om markerad håller bottar som beordrats att stanna den angivna positionen, samtidigt som de fortfarande kan byta ställning, skjuta och ladda om. Efter att ha återupplivat någon eller blivit förflyttade återvänder de till positionen.\nNotera: Om du använder modden Keepers är det bättre att lämna detta inaktiverat."
 }

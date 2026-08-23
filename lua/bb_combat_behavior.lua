@@ -5,6 +5,7 @@ local EnemyClassifier = BB.EnemyClassifier
 local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 local CoopCacheManager = BB.CoopCacheManager
+local HoldPosition = BB.HoldPosition
 
 local clamp = Utils.clamp
 local game_time = Utils.game_time
@@ -558,6 +559,10 @@ function CombatBehavior.check_smart_reload(data)
         if not in_cover and threats.closest_active_dis < CONSTANTS.RELOAD_NOT_IN_COVER_DIST then
             return
         end
+    end
+
+    if HoldPosition and HoldPosition.prepare_reload_pose then
+        safe_call(HoldPosition.prepare_reload_pose, HoldPosition, data)
     end
 
     brain:action_request({ type = "reload", body_part = 3 })

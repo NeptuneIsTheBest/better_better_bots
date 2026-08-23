@@ -52,5 +52,5 @@
   "coop_toggle_title": "I bot cooperano per uccidere i nemici",
   "coop_toggle_desc": "Se selezionato, i bot useranno l'Algoritmo Ungherese per assegnare i bersagli in modo ottimale e coordineranno il fuoco. A ogni bot viene assegnato il miglior bersaglio in base a distanza, angolo e priorità della minaccia, fornendo fuoco di copertura per i compagni che ricaricano e coprendo diversi angoli di attacco.",
   "keepstaying_toggle_title": "Restare Fermi",
-  "keepstaying_toggle_desc": "Se selezionato, i bot rimarranno sempre fermi, indipendentemente dalla distanza dal giocatore.\nNota: Se si utilizza la mod Keepers, è meglio lasciare questa opzione disabilitata."
+  "keepstaying_toggle_desc": "Se selezionato, i bot a cui viene ordinato di restare manterranno la posizione indicata, continuando a cambiare postura, sparare e ricaricare. Dopo aver rianimato qualcuno o essere stati spostati, torneranno in quella posizione.\nNota: Se si utilizza la mod Keepers, è meglio lasciare questa opzione disabilitata."
 }
