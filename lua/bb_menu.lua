@@ -210,7 +210,7 @@ local function is_feature_flag_enabled(flag_name)
         return true
     end
 
-    return not BB.FEATURE_FLAGS or BB.FEATURE_FLAGS[flag_name] ~= false
+    return BB.FEATURE_FLAGS[flag_name] ~= false
 end
 
 local function get_menu_parent_node(nodes)
@@ -222,10 +222,6 @@ local function get_menu_item_value(item_def)
 end
 
 local function add_dynamic_menu_item(item_def, priority)
-    if not MenuHelper then
-        return
-    end
-
     local data = {
         id = item_def.id,
         title = item_def.title,
@@ -247,17 +243,12 @@ local function add_dynamic_menu_item(item_def, priority)
 end
 
 local function apply_runtime_setting(key)
-    if RUNTIME_SETTING_KEYS[key] and RuntimeSettings and RuntimeSettings.apply then
+    if RUNTIME_SETTING_KEYS[key] then
         RuntimeSettings:apply(key)
     end
 end
 
 Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_manager)
-    if not menu_manager then
-        bb_log("MenuManager is nil", "WARN")
-        return
-    end
-
     local function register_toggle(cb_name, key)
         MenuCallbackHandler[cb_name] = function(_, item)
             BB._data[key] = Utils.as_bool_from_item(item)
@@ -308,29 +299,10 @@ Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_ma
 end)
 
 Hooks:Add("MenuManagerSetupCustomMenus", "BB_MenuManager_SetupCustomMenus", function(menu_manager, nodes)
-    if not (menu_manager and nodes) then
-        bb_log("MenuManager setup received invalid state", "WARN")
-        return
-    end
-
-    if MenuHelper and MenuHelper.NewMenu then
-        MenuHelper:NewMenu(MENU_ID)
-    else
-        bb_log("MenuHelper not found", "WARN")
-    end
+    MenuHelper:NewMenu(MENU_ID)
 end)
 
 Hooks:Add("MenuManagerPopulateCustomMenus", "BB_MenuManager_PopulateCustomMenus", function(menu_manager, nodes)
-    if not (menu_manager and nodes) then
-        bb_log("MenuManager populate received invalid state", "WARN")
-        return
-    end
-
-    if not MenuHelper then
-        bb_log("MenuHelper not found", "WARN")
-        return
-    end
-
     local priority = #MENU_ITEMS
     for _, item_def in ipairs(MENU_ITEMS) do
         if is_feature_flag_enabled(item_def.feature_flag) then
@@ -341,16 +313,6 @@ Hooks:Add("MenuManagerPopulateCustomMenus", "BB_MenuManager_PopulateCustomMenus"
 end)
 
 Hooks:Add("MenuManagerBuildCustomMenus", "BB_MenuManager_BuildCustomMenus", function(menu_manager, nodes)
-    if not (menu_manager and nodes) then
-        bb_log("MenuManager build received invalid state", "WARN")
-        return
-    end
-
-    if not MenuHelper then
-        bb_log("MenuHelper not found", "WARN")
-        return
-    end
-
     local parent_node = get_menu_parent_node(nodes)
     if not parent_node then
         bb_log("Failed to locate mod options parent menu", "WARN")

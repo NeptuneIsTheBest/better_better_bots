@@ -4,7 +4,6 @@ local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 local CombatBehavior = BB.CombatBehavior
 
-local safe_call = Utils.safe_call
 local game_time = Utils.game_time
 local are_units_foes = UnitOps.are_foes
 local safe_say = UnitOps.say
@@ -42,8 +41,7 @@ local function get_interaction_geometry(data, target_unit)
 end
 
 local function has_interaction_line_of_sight(data, my_pos, target_pos)
-    local visibility_mask = (data and data.visibility_slotmask)
-            or (BB.MASK and BB.MASK.AI_visibility)
+    local visibility_mask = (data and data.visibility_slotmask) or BB.MASK.AI_visibility
     if not (visibility_mask and my_pos and target_pos) then
         return false
     end
@@ -93,7 +91,7 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
         return false
     end
 
-    local ud = type(target_unit.unit_data) == "function" and target_unit:unit_data() or nil
+    local ud = target_unit:unit_data()
     if ud and ud.disable_shout then
         return false
     end
@@ -103,9 +101,7 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
         return false
     end
 
-    local dmg = type(target_unit.character_damage) == "function"
-            and target_unit:character_damage()
-            or nil
+    local dmg = target_unit:character_damage()
     if dmg and dmg.dead and dmg:dead() then
         return false
     end
@@ -178,7 +174,7 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
     local max = 2
 
     if gstate then
-        for _, u_data in pairs(gstate:all_char_criminals() or {}) do
+        for _, u_data in pairs(gstate:all_char_criminals()) do
             if u_data and u_data.status == "dead" then
                 max = max + 2
             end
@@ -189,7 +185,7 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
     for _, v in pairs(data.detected_attention_objects or {}) do
         if v and v.verified and v.unit ~= target_unit then
             local vunit = v.unit
-            local vdamage = vunit and vunit.character_damage and vunit:character_damage()
+            local vdamage = alive(vunit) and vunit:character_damage()
             local vdis = v.verified_dis or v.dis
             if vdis and vdis < dis_th and vdamage and not vdamage:dead() then
                 num = num + 1
@@ -223,7 +219,7 @@ function IntimidationSystem.find_enemy_to_intimidate(data)
             detected_by_str[tostring(att_key)] = att_obj
         end
 
-        for u_key, t0 in pairs(BB.cops_to_intimidate or {}) do
+        for u_key, t0 in pairs(BB.cops_to_intimidate) do
             if data.t - t0 < BB.grace_period then
                 local att_obj = detected_by_str[u_key]
                 if att_obj then
@@ -305,7 +301,7 @@ function IntimidationSystem.intimidate_law_enforcement(data, intim_unit, play_ac
     end
 
     local intim_brain = intim_unit:brain()
-    if not (intim_brain and intim_brain.on_intimidated) then
+    if not intim_brain then
         return false
     end
 
@@ -327,11 +323,11 @@ function IntimidationSystem.intimidate_law_enforcement(data, intim_unit, play_ac
 
     local u_key = intim_unit:key()
     local attempt = BB:on_intimidation_attempt(u_key, unit:key())
-    local ok = safe_call(intim_brain.on_intimidated, intim_brain, 1, unit)
+    intim_brain:on_intimidated(1, unit)
 
     BB:clear_intimidation_attempt(u_key, attempt)
 
-    return ok
+    return true
 end
 
 function IntimidationSystem.perform_interaction_check(data)
@@ -368,23 +364,20 @@ function IntimidationSystem.perform_interaction_check(data)
     local carrying = unit:movement() and unit:movement():carrying_bag()
     local allow_actions = (not anim_data.reload) and (not carrying)
 
-    local civ = TeamAILogicIdle
-            and TeamAILogicIdle.find_civilian_to_intimidate
-            and TeamAILogicIdle.find_civilian_to_intimidate(
+    local civ = TeamAILogicIdle.find_civilian_to_intimidate(
             unit,
             CONSTANTS.INTIMIDATE_ANGLE,
             IntimidationSystem.get_intimidate_range()
     )
 
-    if alive(civ) and TeamAILogicIdle and TeamAILogicIdle.intimidate_civilians then
-        local ok, intimidated = safe_call(
-                TeamAILogicIdle.intimidate_civilians,
+    if alive(civ) then
+        local intimidated = TeamAILogicIdle.intimidate_civilians(
                 data,
                 unit,
                 true,
                 allow_actions
         )
-        if ok and intimidated then
+        if intimidated then
             my_data._intimidate_t = t
             return
         end
@@ -392,13 +385,12 @@ function IntimidationSystem.perform_interaction_check(data)
 
     local dom = IntimidationSystem.find_enemy_to_intimidate(data)
     if alive(dom) then
-        local ok, intimidated = safe_call(
-                IntimidationSystem.intimidate_law_enforcement,
+        local intimidated = IntimidationSystem.intimidate_law_enforcement(
                 data,
                 dom,
                 allow_actions
         )
-        if ok and intimidated then
+        if intimidated then
             my_data._intimidate_t = t
             return
         end
@@ -408,7 +400,7 @@ function IntimidationSystem.perform_interaction_check(data)
     if alive(nmy) then
         data._last_mark_t = data._last_mark_t or 0
         if data._last_mark_t + CONSTANTS.MARK_COOLDOWN < t then
-            safe_call(CombatBehavior.mark_enemy, data, unit, nmy, true, allow_actions)
+            CombatBehavior.mark_enemy(data, unit, nmy, true, allow_actions)
             data._last_mark_t = t
         end
     end

@@ -44,10 +44,8 @@ function CacheManager.reset_all_instances()
     local reset_count = 0
 
     for cache in pairs(CACHE_INSTANCES) do
-        if cache.reset then
-            cache:reset()
-            reset_count = reset_count + 1
-        end
+        cache:reset()
+        reset_count = reset_count + 1
     end
 
     return reset_count
@@ -251,17 +249,13 @@ end
 
 function CoopCacheManager.cleanup_all(force)
     for _, name in ipairs(CACHE_NAMES) do
-        if CoopCacheManager[name] then
-            CoopCacheManager[name]:cleanup(force)
-        end
+        CoopCacheManager[name]:cleanup(force)
     end
 end
 
 function CoopCacheManager.clear_all()
     for _, name in ipairs(CACHE_NAMES) do
-        if CoopCacheManager[name] then
-            CoopCacheManager[name]:clear()
-        end
+        CoopCacheManager[name]:clear()
     end
 
     CoopCacheManager._next_cleanup_t = 0
@@ -270,9 +264,7 @@ end
 function CoopCacheManager.all_stats()
     local result = {}
     for _, name in ipairs(CACHE_NAMES) do
-        if CoopCacheManager[name] then
-            result[name] = CoopCacheManager[name]:stats()
-        end
+        result[name] = CoopCacheManager[name]:stats()
     end
     return result
 end

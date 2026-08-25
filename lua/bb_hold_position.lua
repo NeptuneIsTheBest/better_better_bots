@@ -5,7 +5,6 @@ local Utils = BB.Utils
 
 local bb_log = Utils.log
 local game_time = Utils.game_time
-local safe_call = Utils.safe_call
 
 local HoldPosition = BB.HoldPosition or {}
 BB.HoldPosition = HoldPosition
@@ -14,7 +13,7 @@ HoldPosition._anchors = HoldPosition._anchors or {}
 HoldPosition._next_update_t = HoldPosition._next_update_t or 0
 
 local function is_server()
-    return Network and Network:is_server() or false
+    return Network:is_server()
 end
 
 local function get_unit_key(unit)
@@ -36,14 +35,14 @@ end
 
 local function get_current_objective(unit)
     local brain = get_unit_brain(unit)
-    return brain and brain.objective and brain:objective() or nil
+    return brain and brain:objective() or nil
 end
 
 local function get_anchor_nav_seg(movement, position)
     local tracker = movement and movement.nav_tracker and movement:nav_tracker()
     local nav_seg = tracker and tracker:nav_segment()
 
-    if not nav_seg and managers and managers.navigation and managers.navigation.get_nav_seg_from_pos then
+    if not nav_seg and managers and managers.navigation then
         nav_seg = managers.navigation:get_nav_seg_from_pos(position)
     end
 
@@ -195,7 +194,7 @@ end
 
 function HoldPosition:_cancel_hold_objective(unit, group_state)
     local brain = get_unit_brain(unit)
-    local objective = brain and brain.objective and brain:objective()
+    local objective = brain and brain:objective()
 
     if not is_hold_objective(objective) then
         return false
@@ -205,14 +204,11 @@ function HoldPosition:_cancel_hold_objective(unit, group_state)
     objective.complete_clbk = nil
     objective.followup_objective = nil
 
-    local ok = safe_call(brain.set_objective, brain, nil)
-    if not ok then
-        return false
-    end
+    brain:set_objective(nil)
 
     group_state = group_state or get_group_state()
-    if group_state and group_state.on_criminal_jobless then
-        safe_call(group_state.on_criminal_jobless, group_state, unit)
+    if group_state then
+        group_state:on_criminal_jobless(unit)
     end
 
     return true
@@ -243,8 +239,8 @@ function HoldPosition:clear_all(group_state, cancel_returns)
     end
 
     group_state = group_state or get_group_state()
-    if group_state and group_state.all_AI_criminals then
-        for key, unit_data in pairs(group_state:all_AI_criminals() or {}) do
+    if group_state then
+        for key, unit_data in pairs(group_state:all_AI_criminals()) do
             if unit_data and alive(unit_data.unit) then
                 units[tostring(key)] = unit_data.unit
             end
@@ -302,14 +298,12 @@ function HoldPosition:_resolve_anchor_nav_seg(state)
         return nav_seg
     end
 
-    if navigation.get_nav_seg_from_pos then
-        nav_seg = navigation:get_nav_seg_from_pos(state.position)
-        nav_seg_data = nav_segments and nav_seg and nav_segments[nav_seg]
+    nav_seg = navigation:get_nav_seg_from_pos(state.position)
+    nav_seg_data = nav_segments and nav_seg and nav_segments[nav_seg]
 
-        if nav_seg and (not nav_segments or nav_seg_data and not nav_seg_data.disabled) then
-            state.nav_seg = nav_seg
-            return nav_seg
-        end
+    if nav_seg and (not nav_segments or nav_seg_data and not nav_seg_data.disabled) then
+        state.nav_seg = nav_seg
+        return nav_seg
     end
 
     return nil
@@ -498,14 +492,14 @@ function HoldPosition:_ensure_stationary_objective(unit, state, objective)
     end
 
     local brain = get_unit_brain(unit)
-    if not (brain and brain.set_objective) then
+    if not brain then
         return objective
     end
 
     local stationary_objective = self:_make_stationary_objective(state)
-    local ok = safe_call(brain.set_objective, brain, stationary_objective)
+    brain:set_objective(stationary_objective)
 
-    return ok and stationary_objective or objective
+    return stationary_objective
 end
 
 function HoldPosition:_update_unit(unit, t)
@@ -569,10 +563,7 @@ function HoldPosition:_update_unit(unit, t)
     end
 
     local brain = get_unit_brain(unit)
-    local ok, err = safe_call(brain and brain.set_objective, brain, return_objective)
-    if not ok then
-        self:_delay_return(state, err or "could not assign objective")
-    end
+    brain:set_objective(return_objective)
 end
 
 function HoldPosition:update_all(group_state, force)
@@ -581,7 +572,7 @@ function HoldPosition:update_all(group_state, force)
     end
 
     group_state = group_state or get_group_state()
-    if not (group_state and group_state.all_AI_criminals) then
+    if not group_state then
         return false
     end
 
@@ -593,7 +584,7 @@ function HoldPosition:update_all(group_state, force)
     self._next_update_t = t + CONSTANTS.HOLD_POSITION_UPDATE_INTERVAL
 
     local seen = {}
-    for key, unit_data in pairs(group_state:all_AI_criminals() or {}) do
+    for key, unit_data in pairs(group_state:all_AI_criminals()) do
         local unit = unit_data and unit_data.unit
         if alive(unit) then
             local state_key = tostring(key)
@@ -647,10 +638,6 @@ function HoldPosition:prepare_reload_pose(data)
         return false
     end
 
-    if not (CopLogicAttack and CopLogicAttack._chk_request_action_crouch) then
-        return false
-    end
-
     return CopLogicAttack._chk_request_action_crouch(data) and true or false
 end
 
@@ -675,12 +662,8 @@ function HoldPosition:update_combat_pose(data)
     end
 
     local attention = data.attention_obj
-    local react_aim = AIAttentionObject and AIAttentionObject.REACT_AIM
-    if not (attention and react_aim and attention.reaction >= react_aim) then
-        return false
-    end
-
-    if not (CopLogicAttack and CopLogicAttack._upd_pose and CopLogicAttack._chk_wants_to_take_cover) then
+    local react_aim = AIAttentionObject.REACT_AIM
+    if not (attention and attention.reaction >= react_aim) then
         return false
     end
 

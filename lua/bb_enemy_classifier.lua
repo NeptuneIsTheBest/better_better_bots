@@ -37,7 +37,7 @@ local function update_dynamic_flags(flags, unit)
 end
 
 function EnemyClassifier._init_cache()
-    if not EnemyClassifier._cache_manager and BB.CacheManager then
+    if not EnemyClassifier._cache_manager then
         EnemyClassifier._cache_manager = BB.CacheManager.new({
             ttl = 1,
             max_size = 500,
@@ -90,12 +90,10 @@ function EnemyClassifier.classify(unit, att_obj)
 
     EnemyClassifier._init_cache()
 
-    if EnemyClassifier._cache_manager then
-        local cached = EnemyClassifier._cache_manager:get(u_key)
-        if cached and cached.tweak_name == tweak_name and cached.flags then
-            update_dynamic_flags(cached.flags, unit)
-            return cached.flags
-        end
+    local cached = EnemyClassifier._cache_manager:get(u_key)
+    if cached and cached.tweak_name == tweak_name and cached.flags then
+        update_dynamic_flags(cached.flags, unit)
+        return cached.flags
     end
 
     local flags = {
@@ -167,12 +165,10 @@ function EnemyClassifier.classify(unit, att_obj)
         flags.special = true
     end
 
-    if EnemyClassifier._cache_manager then
-        EnemyClassifier._cache_manager:set(u_key, {
-            tweak_name = tweak_name,
-            flags = flags,
-        })
-    end
+    EnemyClassifier._cache_manager:set(u_key, {
+        tweak_name = tweak_name,
+        flags = flags,
+    })
 
     return flags
 end

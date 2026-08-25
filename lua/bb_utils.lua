@@ -16,19 +16,20 @@ function Utils.install_method_patch(patch_id, target, method_name, handler)
             or type(method_name) ~= "string"
             or type(handler) ~= "function"
     then
-        return false
+        error(string.format("Invalid method patch registration: %s", tostring(patch_id)), 2)
     end
 
     local current = target[method_name]
     if type(current) ~= "function" then
-        return false
+        error(string.format("Method patch %s could not find %s", patch_id, method_name), 2)
     end
 
     local existing = METHOD_PATCHES[patch_id]
-    if existing
-            and existing.target == target
-            and existing.method_name == method_name
-    then
+    if existing then
+        if existing.target ~= target or existing.method_name ~= method_name then
+            error(string.format("Method patch id %s was reused for a different target", patch_id), 2)
+        end
+
         -- Keep the trampoline stable in case another hook has wrapped it.
         existing.handler = handler
         return true
@@ -51,29 +52,12 @@ function Utils.install_method_patch(patch_id, target, method_name, handler)
     return true
 end
 
-function Utils.safe_call(func, ...)
-    if type(func) ~= "function" then
-        local err_msg = "Error: Attempted to call a non-function value (" .. type(func) .. ")"
-        Utils.log(err_msg, "ERROR")
-        return false, err_msg
-    end
-
-    return pcall(func, ...)
-end
-
 function Utils.clamp(x, a, b)
     return math.min(math.max(x, a), b)
 end
 
 function Utils.game_time()
-    local tm = TimerManager
-    if tm then
-        local game_timer = tm:game()
-        if game_timer then
-            return game_timer:time()
-        end
-    end
-    return 0
+    return TimerManager:game():time()
 end
 
 function Utils.as_bool_from_item(item)
@@ -82,25 +66,6 @@ end
 
 function Utils.as_number_from_item(item, fallback)
     return item and tonumber(item:value()) or fallback
-end
-
-function Utils.get_safe_mask(name, default_slots)
-    if name and managers and managers.slot and managers.slot.get_mask then
-        local ok, m = Utils.safe_call(managers.slot.get_mask, managers.slot, name)
-        if ok and m then
-            return m
-        end
-    end
-
-    if default_slots == nil then
-        return World:make_slot_mask()
-    elseif type(default_slots) == "table" then
-        return World:make_slot_mask(unpack(default_slots))
-    elseif type(default_slots) == "number" then
-        return World:make_slot_mask(default_slots)
-    else
-        return World:make_slot_mask()
-    end
 end
 
 local UnitOps = {}
@@ -185,18 +150,18 @@ function UnitOps.say(unit, line, important, skip_forced)
 
     local snd = unit.sound and unit:sound()
     if snd and snd.say then
-        Utils.safe_call(snd.say, snd, tostring(line), important, skip_forced)
+        snd:say(tostring(line), important, skip_forced)
     end
 end
 
 function UnitOps.play_redirect(unit, variant)
     local mov = alive(unit) and unit:movement()
     if mov and mov.play_redirect then
-        Utils.safe_call(mov.play_redirect, mov, variant)
+        mov:play_redirect(variant)
 
         local sess = managers.network and managers.network:session()
-        if sess and sess.send_to_peers_synched and Network:is_server() then
-            Utils.safe_call(sess.send_to_peers_synched, sess, "play_distance_interact_redirect", unit, variant)
+        if sess and Network:is_server() then
+            sess:send_to_peers_synched("play_distance_interact_redirect", unit, variant)
         end
     end
 end
@@ -226,18 +191,16 @@ function UnitOps.request_act(unit, variant, data)
     end
 
     local brain = alive(unit) and unit:brain()
-    if not (brain and brain.action_request) then
+    if not brain then
         return false
     end
 
-    local success, ok = Utils.safe_call(
-            brain.action_request,
-            brain,
-            { type = "act", variant = variant, body_part = 3, align_sync = true }
-    )
-    if not success then
-        return false
-    end
+    local ok = brain:action_request({
+        type = "act",
+        variant = variant,
+        body_part = 3,
+        align_sync = true,
+    })
 
     if ok and data and data.internal_data then
         data.internal_data.gesture_arrest = true

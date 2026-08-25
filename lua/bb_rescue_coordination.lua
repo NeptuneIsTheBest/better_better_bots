@@ -8,7 +8,6 @@ local Utils = BB.Utils
 local are_units_foes = UnitOps.are_foes
 local game_time = Utils.game_time
 local is_team_ai = UnitOps.is_team_ai
-local safe_call = Utils.safe_call
 
 local RescueCoordinator = BB.RescueCoordinator or {}
 RescueCoordinator._sessions = RescueCoordinator._sessions or {}
@@ -48,7 +47,7 @@ end
 
 local function _get_objective(unit)
     local brain = alive(unit) and unit:brain()
-    return brain and brain.objective and brain:objective() or nil
+    return brain and brain:objective() or nil
 end
 
 local function _is_dead(unit)
@@ -83,7 +82,7 @@ local function _get_group_state()
 end
 
 local function _combat_reaction()
-    return AIAttentionObject and AIAttentionObject.REACT_COMBAT or math.huge
+    return AIAttentionObject.REACT_COMBAT
 end
 
 function RescueCoordinator.target_needs_help(unit)
@@ -131,8 +130,8 @@ function RescueCoordinator.get_remaining_rescue_time(unit)
 
     local interaction = unit:interaction()
     if interaction and interaction.get_waypoint_time then
-        local ok, timer = safe_call(interaction.get_waypoint_time, interaction)
-        if ok and type(timer) == "number" then
+        local timer = interaction:get_waypoint_time()
+        if type(timer) == "number" then
             return timer
         end
     end
@@ -196,7 +195,7 @@ end
 function RescueCoordinator.collect_known_threats(group_state, rescue_unit)
     local threats = {}
     local rescue_pos = _unit_position(rescue_unit)
-    if not (group_state and rescue_pos and group_state.all_AI_criminals) then
+    if not (group_state and rescue_pos) then
         return threats
     end
 
@@ -204,7 +203,7 @@ function RescueCoordinator.collect_known_threats(group_state, rescue_unit)
     local max_range = CONSTANTS.RESCUE_GUARD_THREAT_RANGE
     local max_range_sq = max_range * max_range
 
-    for _, ai_data in pairs(group_state:all_AI_criminals() or {}) do
+    for _, ai_data in pairs(group_state:all_AI_criminals()) do
         local observer = ai_data.unit
         local brain = alive(observer) and observer:brain()
         local logic_data = brain and brain._logic_data
@@ -231,11 +230,11 @@ end
 
 local function _collect_active_rescues(group_state, sessions)
     local rescues = {}
-    if not (group_state and group_state.all_AI_criminals) then
+    if not group_state then
         return rescues
     end
 
-    for _, ai_data in pairs(group_state:all_AI_criminals() or {}) do
+    for _, ai_data in pairs(group_state:all_AI_criminals()) do
         local rescuer = ai_data.unit
         local objective = _get_objective(rescuer)
         local rescue_unit = objective and objective.type == "revive" and objective.follow_unit
@@ -272,8 +271,8 @@ local function _count_uncovered_help_targets(group_state)
     local needs_help = {}
     local covered = {}
 
-    if group_state and group_state.all_char_criminals then
-        for _, criminal_data in pairs(group_state:all_char_criminals() or {}) do
+    if group_state then
+        for _, criminal_data in pairs(group_state:all_char_criminals()) do
             local unit = criminal_data.unit
             if RescueCoordinator.target_needs_help(unit) then
                 local key = _unit_key(unit)
@@ -284,8 +283,8 @@ local function _count_uncovered_help_targets(group_state)
         end
     end
 
-    if group_state and group_state.all_AI_criminals then
-        for _, ai_data in pairs(group_state:all_AI_criminals() or {}) do
+    if group_state then
+        for _, ai_data in pairs(group_state:all_AI_criminals()) do
             local rescuer = ai_data.unit
             local objective = _get_objective(rescuer)
             if _is_healthy_team_ai(rescuer)
@@ -354,7 +353,7 @@ function RescueCoordinator:_is_basic_guard_candidate(session, unit, check_availa
     end
 
     local brain = unit:brain()
-    local objective = brain and brain.objective and brain:objective()
+    local objective = brain and brain:objective()
     if objective then
         if objective.type == "revive"
                 or objective._bb_rescue_guard
@@ -364,13 +363,8 @@ function RescueCoordinator:_is_basic_guard_candidate(session, unit, check_availa
         end
     end
 
-    if check_availability and brain and brain.is_available_for_assignment then
-        local ok, available = safe_call(
-                brain.is_available_for_assignment,
-                brain,
-                session.guard_template
-        )
-        if not ok or not available then
+    if check_availability and brain then
+        if not brain:is_available_for_assignment(session.guard_template) then
             return false
         end
     end
@@ -381,7 +375,7 @@ end
 function RescueCoordinator:_has_spare_guard_candidate(session, group_state)
     local free_count = 0
 
-    for _, ai_data in pairs(group_state:all_AI_criminals() or {}) do
+    for _, ai_data in pairs(group_state:all_AI_criminals()) do
         if self:_is_basic_guard_candidate(session, ai_data.unit, true) then
             free_count = free_count + 1
         end
@@ -428,8 +422,8 @@ function RescueCoordinator:_release_orphan_guard(unit, target_key)
     end
 
     local group_state = _get_group_state()
-    if group_state and group_state.on_criminal_objective_complete then
-        safe_call(group_state.on_criminal_objective_complete, group_state, unit, objective)
+    if group_state then
+        group_state:on_criminal_objective_complete(unit, objective)
     else
         local brain = unit:brain()
         if brain then
@@ -463,24 +457,20 @@ function RescueCoordinator:_try_assign_pending_guard(session, group_state)
             and group_state
             and group_state._special_objectives
             and group_state._special_objectives[so_id]
-    if not (so and group_state._execute_so) then
+    if not so then
         return false
     end
 
-    local ok, assigned = safe_call(
-            group_state._execute_so,
-            group_state,
+    local assigned = group_state:_execute_so(
             so.data,
             so.rooms,
             so.administered
     )
-    if not (ok and assigned) then
+    if not assigned then
         return false
     end
 
-    if group_state.remove_special_objective then
-        safe_call(group_state.remove_special_objective, group_state, so_id)
-    end
+    group_state:remove_special_objective(so_id)
 
     return true
 end
@@ -542,23 +532,14 @@ function RescueCoordinator:_finish_session(target_key, release_guard)
     self._sessions[key] = nil
 
     local group_state = _get_group_state()
-    if session.guard_so_id and group_state and group_state.remove_special_objective then
-        safe_call(
-                group_state.remove_special_objective,
-                group_state,
-                session.guard_so_id
-        )
+    if session.guard_so_id and group_state then
+        group_state:remove_special_objective(session.guard_so_id)
     end
 
     if release_guard and self:_guard_is_current(session) then
         local objective = session.guard_objective
-        if group_state and group_state.on_criminal_objective_complete then
-            safe_call(
-                    group_state.on_criminal_objective_complete,
-                    group_state,
-                    session.guard,
-                    objective
-            )
+        if group_state then
+            group_state:on_criminal_objective_complete(session.guard, objective)
         else
             local brain = session.guard:brain()
             if brain then
@@ -847,12 +828,8 @@ end
 function RescueCoordinator.reset_level_state()
     local group_state = _get_group_state()
     for _, session in pairs(RescueCoordinator._sessions) do
-        if session.guard_so_id and group_state and group_state.remove_special_objective then
-            safe_call(
-                    group_state.remove_special_objective,
-                    group_state,
-                    session.guard_so_id
-            )
+        if session.guard_so_id and group_state then
+            group_state:remove_special_objective(session.guard_so_id)
         end
     end
 

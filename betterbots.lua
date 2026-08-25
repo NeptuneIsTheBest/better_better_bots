@@ -5,7 +5,6 @@ dofile(ModPath .. "lua/bb_constants.lua")
 local SLOTS = BB.SLOTS
 
 dofile(ModPath .. "lua/bb_utils.lua")
-local Utils = BB.Utils
 
 dofile(ModPath .. "lua/bb_cache.lua")
 dofile(ModPath .. "lua/bb_enemy_classifier.lua")
@@ -13,12 +12,14 @@ dofile(ModPath .. "lua/bb_combat_helper.lua")
 dofile(ModPath .. "lua/bb_clustering.lua")
 dofile(ModPath .. "lua/bb_threat_assessment.lua")
 
+-- PlayerTweakData can load before managers.slot is instantiated. These values
+-- mirror the named masks initialized by the game's SlotManager.
 local MASK = {
-    AI_visibility = Utils.get_safe_mask("AI_visibility", { 1, 11, 38, 39 }),
-    enemy_shield_check = Utils.get_safe_mask("enemy_shield_check", 8),
-    hostages = Utils.get_safe_mask("hostages", 22),
-    players = Utils.get_safe_mask("players", SLOTS.PLAYERS),
-    criminals_no_deployables = Utils.get_safe_mask("criminals_no_deployables", SLOTS.CRIMINALS_NO_DEPLOYABLES),
+    AI_visibility = World:make_slot_mask(1, 11, 38, 39),
+    enemy_shield_check = World:make_slot_mask(8),
+    hostages = World:make_slot_mask(SLOTS.HOSTAGES),
+    players = World:make_slot_mask(unpack(SLOTS.PLAYERS)),
+    criminals_no_deployables = World:make_slot_mask(unpack(SLOTS.CRIMINALS_NO_DEPLOYABLES)),
 }
 BB.MASK = MASK
 

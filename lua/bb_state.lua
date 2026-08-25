@@ -4,7 +4,6 @@ local CONSTANTS = BB.CONSTANTS
 local Utils = BB.Utils
 
 local bb_log = Utils.log
-local safe_call = Utils.safe_call
 local game_time = Utils.game_time
 
 BB._path = ModPath
@@ -42,27 +41,16 @@ function BB:reset_level_state()
     self.dom_blacklist = clear_table(self.dom_blacklist)
     self.dom_pending = clear_table(self.dom_pending)
 
-    if self.HoldPosition and self.HoldPosition.reset_level_state then
-        self.HoldPosition:reset_level_state()
-    end
-
-    if self.CoopSystem and self.CoopSystem.reset_level_state then
-        self.CoopSystem.reset_level_state()
-    end
-
-    if self.RescueCoordinator and self.RescueCoordinator.reset_level_state then
-        self.RescueCoordinator.reset_level_state()
-    end
-
-    if self.CacheManager and self.CacheManager.reset_all_instances then
-        self.CacheManager.reset_all_instances()
-    end
+    self.HoldPosition:reset_level_state()
+    self.CoopSystem.reset_level_state()
+    self.RescueCoordinator.reset_level_state()
+    self.CacheManager.reset_all_instances()
 
     return true
 end
 
 function BB:Save()
-    local ok, encoded = safe_call(json.encode, self._data)
+    local ok, encoded = pcall(json.encode, self._data)
     if not ok then
         bb_log("Failed to encode save data", "ERROR")
         return
@@ -92,7 +80,7 @@ function BB:Load()
         return
     end
 
-    local ok, decoded = safe_call(json.decode, raw)
+    local ok, decoded = pcall(json.decode, raw)
     if ok and type(decoded) == "table" then
         self._data = decoded
         bb_log("Data loaded")
@@ -107,7 +95,7 @@ function BB:get(key, default)
 end
 
 function BB:is_blacklisted_cop(u_key)
-    return u_key and self.dom_blacklist and self.dom_blacklist[tostring(u_key)] == true
+    return u_key and self.dom_blacklist[tostring(u_key)] == true
 end
 
 function BB:clear_cop_state(u_key)
@@ -217,9 +205,7 @@ function BB:add_cop_to_intimidation_list(unit_key)
 
         local att_obj = brain._logic_data.attention_obj
         if att_obj and tostring(att_obj.u_key) == unit_key then
-            if CopLogicBase and CopLogicBase._set_attention_obj then
-                CopLogicBase._set_attention_obj(brain._logic_data, nil, nil)
-            end
+            CopLogicBase._set_attention_obj(brain._logic_data, nil, nil)
         end
     end
 
@@ -228,18 +214,14 @@ function BB:add_cop_to_intimidation_list(unit_key)
         return
     end
 
-    if gstate._ai_criminals then
-        for _, sighting in pairs(gstate._ai_criminals) do
-            if sighting and sighting.unit then
-                clear_attention_for_unit(sighting.unit)
-            end
+    for _, sighting in pairs(gstate._ai_criminals) do
+        if sighting and sighting.unit then
+            clear_attention_for_unit(sighting.unit)
         end
     end
 
-    if gstate._converted_police then
-        for _, unit in pairs(gstate._converted_police) do
-            clear_attention_for_unit(unit)
-        end
+    for _, unit in pairs(gstate._converted_police) do
+        clear_attention_for_unit(unit)
     end
 end
 

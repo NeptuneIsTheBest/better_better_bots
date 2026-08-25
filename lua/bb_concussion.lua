@@ -2,11 +2,9 @@ local BB = _G.BB
 local CONSTANTS = BB.CONSTANTS
 local EnemyClassifier = BB.EnemyClassifier
 local UnitOps = BB.UnitOps
-local Utils = BB.Utils
 local CoopCacheManager = BB.CoopCacheManager
 local Clustering = BB.Clustering
 
-local safe_call = Utils.safe_call
 local are_units_foes = UnitOps.are_foes
 local safe_say = UnitOps.say
 local play_net_redirect = UnitOps.play_redirect
@@ -229,24 +227,22 @@ function ConcussionSystem.throw(data, criminal)
     end
 
     local mvec_spread_direction = best_cluster_pos - from_pos
-    local throw_projectile_npc = ProjectileBase and ProjectileBase.throw_projectile_npc
     local network_session = managers.network and managers.network:session()
 
-    if type(throw_projectile_npc) ~= "function" or not network_session then
+    if not network_session then
         return false
     end
 
     mvector3.normalize(mvec_spread_direction)
 
-    local success, cc_unit = safe_call(
-            throw_projectile_npc,
+    local cc_unit = ProjectileBase.throw_projectile_npc(
             CONCUSSION_PROJECTILE_ENTRY,
             from_pos,
             mvec_spread_direction,
             criminal
     )
 
-    if success and alive(cc_unit) then
+    if alive(cc_unit) then
         play_net_redirect(criminal, "throw_grenade")
         safe_say(criminal, "g43", true, true)
         CoopCacheManager.conc_area_cooldown:set(area_key, true)

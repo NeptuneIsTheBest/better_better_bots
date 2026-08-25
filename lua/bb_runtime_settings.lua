@@ -14,7 +14,7 @@ local DODGE_OPTIONS = {
 }
 
 local function is_server()
-    return Network and Network:is_server() or false
+    return Network:is_server()
 end
 
 local function restore_movement_entry(entry, original)
@@ -112,7 +112,7 @@ function RuntimeSettings:apply_team_ai_movement()
 end
 
 function RuntimeSettings:apply_big_lobby()
-    if not is_server() or not CriminalsManager then
+    if not is_server() then
         return false
     end
 
@@ -129,9 +129,7 @@ function RuntimeSettings:apply_big_lobby()
             self._big_lobby_original_max = CriminalsManager.MAX_NR_TEAM_AI
         end
 
-        local total_characters = CriminalsManager.get_num_characters
-                and CriminalsManager.get_num_characters()
-                or 4
+        local total_characters = CriminalsManager.get_num_characters()
 
         CriminalsManager.MAX_NR_TEAM_AI = total_characters
         self._big_lobby_override_active = true
@@ -149,7 +147,7 @@ end
 
 function RuntimeSettings:release_concussion_resource()
     local unit_path = self._concussion_resource_path or get_concussion_unit_path()
-    if not unit_path or not CombatHelper then
+    if not unit_path then
         return true
     end
 
@@ -171,7 +169,7 @@ function RuntimeSettings:apply_concussion(allow_acquire)
     end
 
     local unit_path = get_concussion_unit_path()
-    if not unit_path or not CombatHelper then
+    if not unit_path then
         return false
     end
 
@@ -190,7 +188,7 @@ function RuntimeSettings:apply_concussion(allow_acquire)
 end
 
 function RuntimeSettings:apply_hold_position()
-    if not is_server() or not HoldPosition then
+    if not is_server() then
         return false
     end
 

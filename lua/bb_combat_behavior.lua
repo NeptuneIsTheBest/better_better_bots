@@ -10,12 +10,10 @@ local RescueCoordinator = BB.RescueCoordinator
 
 local clamp = Utils.clamp
 local game_time = Utils.game_time
-local safe_call = Utils.safe_call
 local are_units_foes = UnitOps.are_foes
 local safe_say = UnitOps.say
 local request_act = UnitOps.request_act
 local play_net_redirect = UnitOps.play_redirect
-local get_unit_health_ratio = UnitOps.health_ratio
 local is_surrendering = UnitOps.is_surrendering
 
 local SLOTS = BB.SLOTS
@@ -87,7 +85,7 @@ local function _filter_potential_targets(unit, data, attention_objects, t)
                 local dom_t0 = BB.cops_to_intimidate[u_key_str]
                 local dom_active = dom_t0 and (t - dom_t0 < BB.grace_period)
 
-                if dom_active and IntimidationSystem.is_valid_target then
+                if dom_active then
                     if not IntimidationSystem.is_valid_target(attention_data.unit, data, dist, false) then
                         dom_active = false
                     end
@@ -236,7 +234,7 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
 
     if BB:get("coop", false) and is_team_ai_unit then
         BB.CoopSystem.update_teammate_status(unit)
-        safe_call(BB.CoopSystem.scan_and_update_priorities, data)
+        BB.CoopSystem.scan_and_update_priorities(data)
     end
 
     local old_target_u_key = data._last_target_u_key and tostring(data._last_target_u_key)
@@ -244,19 +242,17 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
 
     local potential_targets_map, force_unlock = _filter_potential_targets(unit, data, attention_objects, t)
 
-    if RescueCoordinator and RescueCoordinator.select_role_target then
-        local role_target, restrict_to_role = RescueCoordinator.select_role_target(
-                data,
-                potential_targets_map
-        )
-        if role_target then
-            _update_target_lock(data, role_target.data.u_key, old_target_u_key, t)
-            return role_target.data,
-                    200 / math.max(role_target.score or 1, 1),
-                    role_target.reaction
-        elseif restrict_to_role then
-            return nil, nil, nil
-        end
+    local role_target, restrict_to_role = RescueCoordinator.select_role_target(
+            data,
+            potential_targets_map
+    )
+    if role_target then
+        _update_target_lock(data, role_target.data.u_key, old_target_u_key, t)
+        return role_target.data,
+                200 / math.max(role_target.score or 1, 1),
+                role_target.reaction
+    elseif restrict_to_role then
+        return nil, nil, nil
     end
 
     local lock_active = data._target_lock_until and (t < data._target_lock_until)
@@ -382,7 +378,7 @@ function CombatBehavior.mark_enemy(data, criminal, to_mark, play_sound, play_act
         local c_id = _get_mark_contour_id(to_mark)
 
         if c_id and not _has_mark_contour(contour) then
-            safe_call(contour.add, contour, c_id, true)
+            contour:add(c_id, true)
         end
     end
 
@@ -577,9 +573,7 @@ function CombatBehavior.check_smart_reload(data)
         end
     end
 
-    if HoldPosition and HoldPosition.prepare_reload_pose then
-        safe_call(HoldPosition.prepare_reload_pose, HoldPosition, data)
-    end
+    HoldPosition:prepare_reload_pose(data)
 
     brain:action_request({ type = "reload", body_part = 3 })
 end
@@ -686,21 +680,17 @@ function CombatBehavior.execute_melee_attack(data, criminal)
     if target_is_shield then
         damage_info.damage_effect = 1
         damage_info.shield_knock = true
-        safe_call(damage.damage_melee, damage, damage_info)
+        damage:damage_melee(damage_info)
     else
         damage_info.knock_down = true
-        safe_call(damage.damage_bullet, damage, damage_info)
+        damage:damage_bullet(damage_info)
     end
 
     play_net_redirect(criminal, "melee")
 end
 
 function CombatBehavior.throw_concussion_grenade(data, criminal)
-    local ConcussionSystem = BB.ConcussionSystem
-    if ConcussionSystem then
-        return ConcussionSystem.throw(data, criminal)
-    end
-    return false
+    return BB.ConcussionSystem.throw(data, criminal)
 end
 
 BB.CombatBehavior = CombatBehavior

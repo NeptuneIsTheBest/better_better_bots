@@ -4,7 +4,6 @@ local CONSTANTS = BB.CONSTANTS
 local SLOTS = BB.SLOTS
 local MASK = BB.MASK
 local UnitOps = BB.UnitOps
-local CombatHelper = BB.CombatHelper
 local CombatBehavior = BB.CombatBehavior
 local IntimidationSystem = BB.IntimidationSystem
 local CoopCacheManager = BB.CoopCacheManager
@@ -13,8 +12,6 @@ local RuntimeSettings = BB.RuntimeSettings
 local HoldPosition = BB.HoldPosition
 local RescueCoordinator = BB.RescueCoordinator
 
-local bb_log = Utils.log
-local safe_call = Utils.safe_call
 local install_method_patch = Utils.install_method_patch
 local game_time = Utils.game_time
 local is_team_ai = UnitOps.is_team_ai
@@ -240,11 +237,11 @@ local function get_team_ai_player_color_limit()
 end
 
 local function get_team_ai_player_color_id(manager, unit)
-    if not (manager and alive(unit)) then
+    if not alive(unit) then
         return nil
     end
 
-    local target_character = manager.character_by_unit and manager:character_by_unit(unit)
+    local target_character = manager:character_by_unit(unit)
     if not (target_character and target_character.taken and target_character.data and target_character.data.ai) then
         return nil
     end
@@ -256,7 +253,7 @@ local function get_team_ai_player_color_id(manager, unit)
         return fallback_color_id
     end
 
-    local characters = manager.characters and manager:characters() or manager._characters or {}
+    local characters = manager:characters()
     local used_human_color_ids = {}
 
     for _, character in ipairs(characters) do
@@ -307,32 +304,23 @@ local function get_head_target_pos(shoot_from_pos, attention)
 end
 
 Hooks:Add("LocalizationManagerPostInit", "BB_LocalizationManager_PostInit", function(loc)
-    if not loc then
-        bb_log("LocalizationManager is nil", "WARN")
-        return
-    end
-
     local loc_dir = BB._path .. "loc/"
-    local files_ok, files = safe_call(file.GetFiles, loc_dir)
+    local files = file.GetFiles(loc_dir)
 
-    if files_ok and files then
-        local lang_key = SystemInfo:language():key()
-        for _, filename in pairs(files) do
-            local lang = filename:match("^(.*)%.txt$")
-            if lang and Idstring(lang):key() == lang_key then
-                safe_call(loc.load_localization_file, loc, loc_dir .. filename)
-                break
-            end
+    local lang_key = SystemInfo:language():key()
+    for _, filename in pairs(files) do
+        local lang = filename:match("^(.*)%.txt$")
+        if lang and Idstring(lang):key() == lang_key then
+            loc:load_localization_file(loc_dir .. filename)
+            break
         end
     end
 
-    safe_call(loc.load_localization_file, loc, BB._path .. "loc/english.txt", false)
+    loc:load_localization_file(BB._path .. "loc/english.txt", false)
 end)
 if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
     Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_ApplyRuntimeSettings", function(self, ...)
-        if RuntimeSettings then
-            RuntimeSettings:apply_all()
-        end
+        RuntimeSettings:apply_all()
     end)
 
     Hooks:PostHook(
@@ -340,17 +328,13 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             "on_simulation_ended",
             "BB_GroupAIStateBase_onSimulationEnded_ResetLevelState",
             function(self, ...)
-                if BB.reset_level_state then
-                    BB:reset_level_state()
-                end
+                BB:reset_level_state()
             end
     )
 
     if Network:is_server() then
         Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_PreloadConcussion", function(self, ...)
-            if RuntimeSettings and RuntimeSettings.apply_concussion then
-                RuntimeSettings:apply_concussion(true)
-            end
+            RuntimeSettings:apply_concussion(true)
         end)
 
         install_method_patch(
@@ -358,38 +342,28 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
                 GroupAIStateBase,
                 "upd_team_AI_distance",
                 function(original, self, ...)
-            if RescueCoordinator and RescueCoordinator.update then
-                safe_call(RescueCoordinator.update, self)
-            end
+            RescueCoordinator.update(self)
 
             if BB:get("keepstaying", false) then
-                if HoldPosition then
-                    HoldPosition:apply_setting(self)
-                    HoldPosition:update_all(self)
-                end
+                HoldPosition:apply_setting(self)
+                HoldPosition:update_all(self)
                 return
             end
 
-            if HoldPosition then
-                HoldPosition:apply_setting(self)
-            end
+            HoldPosition:apply_setting(self)
 
             return original(self, ...)
         end)
 
-        if GroupAIStateBase.on_criminal_objective_complete then
-            install_method_patch(
-                    "BB_GroupAIStateBase_onCriminalObjectiveComplete_HoldPosition",
-                    GroupAIStateBase,
-                    "on_criminal_objective_complete",
-                    function(original, self, unit, objective, ...)
-                if HoldPosition then
-                    HoldPosition:prepare_objective_completion(unit, objective)
-                end
+        install_method_patch(
+                "BB_GroupAIStateBase_onCriminalObjectiveComplete_HoldPosition",
+                GroupAIStateBase,
+                "on_criminal_objective_complete",
+                function(original, self, unit, objective, ...)
+            HoldPosition:prepare_objective_completion(unit, objective)
 
-                return original(self, unit, objective, ...)
-            end)
-        end
+            return original(self, unit, objective, ...)
+        end)
 
         install_method_patch(
                 "BB_GroupAIStateBase_chkSayTeamAICombatChatter",
@@ -405,7 +379,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
         function GroupAIStateBase:_get_balancing_multiplier(balance_multipliers, ...)
             if not balance_multipliers then return 1 end
             local nr_crim = 0
-            for _, u_data in pairs(self:all_char_criminals() or {}) do
+            for _, u_data in pairs(self:all_char_criminals()) do
                 if not u_data.status then
                     nr_crim = nr_crim + 1
                 end
@@ -521,12 +495,11 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
             end
         end)
 
-        if TeamAIDamage._check_bleed_out then
-            install_method_patch(
-                    "BB_TeamAIDamage_checkBleedOut",
-                    TeamAIDamage,
-                    "_check_bleed_out",
-                    function(original, self)
+        install_method_patch(
+                "BB_TeamAIDamage_checkBleedOut",
+                TeamAIDamage,
+                "_check_bleed_out",
+                function(original, self)
                 local was_bleed_out = self._bleed_out
                 local result = original(self)
 
@@ -543,25 +516,23 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 end
 
                 return result
-            end)
-        end
+        end)
 
         function TeamAIDamage:friendly_fire_hit()
             return
         end
 
-        if TeamAIDamage.accuracy_multiplier then
-            install_method_patch(
-                    "BB_TeamAIDamage_accuracyMultiplier",
-                    TeamAIDamage,
-                    "accuracy_multiplier",
-                    function(original, self, ...)
+        install_method_patch(
+                "BB_TeamAIDamage_accuracyMultiplier",
+                TeamAIDamage,
+                "accuracy_multiplier",
+                function(original, self, ...)
                 if BB:get("combat", false)
                 and self._unit and alive(self._unit)
                 and is_team_ai(self._unit)
                 then
                      local ThreatAssessment = BB.ThreatAssessment
-                     local archetype = ThreatAssessment and ThreatAssessment.get_weapon_archetype(self._unit) or "unknown"
+                     local archetype = ThreatAssessment.get_weapon_archetype(self._unit)
                      local acc_mul = CONSTANTS.ACC_MUL_DEFAULT
                      if archetype == "sniper" then
                          acc_mul = CONSTANTS.ACC_MUL_SNIPER
@@ -573,8 +544,7 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                      return original(self, ...) * acc_mul
                 end
                 return original(self, ...)
-            end)
-        end
+        end)
     end
 end
 
@@ -586,14 +556,14 @@ if RequiredScript == "lib/units/interactions/interactionext" then
             end
 
             local gstate = managers.groupai and managers.groupai:state()
-            if not (gstate and gstate.all_AI_criminals) then
+            if not gstate then
                 return
             end
 
             local revive_key = revive_unit:key()
             local rescuer_key = rescuer:key()
 
-            for u_key, u_data in pairs(gstate:all_AI_criminals() or {}) do
+            for u_key, u_data in pairs(gstate:all_AI_criminals()) do
                 if u_key ~= rescuer_key and u_data.unit and alive(u_data.unit) then
                     local brain = u_data.unit:brain()
                     if brain and brain._logic_data then
@@ -618,14 +588,7 @@ if RequiredScript == "lib/units/interactions/interactionext" then
                     if self.tweak_data == "revive" or self.tweak_data == "free" then
                         cancel_other_rescue_objectives(self._unit, player)
 
-                        if RescueCoordinator and RescueCoordinator.on_rescue_interaction then
-                            safe_call(
-                                    RescueCoordinator.on_rescue_interaction,
-                                    self._unit,
-                                    player,
-                                    false
-                            )
-                        end
+                        RescueCoordinator.on_rescue_interaction(self._unit, player, false)
                     end
                 end
         )
@@ -636,11 +599,8 @@ if RequiredScript == "lib/units/interactions/interactionext" then
                 "BB_ReviveInteractionExt_atInteractInterrupt_RescueGuard",
                 function(self, player, complete, ...)
                     if (self.tweak_data == "revive" or self.tweak_data == "free")
-                            and RescueCoordinator
-                            and RescueCoordinator.on_rescue_interaction
                     then
-                        safe_call(
-                                RescueCoordinator.on_rescue_interaction,
+                        RescueCoordinator.on_rescue_interaction(
                                 self._unit,
                                 player,
                                 complete == true
@@ -652,20 +612,18 @@ if RequiredScript == "lib/units/interactions/interactionext" then
 end
 
 if RequiredScript == "lib/managers/criminalsmanager" then
-    if CriminalsManager.character_color_id_by_unit then
-        install_method_patch(
-                "BB_CriminalsManager_characterColorIdByUnit",
-                CriminalsManager,
-                "character_color_id_by_unit",
-                function(original, self, unit, ...)
+    install_method_patch(
+            "BB_CriminalsManager_characterColorIdByUnit",
+            CriminalsManager,
+            "character_color_id_by_unit",
+            function(original, self, unit, ...)
             local team_ai_color_id = get_team_ai_player_color_id(self, unit)
             if team_ai_color_id then
                 return team_ai_color_id
             end
 
             return original(self, unit, ...)
-        end)
-    end
+    end)
 
     if Network:is_server() then
         if tweak_data and tweak_data.character and tweak_data.character.presets then
@@ -693,9 +651,7 @@ if RequiredScript == "lib/managers/criminalsmanager" then
             end
         end
 
-        if RuntimeSettings then
-            RuntimeSettings:apply_all()
-        end
+        RuntimeSettings:apply_all()
     end
 end
 
@@ -732,178 +688,156 @@ if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
     end
 
 if RequiredScript == "lib/units/player_team/teamaimovement" then
-        if Network:is_server() then
-            if TeamAIMovement.set_should_stay then
-                install_method_patch(
-                        "BB_TeamAIMovement_setShouldStay_HoldPosition",
-                        TeamAIMovement,
-                        "set_should_stay",
-                        function(original, self, should_stay, ...)
-                    if not should_stay
-                            and HoldPosition
-                            and HoldPosition:should_preserve_temporary_release(self._unit)
-                    then
-                        return
-                    end
-
-                    if should_stay and HoldPosition then
-                        HoldPosition:capture(self._unit, true)
-                    end
-
-                    local result = original(self, should_stay, ...)
-
-                    if not should_stay and HoldPosition then
-                        HoldPosition:clear(self._unit, true)
-                    end
-
-                    return result
-                end)
+    if Network:is_server() then
+        install_method_patch(
+                "BB_TeamAIMovement_setShouldStay_HoldPosition",
+                TeamAIMovement,
+                "set_should_stay",
+                function(original, self, should_stay, ...)
+            if not should_stay and HoldPosition:should_preserve_temporary_release(self._unit) then
+                return
             end
 
-            if TeamAIMovement.on_SPOOCed then
-                install_method_patch(
-                        "BB_TeamAIMovement_onSPOOCed",
-                        TeamAIMovement,
-                        "on_SPOOCed",
-                        function(original, self, ...)
-                    local settings = Global and Global.game_settings
-                    local is_non_public = settings
-                            and settings.permission
-                            and settings.permission ~= "public"
-                    local is_offline = settings and settings.single_player
-
-                    if BB:get("clkarrest", false) and (is_non_public or is_offline) then
-                        return self:on_cuffed()
-                    end
-
-                    return original(self, ...)
-                end)
+            if should_stay then
+                HoldPosition:capture(self._unit, true)
             end
 
-            install_method_patch(
-                    "BB_TeamAIMovement_checkVisualEquipment",
-                    TeamAIMovement,
-                    "check_visual_equipment",
-                    function(original, self, ...)
-                if is_bot_weapons_active() or BB:get("equip", false) then
-                    return original(self, ...)
+            local result = original(self, should_stay, ...)
+
+            if not should_stay then
+                HoldPosition:clear(self._unit, true)
+            end
+
+            return result
+        end)
+
+        install_method_patch(
+                "BB_TeamAIMovement_onSPOOCed",
+                TeamAIMovement,
+                "on_SPOOCed",
+                function(original, self, ...)
+            local settings = Global.game_settings
+            local is_non_public = settings.permission and settings.permission ~= "public"
+            local is_offline = settings.single_player
+
+            if BB:get("clkarrest", false) and (is_non_public or is_offline) then
+                return self:on_cuffed()
+            end
+
+            return original(self, ...)
+        end)
+
+        install_method_patch(
+                "BB_TeamAIMovement_checkVisualEquipment",
+                TeamAIMovement,
+                "check_visual_equipment",
+                function(original, self, ...)
+            if is_bot_weapons_active() or BB:get("equip", false) then
+                return original(self, ...)
+            end
+
+            local lvl_td = tweak_data.levels[managers.job:current_level_id()]
+            local bags = {
+                { g_medicbag = true },
+                { g_ammobag = true },
+            }
+            local bag = bags[math.random(#bags)]
+
+            for k, v in pairs(bag) do
+                local mesh_obj = self._unit:get_object(Idstring(k))
+                if mesh_obj then
+                    mesh_obj:set_visibility(v)
                 end
+            end
 
-                if not (tweak_data.levels and managers.job) then
-                    return
+            if lvl_td and not lvl_td.player_sequence then
+                local damage_ext = self._unit:damage()
+                if damage_ext then
+                    damage_ext:run_sequence_simple("var_model_02")
                 end
+            end
+        end)
 
-                local lvl_td = tweak_data.levels[managers.job:current_level_id()]
-                local bags = {
-                    { g_medicbag = true },
-                    { g_ammobag = true },
-                }
-                local bag = bags[math.random(#bags)]
+        install_method_patch(
+                "BB_TeamAIMovement_setCarryingBag",
+                TeamAIMovement,
+                "set_carrying_bag",
+                function(original, self, unit, ...)
+            original(self, unit, ...)
 
-                for k, v in pairs(bag) do
-                    local mesh_obj = self._unit:get_object(Idstring(k))
-                    if mesh_obj then
-                        mesh_obj:set_visibility(v)
-                    end
+            if is_bot_weapons_active() or not managers.hud then
+                return
+            end
+
+            local unit_data = self._unit and self._unit:unit_data()
+            local name_label_id = unit_data and unit_data.name_label_id
+            local name_label = name_label_id and managers.hud:_get_name_label(name_label_id)
+
+            if name_label and name_label.panel then
+                local bag_panel = name_label.panel:child("bag")
+                if bag_panel then
+                    bag_panel:set_visible(unit and true or false)
                 end
+            end
+        end)
 
-                if lvl_td and not lvl_td.player_sequence then
-                    local damage_ext = self._unit:damage()
-                    if damage_ext then
-                        safe_call(damage_ext.run_sequence_simple, damage_ext, "var_model_02")
-                    end
-                end
-            end)
+        install_method_patch(
+                "BB_TeamAIMovement_setCarrySpeedModifier",
+                TeamAIMovement,
+                "set_carry_speed_modifier",
+                function(original, self, ...)
+            original(self, ...)
 
-            if TeamAIMovement.set_carrying_bag then
-                install_method_patch(
-                        "BB_TeamAIMovement_setCarryingBag",
-                        TeamAIMovement,
-                        "set_carrying_bag",
-                        function(original, self, unit, ...)
-                    original(self, unit, ...)
+            if self._carry_speed_modifier then
+                local modifier = math.min(1, self._carry_speed_modifier * CONSTANTS.BAG_SPEED_MUL)
+                self._carry_speed_modifier = modifier < 1 and modifier or nil
+            end
+        end)
 
-                    if is_bot_weapons_active() or not managers.hud then
-                        return
-                    end
+        install_method_patch(
+                "BB_TeamAIMovement_getReloadSpeedMultiplier",
+                TeamAIMovement,
+                "get_reload_speed_multiplier",
+                function(original, self, ...)
+            local multiplier = original(self, ...)
+            if BB:get("combat", false)
+                    and not is_bot_weapons_active()
+                    and self._unit
+                    and is_team_ai(self._unit)
+            then
+                return (multiplier or 1) * CONSTANTS.RELOAD_SPEED_MUL
+            end
+            return multiplier
+        end)
 
-                    local name_label_id = self._unit
-                            and self._unit:unit_data()
-                            and self._unit:unit_data().name_label_id
+        install_method_patch(
+                "BB_TeamAIMovement_throwBag",
+                TeamAIMovement,
+                "throw_bag",
+                function(original, self, ...)
+            if self:carrying_bag() then
+                local carry_type_tweak = self:carry_type_tweak()
+                if carry_type_tweak and managers.player then
+                    local data = self._ext_brain and self._ext_brain._logic_data
+                    local objective = data and data.objective
 
-                    local name_label = name_label_id
-                            and managers.hud:_get_name_label(name_label_id)
+                    if objective and objective.type == "revive" then
+                        local no_cooldown = managers.player:is_custom_cooldown_not_active(
+                                "team",
+                                "crew_inspire"
+                        )
 
-                    if name_label and name_label.panel then
-                        local bag_panel = name_label.panel:child("bag")
-                        if bag_panel then
-                            bag_panel:set_visible(unit and true or false)
+                        if no_cooldown or carry_type_tweak.can_run then
+                            return
                         end
                     end
-                end)
+                end
             end
 
-            if TeamAIMovement.set_carry_speed_modifier then
-                install_method_patch(
-                        "BB_TeamAIMovement_setCarrySpeedModifier",
-                        TeamAIMovement,
-                        "set_carry_speed_modifier",
-                        function(original, self, ...)
-                    original(self, ...)
-
-                    if self._carry_speed_modifier then
-                        local modifier = math.min(1, self._carry_speed_modifier * CONSTANTS.BAG_SPEED_MUL)
-                        self._carry_speed_modifier = modifier < 1 and modifier or nil
-                    end
-                end)
-            end
-
-            if TeamAIMovement.get_reload_speed_multiplier then
-                install_method_patch(
-                        "BB_TeamAIMovement_getReloadSpeedMultiplier",
-                        TeamAIMovement,
-                        "get_reload_speed_multiplier",
-                        function(original, self, ...)
-                    local multiplier = original(self, ...)
-                    if BB:get("combat", false)
-                            and not is_bot_weapons_active()
-                            and self._unit
-                            and is_team_ai(self._unit)
-                    then
-                        return (multiplier or 1) * CONSTANTS.RELOAD_SPEED_MUL
-                    end
-                    return multiplier
-                end)
-            end
-
-            if TeamAIMovement.throw_bag then
-                install_method_patch(
-                        "BB_TeamAIMovement_throwBag",
-                        TeamAIMovement,
-                        "throw_bag",
-                        function(original, self, ...)
-                    if self:carrying_bag() then
-                        local carry_type_tweak = self:carry_type_tweak()
-                        if carry_type_tweak and managers.player then
-                            local data = self._ext_brain and self._ext_brain._logic_data
-                            local objective = data and data.objective
-
-                            if objective and objective.type == "revive" then
-                                local no_cooldown = managers.player.is_custom_cooldown_not_active
-                                        and managers.player:is_custom_cooldown_not_active("team", "crew_inspire")
-
-                                if no_cooldown or carry_type_tweak.can_run then
-                                    return
-                                end
-                            end
-                        end
-                    end
-
-                    return original(self, ...)
-                end)
-            end
-        end
+            return original(self, ...)
+        end)
     end
+end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
         if Network:is_server() then
@@ -918,9 +852,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                     function(original, data, ...)
                 local result = original(data, ...)
 
-                if RescueCoordinator and RescueCoordinator.maybe_interrupt_rescue then
-                    safe_call(RescueCoordinator.maybe_interrupt_rescue, data)
-                end
+                RescueCoordinator.maybe_interrupt_rescue(data)
 
                 return result
             end)
@@ -932,9 +864,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                     function(original, data, ...)
                 local result = original(data, ...)
 
-                if RescueCoordinator and RescueCoordinator.maybe_interrupt_rescue then
-                    safe_call(RescueCoordinator.maybe_interrupt_rescue, data)
-                end
+                RescueCoordinator.maybe_interrupt_rescue(data)
 
                 return result
             end)
@@ -950,10 +880,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
 
                         if data.cool then
                             local alert_type = alert_data[1]
-                            if CopLogicBase
-                                    and CopLogicBase.is_alert_aggressive
-                                    and CopLogicBase.is_alert_aggressive(alert_type)
-                            then
+                            if CopLogicBase.is_alert_aggressive(alert_type) then
                                 local unit = data.unit
                                 if alive(unit) and unit:movement() then
                                     unit:movement():set_cool(false)
@@ -1207,14 +1134,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     TeamAILogicAssault,
                     "update",
                     function(original, data, ...)
-                if RescueCoordinator and RescueCoordinator.update_solo_fallback then
-                    local ok, handled = safe_call(
-                            RescueCoordinator.update_solo_fallback,
-                            data
-                    )
-                    if ok and handled then
-                        return
-                    end
+                if RescueCoordinator.update_solo_fallback(data) then
+                    return
                 end
 
                 local my_data = data and data.internal_data
@@ -1234,8 +1155,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 if t >= my_data._next_conc_eval_t then
                     my_data._next_conc_eval_t = t + CONSTANTS.CONC_EVAL_INTERVAL
                     if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
-                        local success, thrown = safe_call(CombatBehavior.throw_concussion_grenade, data, unit)
-                        if success and thrown then
+                        if CombatBehavior.throw_concussion_grenade(data, unit) then
                             my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
                         end
                     end
@@ -1243,17 +1163,15 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
                 if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
                     my_data.melee_t = t
-                    safe_call(CombatBehavior.execute_melee_attack, data, unit)
+                    CombatBehavior.execute_melee_attack(data, unit)
                 end
 
                 if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
                     my_data.reload_t = t
-                    safe_call(CombatBehavior.check_smart_reload, data)
+                    CombatBehavior.check_smart_reload(data)
                 end
 
-                if HoldPosition and HoldPosition.update_combat_pose then
-                    safe_call(HoldPosition.update_combat_pose, HoldPosition, data)
-                end
+                HoldPosition:update_combat_pose(data)
 
                 return result
             end)
@@ -1274,7 +1192,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             )
 
             Hooks:PostHook(TeamAILogicAssault, "exit", "BB_TeamAILogicAssault_exit_SmartReload", function(data, ...)
-                safe_call(CombatBehavior.check_smart_reload, data)
+                CombatBehavior.check_smart_reload(data)
             end)
         end
     end
@@ -1288,7 +1206,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
                     "_set_attention_obj",
                     "BB_TeamAILogicBase_setAttentionObj_CheckIntimidation",
                     function(data, new_att_obj, new_reaction)
-                        safe_call(IntimidationSystem.perform_interaction_check, data)
+                        IntimidationSystem.perform_interaction_check(data)
                     end
             )
 
@@ -1311,11 +1229,6 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
 
                 local forced_lod = CONSTANTS.TEAMAI_SHOOT_LOD_FORCE
                 local ext_base = self._ext_base
-
-                if not forced_lod or not ext_base or type(ext_base.lod_stage) ~= "function" then
-                    return original(self, t)
-                end
-
                 local original_lod_stage = ext_base.lod_stage
 
                 ext_base.lod_stage = function()
@@ -1329,7 +1242,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 ext_base.lod_stage = original_lod_stage
 
                 if not ok then
-                    error(err)
+                    error(err, 0)
                 end
             end)
 
@@ -1404,32 +1317,27 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                 end
             end
 
-            if CopDamage.damage_melee then
-                Hooks:PostHook(
-                        CopDamage,
-                        "damage_melee",
-                        "BB_CopDamage_damageMelee_AddToIntimList",
-                        function(self, attack_data, ...)
-                            if attack_data then
-                                handle_taser_damage(self, attack_data.variant)
-                            end
+            Hooks:PostHook(
+                    CopDamage,
+                    "damage_melee",
+                    "BB_CopDamage_damageMelee_AddToIntimList",
+                    function(self, attack_data, ...)
+                        if attack_data then
+                            handle_taser_damage(self, attack_data.variant)
                         end
-                )
-            end
+                    end
+            )
 
-            if CopDamage.sync_damage_melee then
-                Hooks:PostHook(
-                        CopDamage,
-                        "sync_damage_melee",
-                        "BB_CopDamage_syncDamageMelee_AddToIntimList",
-                        function(self, attacker_unit, damage_percent, damage_effect_percent, i_body, hit_offset_height, variant, death)
-                            handle_taser_damage(self, variant)
-                        end
-                )
-            end
+            Hooks:PostHook(
+                    CopDamage,
+                    "sync_damage_melee",
+                    "BB_CopDamage_syncDamageMelee_AddToIntimList",
+                    function(self, attacker_unit, damage_percent, damage_effect_percent, i_body, hit_offset_height, variant, death)
+                        handle_taser_damage(self, variant)
+                    end
+            )
 
-            if CopDamage.damage_bullet then
-                Hooks:PreHook(
+            Hooks:PreHook(
                     CopDamage,
                     "damage_bullet",
                     "BB_CopDamage_damageBullet_SimpleDamage",
@@ -1444,8 +1352,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                             attack_data.damage = attack_data.damage * dmg_mul
                         end
                     end
-                )
-            end
+            )
 
             Hooks:PreHook(
                     CopDamage,
@@ -1483,34 +1390,27 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 
                             CoopCacheManager.priority_target:clear(u_key_str)
 
-                            if BB.coop_data and BB.coop_data.priority_targets then
-                                BB.coop_data.priority_targets[u_key_str] = nil
-                            end
+                            local coop_data = BB.coop_data
+                            coop_data.priority_targets[u_key_str] = nil
 
-                            if BB.coop_data and BB.coop_data.bot_observations then
-                                for _, snapshot in pairs(BB.coop_data.bot_observations) do
-                                    if snapshot and snapshot.targets then
-                                        snapshot.targets[u_key_str] = nil
-                                    end
+                            for _, snapshot in pairs(coop_data.bot_observations) do
+                                if snapshot and snapshot.targets then
+                                    snapshot.targets[u_key_str] = nil
                                 end
                             end
 
-                            if BB.coop_data and BB.coop_data.dozer_attackers then
-                                for bot_key, target_key in pairs(BB.coop_data.dozer_attackers) do
-                                    if tostring(target_key) == u_key_str then
-                                        BB.coop_data.dozer_attackers[bot_key] = nil
-                                    end
+                            for bot_key, target_key in pairs(coop_data.dozer_attackers) do
+                                if tostring(target_key) == u_key_str then
+                                    coop_data.dozer_attackers[bot_key] = nil
                                 end
                             end
 
-                            if BB.coop_data and BB.coop_data.assignment_snapshot then
-                                local snapshot = BB.coop_data.assignment_snapshot
-                                if snapshot.by_target then
-                                    local owner = snapshot.by_target[u_key_str]
-                                    snapshot.by_target[u_key_str] = nil
-                                    if owner and snapshot.by_bot then
-                                        snapshot.by_bot[owner] = nil
-                                    end
+                            local snapshot = coop_data.assignment_snapshot
+                            if snapshot.by_target then
+                                local owner = snapshot.by_target[u_key_str]
+                                snapshot.by_target[u_key_str] = nil
+                                if owner and snapshot.by_bot then
+                                    snapshot.by_bot[owner] = nil
                                 end
                             end
                         end
@@ -1553,7 +1453,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
 
                 local all_attention_objects = gstate:get_AI_attention_objects_by_filter(data.SO_access_str, my_team)
 
-                for u_key, attention_info in pairs(all_attention_objects or {}) do
+                for u_key, attention_info in pairs(all_attention_objects) do
                     if u_key ~= my_key and not detected_obj[u_key] then
                         local att_tracker = attention_info.nav_tracker
                         if not att_tracker or chk_vis_func(my_tracker, att_tracker) then
@@ -1580,8 +1480,13 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                                             detected_settings.reaction = new_reaction
                                         end
 
-                                        local ok, att_obj = safe_call(CopLogicBase._create_detected_attention_object_data, t, unit, u_key, attention_info, detected_settings)
-                                        if not ok then att_obj = nil end
+                                        local att_obj = CopLogicBase._create_detected_attention_object_data(
+                                                t,
+                                                unit,
+                                                u_key,
+                                                attention_info,
+                                                detected_settings
+                                        )
 
                                         if att_obj then
                                             att_obj.identified = true
@@ -1603,47 +1508,43 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
         if Network:is_server() then
             Hooks:PostHook(CopLogicIdle, "enter", "BB_CopLogicIdle_enter_CheckSmartReload", function(data, ...)
                 if data.is_converted then
-                    safe_call(CombatBehavior.check_smart_reload, data)
+                    CombatBehavior.check_smart_reload(data)
                 end
             end)
 
-            if CopLogicIdle.on_intimidated then
-                install_method_patch(
-                        "BB_CopLogicIdle_onIntimidated",
-                        CopLogicIdle,
-                        "on_intimidated",
-                        function(original, data, amount, aggressor_unit, ...)
-                    local aggressor_key = alive(aggressor_unit) and aggressor_unit:key()
-                    local surrender = original(data, amount, aggressor_unit, ...)
-                    local unit = data.unit
-                    if alive(unit) then
-                        local u_key = unit:key()
+            install_method_patch(
+                    "BB_CopLogicIdle_onIntimidated",
+                    CopLogicIdle,
+                    "on_intimidated",
+                    function(original, data, amount, aggressor_unit, ...)
+                local aggressor_key = alive(aggressor_unit) and aggressor_unit:key()
+                local surrender = original(data, amount, aggressor_unit, ...)
+                local unit = data.unit
+                if alive(unit) then
+                    local u_key = unit:key()
 
-                        BB:on_intimidation_result(u_key, surrender and true or false, aggressor_key)
+                    BB:on_intimidation_result(u_key, surrender and true or false, aggressor_key)
 
-                        BB:add_cop_to_intimidation_list(u_key)
+                    BB:add_cop_to_intimidation_list(u_key)
 
-                        if surrender then
-                            BB:clear_cop_state(u_key)
-                        end
+                    if surrender then
+                        BB:clear_cop_state(u_key)
                     end
-                    return surrender
-                end)
-            end
+                end
+                return surrender
+            end)
 
-            if CopLogicIdle._get_priority_attention then
-                install_method_patch(
-                        "BB_CopLogicIdle_getPriorityAttention",
-                        CopLogicIdle,
-                        "_get_priority_attention",
-                        function(original, data, attention_objects, reaction_func)
-                    if data.is_converted and TeamAILogicIdle and TeamAILogicIdle._get_priority_attention then
-                        return TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
-                    end
+            install_method_patch(
+                    "BB_CopLogicIdle_getPriorityAttention",
+                    CopLogicIdle,
+                    "_get_priority_attention",
+                    function(original, data, attention_objects, reaction_func)
+                if data.is_converted then
+                    return TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
+                end
 
-                    return original(data, attention_objects, reaction_func)
-                end)
-            end
+                return original(data, attention_objects, reaction_func)
+            end)
         end
     end
 
@@ -1653,15 +1554,8 @@ if RequiredScript == "lib/setups/gamesetup" then
             "gather_packages_to_unload",
             "BB_GameSetup_gatherPackagesToUnload_ReleaseResources",
             function(self, ...)
-                if BB.reset_level_state then
-                    BB:reset_level_state()
-                end
-
-                if RuntimeSettings and RuntimeSettings.release_concussion_resource then
-                    RuntimeSettings:release_concussion_resource()
-                elseif CombatHelper and CombatHelper.release_all_dyn_units then
-                    CombatHelper.release_all_dyn_units()
-                end
+                BB:reset_level_state()
+                RuntimeSettings:release_concussion_resource()
             end
     )
 end
@@ -1673,7 +1567,7 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
                     ElementMissionEnd,
                     "on_executed",
                     function(original, self, instigator)
-                local is_offline = Global and Global.game_settings and Global.game_settings.single_player
+                local is_offline = Global.game_settings.single_player
 
                 if is_offline
                         and self._values.enabled
@@ -1703,9 +1597,7 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
                         })
                     end
 
-                    if ElementMissionEnd.super and ElementMissionEnd.super.on_executed then
-                        ElementMissionEnd.super.on_executed(self, instigator)
-                    end
+                    ElementMissionEnd.super.on_executed(self, instigator)
                 else
                     return original(self, instigator)
                 end
@@ -1715,35 +1607,29 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 
 if RequiredScript == "lib/units/player_team/teamaibrain" then
         if Network:is_server() then
-            if TeamAIBrain.on_long_dis_interacted then
-                install_method_patch(
-                        "BB_TeamAIBrain_onLongDisInteracted_HoldPosition",
-                        TeamAIBrain,
-                        "on_long_dis_interacted",
-                        function(original, self, amount, other_unit, secondary, ...)
-                    if HoldPosition then
-                        HoldPosition:begin_long_distance_interaction(self._unit, other_unit, secondary)
-                    end
+            install_method_patch(
+                    "BB_TeamAIBrain_onLongDisInteracted_HoldPosition",
+                    TeamAIBrain,
+                    "on_long_dis_interacted",
+                    function(original, self, amount, other_unit, secondary, ...)
+                HoldPosition:begin_long_distance_interaction(self._unit, other_unit, secondary)
 
-                    local results = {
-                        pcall(original, self, amount, other_unit, secondary, ...)
-                    }
+                local results = {
+                    pcall(original, self, amount, other_unit, secondary, ...)
+                }
 
-                    if HoldPosition then
-                        HoldPosition:end_long_distance_interaction(self._unit)
-                    end
+                HoldPosition:end_long_distance_interaction(self._unit)
 
-                    local ok = table.remove(results, 1)
-                    if not ok then
-                        error(results[1])
-                    end
+                local ok = table.remove(results, 1)
+                if not ok then
+                    error(results[1], 0)
+                end
 
-                    return unpack(results)
-                end)
-            end
+                return unpack(results)
+            end)
 
             Hooks:PostHook(TeamAIBrain, "_reset_logic_data", "BB_TeamAIBrain_resetLogicData_AddTurretMask", function(self)
-                if self._logic_data and self._logic_data.enemy_slotmask and SLOTS and SLOTS.TURRETS then
+                if self._logic_data and self._logic_data.enemy_slotmask then
                     local turrets_mask = World:make_slot_mask(SLOTS.TURRETS)
                     self._logic_data.enemy_slotmask = self._logic_data.enemy_slotmask + turrets_mask
                 end

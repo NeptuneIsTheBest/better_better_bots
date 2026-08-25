@@ -1,6 +1,5 @@
 local BB = _G.BB
 
-local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 
 local CombatHelper = BB.CombatHelper or {}
@@ -23,11 +22,7 @@ function CombatHelper.shield_blocks(attacker, target_head_pos, mask)
 end
 
 function CombatHelper.shield_blocks_default(attacker, target_head_pos)
-    local mask = BB.MASK and BB.MASK.enemy_shield_check
-    if not mask then
-        mask = Utils.get_safe_mask("enemy_shield_check", 8)
-    end
-    return CombatHelper.shield_blocks(attacker, target_head_pos, mask)
+    return CombatHelper.shield_blocks(attacker, target_head_pos, BB.MASK.enemy_shield_check)
 end
 
 function CombatHelper.has_ap_ammo()
@@ -53,24 +48,15 @@ function CombatHelper.acquire_dyn_unit(unit_path)
 
     local resource_type = Idstring("unit")
     local resource_name = Idstring(unit_path)
-    local success = Utils.safe_call(
-            dyn_res.load,
-            dyn_res,
-            resource_type,
-            resource_name,
-            package_name,
-            false
-    )
+    dyn_res:load(resource_type, resource_name, package_name, false)
 
-    if success then
-        owned_dyn_units[unit_path] = {
-            resource_type = resource_type,
-            resource_name = resource_name,
-            package_name = package_name,
-        }
-    end
+    owned_dyn_units[unit_path] = {
+        resource_type = resource_type,
+        resource_name = resource_name,
+        package_name = package_name,
+    }
 
-    return success
+    return true
 end
 
 function CombatHelper.release_dyn_unit(unit_path)
@@ -84,20 +70,15 @@ function CombatHelper.release_dyn_unit(unit_path)
         return false
     end
 
-    local success = Utils.safe_call(
-            dyn_res.unload,
-            dyn_res,
+    dyn_res:unload(
             resource.resource_type,
             resource.resource_name,
             resource.package_name,
             false
     )
+    owned_dyn_units[unit_path] = nil
 
-    if success then
-        owned_dyn_units[unit_path] = nil
-    end
-
-    return success
+    return true
 end
 
 function CombatHelper.release_all_dyn_units()

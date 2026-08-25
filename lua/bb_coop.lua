@@ -913,7 +913,7 @@ function CoopSystem.mark_dangerous_special(enemy_unit, bot_unit)
         local mark_id = managers.player:get_contour_for_marked_enemy()
         if mark_id and (not contour._contour_list or not contour:has_id(mark_id)) then
             UnitOps.say(bot_unit, "f32x_any", true, true)
-            Utils.safe_call(contour.add, contour, mark_id, true)
+            contour:add(mark_id, true)
         end
     end
 end
