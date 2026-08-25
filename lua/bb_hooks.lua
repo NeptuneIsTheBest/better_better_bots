@@ -1130,6 +1130,18 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             TeamAILogicAssault._get_priority_attention = CombatBehavior.find_priority_attention
 
             install_method_patch(
+                    "BB_TeamAILogicAssault_chkShouldTurn_HoldPosition",
+                    TeamAILogicAssault,
+                    "chk_should_turn",
+                    function(original, data, my_data, ...)
+                if HoldPosition:can_turn_in_place(data, my_data) then
+                    return true
+                end
+
+                return original(data, my_data, ...)
+            end)
+
+            install_method_patch(
                     "BB_TeamAILogicAssault_update",
                     TeamAILogicAssault,
                     "update",

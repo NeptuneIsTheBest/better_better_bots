@@ -312,6 +312,7 @@ end
 function HoldPosition:_make_stationary_objective(state)
     if alive(state.follow_unit) then
         return {
+            attitude = "engage",
             called = false,
             destroy_clbk_key = false,
             scan = true,
@@ -323,6 +324,7 @@ function HoldPosition:_make_stationary_objective(state)
     end
 
     return {
+        attitude = "engage",
         is_default = true,
         scan = true,
         type = "free",
@@ -622,6 +624,27 @@ function HoldPosition:is_stationary(unit)
             and not (objective and (objective.type == "revive" or objective.forced))
 end
 
+function HoldPosition:can_turn_in_place(data, my_data)
+    if not (data and my_data)
+            or data.name ~= "assault"
+            or not self:is_stationary(data.unit)
+            or my_data.advancing
+            or my_data.turning
+            or my_data.has_old_action
+            or my_data.acting
+            or my_data.moving_to_cover
+            or my_data.walking_to_cover_shoot_pos
+            or my_data.surprised
+            or my_data._turning_to_intimidate
+    then
+        return false
+    end
+
+    local movement = get_unit_movement(data.unit)
+
+    return movement and not movement:chk_action_forbidden("turn") or false
+end
+
 function HoldPosition:prepare_reload_pose(data)
     local unit = data and data.unit
     if not self:is_stationary(unit) then
@@ -655,6 +678,13 @@ function HoldPosition:update_combat_pose(data)
     then
         return false
     end
+
+    local objective = data.objective
+
+    if objective and objective._bb_hold_stationary then
+        objective.attitude = "engage"
+    end
+    my_data.attitude = "engage"
 
     local anim_data = unit:anim_data()
     if anim_data and anim_data.reload then
