@@ -1219,6 +1219,25 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" then
         if Network:is_server() then
             install_method_patch(
+                    "BB_CopActionShoot_onAttention_Reflex",
+                    CopActionShoot,
+                    "on_attention",
+                    function(original, self, attention, ...)
+                local result = original(self, attention, ...)
+
+                if attention
+                        and BB:get("reflex", false)
+                        and is_team_ai_move_shoot_unit(self._unit)
+                then
+                    self._mod_enable_t = 0
+                    self._aim_transition = nil
+                    self._get_target_pos = nil
+                end
+
+                return result
+            end)
+
+            install_method_patch(
                     "BB_CopActionShoot_update",
                     CopActionShoot,
                     "update",
@@ -1422,25 +1441,148 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
         if Network:is_server() then
             local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
+            local REACT_IDLE = AIAttentionObject.REACT_IDLE
+            local LEGACY_REFLEX_HOOK_ID = "BB_CopLogicBase_updAttentionObjDetection_FastDetect"
 
-            Hooks:PreHook(CopLogicBase, "_upd_attention_obj_detection", "BB_CopLogicBase_updAttentionObjDetection_FastDetect", function(data, min_reaction, max_reaction, ...)
-                if not BB:get("reflex", false) then
+            local function get_reflex_reaction(settings, attention_info, my_team)
+                local reaction = settings.reaction or REACT_IDLE
+
+                if reaction < REACT_COMBAT then
+                    local their_team = attention_info.team
+                    local foes = my_team and my_team.foes
+
+                    if their_team and foes and foes[their_team.id] then
+                        reaction = REACT_COMBAT
+                    end
+                end
+
+                return reaction
+            end
+
+            local function get_reflex_settings(att_obj, settings, reaction)
+                if reaction == settings.reaction then
+                    return settings
+                end
+
+                local current_settings = att_obj and att_obj.settings
+                if current_settings
+                        and current_settings.reaction == reaction
+                        and att_obj._bb_reflex_settings_source == settings
+                then
+                    return current_settings
+                end
+
+                local detected_settings = clone(settings)
+                detected_settings.reaction = reaction
+
+                return detected_settings
+            end
+
+            local function set_reflex_unverified(att_obj, vis_ray)
+                if not att_obj then
                     return
                 end
 
-                local unit = data.unit
-                if not alive(unit) or not is_team_ai(unit) then
-                    return
+                att_obj.verified = false
+                att_obj.vis_ray = vis_ray and (vis_ray.dis or vis_ray.distance) or nil
+            end
+
+            local function set_reflex_verified(
+                    data,
+                    detected_obj,
+                    u_key,
+                    attention_info,
+                    settings,
+                    attention_pos,
+                    my_pos,
+                    t
+            )
+                local att_obj = detected_obj[u_key]
+                local reaction = get_reflex_reaction(settings, attention_info, data.team)
+                local detected_settings = get_reflex_settings(att_obj, settings, reaction)
+
+                if not att_obj then
+                    att_obj = CopLogicBase._create_detected_attention_object_data(
+                            t,
+                            data.unit,
+                            u_key,
+                            attention_info,
+                            detected_settings
+                    )
+
+                    if not att_obj then
+                        return
+                    end
+
+                    detected_obj[u_key] = att_obj
+                else
+                    att_obj.settings = detected_settings
+                    att_obj.reaction = reaction
+                end
+
+                att_obj._bb_reflex_settings_source = detected_settings ~= settings and settings or nil
+
+                local was_identified = att_obj.identified
+                local target_pos = att_obj.m_pos
+                local distance = data.m_pos and target_pos
+                        and mvector3.distance(data.m_pos, target_pos)
+                        or mvector3.distance(my_pos, attention_pos)
+
+                att_obj.notice_progress = nil
+                att_obj.prev_notice_chk_t = nil
+                att_obj.identified = true
+                att_obj.identified_t = was_identified and att_obj.identified_t or t
+                att_obj.reaction = reaction
+                att_obj.verified = true
+                att_obj.verified_t = t
+                att_obj.release_t = nil
+                att_obj.nearly_visible = nil
+                att_obj.vis_ray = nil
+                att_obj.dis = distance
+                att_obj.verified_dis = distance
+                att_obj.next_verify_t = t + (settings.verification_interval or 0)
+
+                if att_obj.m_head_pos then
+                    mvector3.set(att_obj.m_head_pos, attention_pos)
+                else
+                    att_obj.m_head_pos = mvector3.copy(attention_pos)
+                end
+
+                if att_obj.verified_pos then
+                    mvector3.set(att_obj.verified_pos, attention_pos)
+                else
+                    att_obj.verified_pos = mvector3.copy(attention_pos)
+                end
+
+                att_obj.last_verified_pos = mvector3.copy(attention_pos)
+
+                if not was_identified then
+                    local logic = data.logic
+                    if logic and logic.on_attention_obj_identified then
+                        logic.on_attention_obj_identified(data, u_key, att_obj)
+                    end
+
+                    local notice_clbk = detected_settings.notice_clbk
+                    if notice_clbk then
+                        notice_clbk(data.unit, true)
+                    end
+                end
+            end
+
+            local function update_reflex_detection(data, min_reaction, max_reaction)
+                local unit = data and data.unit
+                if not BB:get("reflex", false) or not alive(unit) or not is_team_ai(unit) then
+                    return false
                 end
 
                 local unit_mov = unit:movement()
                 local my_tracker = unit_mov and unit_mov:nav_tracker()
                 local gstate = managers.groupai and managers.groupai:state()
                 if not my_tracker or not gstate then
-                    return
+                    return false
                 end
 
-                local t = data.t
+                local t = data.t or game_time()
                 local my_key = data.key
                 local detected_obj = data.detected_attention_objects or {}
                 data.detected_attention_objects = detected_obj
@@ -1450,56 +1592,89 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 local my_team = data.team
                 local slotmask = data.visibility_slotmask
                 local chk_vis_func = my_tracker.check_visibility
+                local all_attention_objects = gstate:get_AI_attention_objects_by_filter(
+                        data.SO_access_str,
+                        my_team
+                )
 
-                local all_attention_objects = gstate:get_AI_attention_objects_by_filter(data.SO_access_str, my_team)
-
-                for u_key, attention_info in pairs(all_attention_objects) do
-                    if u_key ~= my_key and not detected_obj[u_key] then
+                for u_key, attention_info in pairs(all_attention_objects or {}) do
+                    if u_key ~= my_key then
+                        local att_obj = detected_obj[u_key]
                         local att_tracker = attention_info.nav_tracker
-                        if not att_tracker or chk_vis_func(my_tracker, att_tracker) then
+                        local nav_visible = not att_tracker or chk_vis_func(my_tracker, att_tracker)
+
+                        if nav_visible then
                             local att_handler = attention_info.handler
-                            if att_handler and att_handler.get_attention and att_handler.get_detection_m_pos then
-                                local settings = att_handler:get_attention(my_access, min_reaction, max_reaction, my_team)
+                            if att_handler
+                                    and att_handler.get_attention
+                                    and att_handler.get_detection_m_pos
+                            then
+                                local settings = att_handler:get_attention(
+                                        my_access,
+                                        min_reaction,
+                                        max_reaction,
+                                        my_team
+                                )
                                 local attention_pos = settings and att_handler:get_detection_m_pos()
 
                                 if attention_pos then
-                                    local vis_ray = World:raycast("ray", my_pos, attention_pos, "slot_mask", slotmask, "ray_type", "ai_vision")
-                                    if not vis_ray or (vis_ray.unit and vis_ray.unit:key() == u_key) then
-                                        local new_reaction = settings.reaction or AIAttentionObject.REACT_IDLE
-                                        if new_reaction < REACT_COMBAT then
-                                            local their_team = attention_info.team
-                                            local foes = my_team and my_team.foes
-                                            if their_team and foes and foes[their_team.id] then
-                                                new_reaction = REACT_COMBAT
-                                            end
-                                        end
+                                    local vis_ray = World:raycast(
+                                            "ray",
+                                            my_pos,
+                                            attention_pos,
+                                            "slot_mask",
+                                            slotmask,
+                                            "ray_type",
+                                            "ai_vision"
+                                    )
+                                    local visible = not vis_ray
+                                            or vis_ray.unit and vis_ray.unit:key() == u_key
 
-                                        local detected_settings = settings
-                                        if new_reaction ~= settings.reaction then
-                                            detected_settings = clone(settings)
-                                            detected_settings.reaction = new_reaction
-                                        end
-
-                                        local att_obj = CopLogicBase._create_detected_attention_object_data(
-                                                t,
-                                                unit,
+                                    if visible then
+                                        set_reflex_verified(
+                                                data,
+                                                detected_obj,
                                                 u_key,
                                                 attention_info,
-                                                detected_settings
+                                                settings,
+                                                attention_pos,
+                                                my_pos,
+                                                t
                                         )
-
-                                        if att_obj then
-                                            att_obj.identified = true
-                                            att_obj.identified_t = t
-                                            att_obj.reaction = new_reaction
-                                            detected_obj[u_key] = att_obj
-                                        end
+                                    else
+                                        set_reflex_unverified(att_obj, vis_ray)
                                     end
                                 end
                             end
+                        else
+                            set_reflex_unverified(att_obj)
                         end
                     end
                 end
+
+                return true
+            end
+
+            if Hooks.RemovePreHook then
+                Hooks:RemovePreHook(LEGACY_REFLEX_HOOK_ID, CopLogicBase)
+            end
+
+            install_method_patch(
+                    "BB_CopLogicBase_updAttentionObjDetection_Reflex",
+                    CopLogicBase,
+                    "_upd_attention_obj_detection",
+                    function(original, data, min_reaction, max_reaction, ...)
+                local reflex_active = update_reflex_detection(data, min_reaction, max_reaction)
+                local delay = original(data, min_reaction, max_reaction, ...)
+
+                if reflex_active then
+                    return math.min(
+                            type(delay) == "number" and delay or math.huge,
+                            CONSTANTS.REFLEX_DETECTION_DELAY
+                    )
+                end
+
+                return delay
             end)
         end
     end
