@@ -200,21 +200,14 @@ end
 
 local CoopCacheManager = {}
 
-local CACHE_NAMES = {"teammate_status", "priority_target", "threat_value", "suitability", "teammate_distance", "conc_area_cooldown"}
+local CACHE_NAMES = {"teammate_status", "threat_value", "suitability", "teammate_distance", "conc_area_cooldown"}
 
 function CoopCacheManager.init()
     CoopCacheManager.teammate_status = CacheManager.new({
         ttl = 0.5,
-        max_size = 20,
+        max_size = 64,
         cleanup_interval = 2,
         name = "TeammateStatus"
-    })
-
-    CoopCacheManager.priority_target = CacheManager.new({
-        ttl = 0.5,
-        max_size = 100,
-        cleanup_interval = 5,
-        name = "PriorityTarget"
     })
 
     CoopCacheManager.threat_value = CacheManager.new({

@@ -85,7 +85,7 @@ function ThreatAssessment.count_alive_with_tweak(tweak_set)
     return n
 end
 
-function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
+function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data, target_distance, target_pos)
     if not (alive(bot_unit) and target_data and target_data.unit) then
         return 0
     end
@@ -109,7 +109,8 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
         return 0
     end
     local bot_head = bot_mov:m_head_pos()
-    local dist = target_data.verified_dis
+    local dist = target_distance
+            or target_data.verified_dis
             or (bot_head and target_data.m_head_pos and mvector3.distance(bot_head, target_data.m_head_pos))
             or 1000
 
@@ -163,8 +164,9 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
     end
 
     if flags.shield and not flags.turret then
-        local ap = CombatHelper.has_ap_ammo()
-        local blocked = target_data.m_head_pos and CombatHelper.shield_blocks_default(bot_unit, target_data.m_head_pos)
+        local ap = CombatHelper.has_ap_ammo(bot_unit)
+        local shield_pos = target_pos or target_data.m_head_pos
+        local blocked = shield_pos and CombatHelper.shield_blocks_default(bot_unit, shield_pos)
 
         if blocked and (not ap) and dist > CONSTANTS.MELEE_DISTANCE then
             threat = threat * THREAT_WEIGHTS.SHIELD_BLOCKED_PENALTY
@@ -187,7 +189,7 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data)
 
     threat = threat * ThreatAssessment.distance_falloff(dist, flags)
 
-    CoopCacheManager.threat_value:set(cache_key, threat, 0.3)
+    CoopCacheManager.threat_value:set(cache_key, threat, CONSTANTS.COOP_REFRESH_INTERVAL)
 
     return threat
 end
@@ -207,7 +209,7 @@ function ThreatAssessment.distance_falloff(dist, flags)
     return 1
 end
 
-function ThreatAssessment.calculate_suitability(bot_unit, target_data)
+function ThreatAssessment.calculate_suitability(bot_unit, target_data, target_pos, target_distance)
     if not (alive(bot_unit) and target_data and target_data.unit and alive(target_data.unit)) then
         return 0
     end
@@ -231,7 +233,8 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
         return 0
     end
     local bot_head = bot_mov:m_head_pos()
-    local dist = target_data.verified_dis
+    local dist = target_distance
+            or target_data.verified_dis
             or (bot_head and target_data.m_head_pos and mvector3.distance(bot_head, target_data.m_head_pos))
             or 1000
 
@@ -261,13 +264,14 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
 
     local bot_fwd = bot_mov:m_head_fwd()
     if not bot_fwd then
-        CoopCacheManager.suitability:set(cache_key, score, 0.3)
+        CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_REFRESH_INTERVAL)
         return score
     end
-    local target_pos = target_data.m_head_pos
+    target_pos = target_pos
+            or target_data.m_head_pos
             or (target_unit:movement() and target_unit:movement():m_head_pos())
     if not target_pos then
-        CoopCacheManager.suitability:set(cache_key, score, 0.3)
+        CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_REFRESH_INTERVAL)
         return score
     end
     local dir_to_target = target_pos - bot_head
@@ -276,20 +280,16 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data)
     local angle = mvector3.dot(dir_to_target, bot_fwd)
     score = score + (angle * 50)
 
-    if not target_data.verified then
-        score = score * 0.7
-    end
-
     if flags.shield then
-        local has_ap = CombatHelper.has_ap_ammo()
-        if target_data.m_head_pos and (has_ap or not CombatHelper.shield_blocks_default(bot_unit, target_data.m_head_pos)) then
+        local has_ap = CombatHelper.has_ap_ammo(bot_unit)
+        if target_pos and (has_ap or not CombatHelper.shield_blocks_default(bot_unit, target_pos)) then
             score = score + 30
         else
             score = score - 80
         end
     end
 
-    CoopCacheManager.suitability:set(cache_key, score, 0.3)
+    CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_REFRESH_INTERVAL)
 
     return score
 end

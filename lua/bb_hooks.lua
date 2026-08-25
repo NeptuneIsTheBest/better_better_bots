@@ -840,9 +840,13 @@ end
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
         if Network:is_server() then
-            function TeamAILogicIdle._get_priority_attention(data, attention_objects, reaction_func)
+            install_method_patch(
+                    "BB_TeamAILogicIdle_getPriorityAttention",
+                    TeamAILogicIdle,
+                    "_get_priority_attention",
+                    function(original, data, attention_objects, reaction_func)
                 return CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
-            end
+            end)
 
             install_method_patch(
                     "BB_TeamAILogicIdle_enter_RescueGuard",
@@ -1418,8 +1422,6 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                                 EnemyClassifier._cache_manager:clear(u_key_str)
                             end
 
-                            CoopCacheManager.priority_target:clear(u_key_str)
-
                             local coop_data = BB.coop_data
                             coop_data.priority_targets[u_key_str] = nil
 
@@ -1429,20 +1431,32 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                                 end
                             end
 
-                            for bot_key, target_key in pairs(coop_data.dozer_attackers) do
-                                if tostring(target_key) == u_key_str then
-                                    coop_data.dozer_attackers[bot_key] = nil
+                            local snapshot = coop_data.assignment_snapshot
+                            if snapshot and snapshot.by_target then
+                                local owners = snapshot.owners_by_target
+                                        and snapshot.owners_by_target[u_key_str]
+                                if owners and snapshot.by_bot then
+                                    for owner_key in pairs(owners) do
+                                        snapshot.by_bot[owner_key] = nil
+                                    end
+                                else
+                                    local owner = snapshot.by_target[u_key_str]
+                                    if owner and snapshot.by_bot then
+                                        snapshot.by_bot[owner] = nil
+                                    end
+                                end
+
+                                snapshot.by_target[u_key_str] = nil
+                                if snapshot.owners_by_target then
+                                    snapshot.owners_by_target[u_key_str] = nil
+                                end
+                                if snapshot.target_load then
+                                    snapshot.target_load[u_key_str] = nil
                                 end
                             end
 
-                            local snapshot = coop_data.assignment_snapshot
-                            if snapshot.by_target then
-                                local owner = snapshot.by_target[u_key_str]
-                                snapshot.by_target[u_key_str] = nil
-                                if owner and snapshot.by_bot then
-                                    snapshot.by_bot[owner] = nil
-                                end
-                            end
+                            coop_data.assignment_dirty = true
+                            coop_data.optimal_assignments = snapshot and snapshot.by_bot or {}
                         end
                     end
             )

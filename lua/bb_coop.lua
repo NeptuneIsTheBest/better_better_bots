@@ -8,40 +8,12 @@ local UnitOps = BB.UnitOps
 local EnemyClassifier = BB.EnemyClassifier
 local ThreatAssessment = BB.ThreatAssessment
 local CombatHelper = BB.CombatHelper
+local AssignmentPlanner = BB.AssignmentPlanner
 
 local clamp = Utils.clamp
 local game_time = Utils.game_time
 local get_unit_health_ratio = UnitOps.health_ratio
 local are_units_foes = UnitOps.are_foes
-local is_dozer_unit = EnemyClassifier.is_dozer
-local is_special_unit = EnemyClassifier.is_special
-
-local function get_bot_weapon_dps(bot_unit)
-    if not (bot_unit and alive(bot_unit)) then return 10 end
-    local inventory = bot_unit:inventory()
-    local equipped_unit = inventory and inventory:equipped_unit()
-    local weapon_base = equipped_unit and equipped_unit:base()
-    if weapon_base then
-        local damage = weapon_base._damage or 1
-        local name_id = weapon_base._name_id
-        local fire_rate = 0.1
-
-        local dmg_mul = ThreatAssessment.get_archetype_damage_multiplier(bot_unit)
-
-        if name_id and tweak_data.weapon[name_id] then
-            local weapon_tweak = tweak_data.weapon[name_id]
-            if weapon_tweak.auto and weapon_tweak.auto.fire_rate then
-                fire_rate = weapon_tweak.auto.fire_rate
-            elseif weapon_tweak.fire_mode_data and weapon_tweak.fire_mode_data.fire_rate then
-                fire_rate = weapon_tweak.fire_mode_data.fire_rate
-            end
-        end
-
-        local dps = (damage * dmg_mul) / math.max(fire_rate, 0.05)
-        return dps * 10
-    end
-    return 10
-end
 
 local CoopSystem = {}
 
@@ -49,34 +21,33 @@ CoopSystem.data = BB.coop_data or {
     priority_targets = {},
     teammates_status = {},
     bot_observations = {},
-    dozer_attackers = {},
     team_pressure_cache = {},
-    reloading_count_cache = { count = 0, last_update = 0 },
     optimal_assignments = {},
     assignment_snapshot = {},
     assignment_debug = { dummy_assignments = 0, local_fallbacks = 0 },
     last_assignment_update = 0,
+    assignment_dirty = true,
 }
 BB.coop_data = CoopSystem.data
 
 CoopSystem.data.priority_targets = CoopSystem.data.priority_targets or {}
 CoopSystem.data.teammates_status = CoopSystem.data.teammates_status or {}
 CoopSystem.data.bot_observations = CoopSystem.data.bot_observations or {}
-CoopSystem.data.dozer_attackers = CoopSystem.data.dozer_attackers or {}
 CoopSystem.data.team_pressure_cache = CoopSystem.data.team_pressure_cache or {}
-CoopSystem.data.reloading_count_cache = CoopSystem.data.reloading_count_cache or { count = 0, last_update = 0 }
 CoopSystem.data.optimal_assignments = CoopSystem.data.optimal_assignments or {}
 CoopSystem.data.assignment_snapshot = CoopSystem.data.assignment_snapshot or {}
 CoopSystem.data.assignment_debug = CoopSystem.data.assignment_debug or { dummy_assignments = 0, local_fallbacks = 0 }
-
-CoopSystem._last_scan = BB._last_coop_scan or {}
-BB._last_coop_scan = CoopSystem._last_scan
+if CoopSystem.data.assignment_dirty == nil then
+    CoopSystem.data.assignment_dirty = true
+end
 
 local function _make_assignment_snapshot(t)
     return {
         generated_at = t or 0,
         by_bot = {},
         by_target = {},
+        owners_by_target = {},
+        target_load = {},
         candidate_counts = {},
         dummy_assignments = 0,
         local_fallbacks = 0,
@@ -101,13 +72,8 @@ function CoopSystem.reset_level_state()
     data.priority_targets = _clear_table(data.priority_targets)
     data.teammates_status = _clear_table(data.teammates_status)
     data.bot_observations = _clear_table(data.bot_observations)
-    data.dozer_attackers = _clear_table(data.dozer_attackers)
     data.team_pressure_cache = _clear_table(data.team_pressure_cache)
     data.optimal_assignments = _clear_table(data.optimal_assignments)
-
-    data.reloading_count_cache = _clear_table(data.reloading_count_cache)
-    data.reloading_count_cache.count = 0
-    data.reloading_count_cache.last_update = 0
 
     data.assignment_snapshot = _clear_table(data.assignment_snapshot)
     for key, value in pairs(_make_assignment_snapshot(0)) do
@@ -118,28 +84,51 @@ function CoopSystem.reset_level_state()
     data.assignment_debug.dummy_assignments = 0
     data.assignment_debug.local_fallbacks = 0
     data.last_assignment_update = 0
+    data.assignment_dirty = true
 
-    local last_scan = BB._last_coop_scan
-    if type(last_scan) ~= "table" then
-        last_scan = {}
-        BB._last_coop_scan = last_scan
-    else
-        _clear_table(last_scan)
-    end
-
-    if CoopSystem._last_scan ~= last_scan then
-        _clear_table(CoopSystem._last_scan)
-        CoopSystem._last_scan = last_scan
-    end
+    CoopCacheManager.teammate_status:clear()
+    CoopCacheManager.threat_value:clear()
+    CoopCacheManager.suitability:clear()
+    CoopCacheManager.teammate_distance:clear()
 
     return true
 end
 
 local function _drop_bot_state(bot_key)
     CoopSystem.data.teammates_status[bot_key] = nil
-    CoopSystem.data.dozer_attackers[bot_key] = nil
     CoopSystem.data.bot_observations[bot_key] = nil
     CoopCacheManager.teammate_status:clear(bot_key)
+
+    local snapshot = CoopSystem.data.assignment_snapshot
+    local target_key = snapshot and snapshot.by_bot and snapshot.by_bot[bot_key]
+    if target_key then
+        snapshot.owners_by_target = snapshot.owners_by_target or {}
+        snapshot.target_load = snapshot.target_load or {}
+        snapshot.by_bot[bot_key] = nil
+        local owners = snapshot.owners_by_target and snapshot.owners_by_target[target_key]
+        if owners then
+            owners[bot_key] = nil
+            local load = math.max((snapshot.target_load[target_key] or 1) - 1, 0)
+            snapshot.target_load[target_key] = load
+            if load == 0 then
+                snapshot.owners_by_target[target_key] = nil
+                snapshot.by_target[target_key] = nil
+                snapshot.target_load[target_key] = nil
+            elseif snapshot.by_target[target_key] == bot_key then
+                local replacement
+                for owner_key in pairs(owners) do
+                    if not replacement or tostring(owner_key) < tostring(replacement) then
+                        replacement = owner_key
+                    end
+                end
+                snapshot.by_target[target_key] = replacement
+            end
+        elseif snapshot.by_target then
+            snapshot.by_target[target_key] = nil
+        end
+    end
+
+    CoopSystem.data.assignment_dirty = true
 end
 
 local function _cleanup_stale_teammates(now)
@@ -167,13 +156,15 @@ local function _cleanup_stale_observations(now)
 
         if stale_snapshot then
             CoopSystem.data.bot_observations[bot_key] = nil
+            CoopSystem.data.assignment_dirty = true
         else
             for target_key, observation in pairs(snapshot.targets) do
                 local stale_target = not (observation and observation.unit and alive(observation.unit))
-                        or (now - (observation.last_seen or 0)) > CONSTANTS.COOP_TARGET_OBSERVATION_TTL
+                        or now > (observation.valid_until or observation.last_seen or 0)
 
                 if stale_target then
                     snapshot.targets[target_key] = nil
+                    CoopSystem.data.assignment_dirty = true
                 end
             end
         end
@@ -184,7 +175,7 @@ function CoopSystem.is_enabled()
     return BB:get("coop", false)
 end
 
-function CoopSystem.update_teammate_status(unit)
+function CoopSystem.update_teammate_status(unit, data)
     if not alive(unit) or not CoopSystem.is_enabled() then
         return
     end
@@ -193,7 +184,8 @@ function CoopSystem.update_teammate_status(unit)
     local t = game_time()
 
     local cached = CoopCacheManager.teammate_status:get(u_key)
-    if cached and (t - cached.last_update) < 0.3 then
+    if cached and (t - cached.last_update) < CONSTANTS.COOP_REFRESH_INTERVAL then
+        CoopSystem.data.teammates_status[u_key] = cached
         return cached
     end
 
@@ -203,6 +195,16 @@ function CoopSystem.update_teammate_status(unit)
     local anim_data = unit:anim_data()
     local is_reloading = anim_data and anim_data.reload
     local facing_dir = unit_movement and unit_movement:m_head_fwd()
+    local combat_status = UnitOps.combat_status(unit)
+    local is_downed = combat_status.is_downed
+    local is_arrested = combat_status.is_arrested
+    local is_tased = combat_status.is_tased
+    local can_fight = combat_status.can_fight
+
+    local previous = CoopSystem.data.teammates_status[u_key]
+    local assignment_state_changed = not previous
+            or previous.can_fight ~= can_fight
+            or previous.is_reloading ~= is_reloading
 
     local status = {
         unit = unit,
@@ -212,13 +214,26 @@ function CoopSystem.update_teammate_status(unit)
         in_danger = health_ratio < 0.3,
         needs_cover = health_ratio < 0.15,
         is_reloading = is_reloading,
-        is_downed = unit:character_damage() and unit:character_damage():need_revive(),
+        is_downed = is_downed,
+        is_arrested = is_arrested,
+        is_tased = is_tased,
+        can_fight = can_fight,
+        assignment_state_changed = assignment_state_changed,
+        logic_name = data and data.name or nil,
         last_update = t,
     }
 
     CoopCacheManager.teammate_status:set(u_key, status, 1)
 
     CoopSystem.data.teammates_status[u_key] = status
+
+    if assignment_state_changed then
+        CoopSystem.data.assignment_dirty = true
+    end
+
+    if not can_fight then
+        CoopSystem.data.bot_observations[u_key] = nil
+    end
 
     return status
 end
@@ -258,46 +273,6 @@ function CoopSystem.count_active_teammates()
     return count
 end
 
-function CoopSystem.count_dozer_attackers(dozer_u_key)
-    if not dozer_u_key then
-        return 0
-    end
-
-    _cleanup_stale_teammates(game_time())
-
-    local count = 0
-    local t = game_time()
-
-    local dozer_u_key_str = tostring(dozer_u_key)
-
-    for u_key, target_u_key in pairs(CoopSystem.data.dozer_attackers) do
-        if target_u_key == dozer_u_key_str then
-            local teammate = CoopSystem.data.teammates_status[u_key]
-            if teammate and teammate.unit and alive(teammate.unit)
-                    and (t - (teammate.last_update or 0)) < CONSTANTS.DOZER_FOCUS_REFRESH
-            then
-                count = count + 1
-            else
-                CoopSystem.data.dozer_attackers[u_key] = nil
-            end
-        end
-    end
-
-    return count
-end
-
-function CoopSystem.calculate_dozer_penalty(enemy_key, bot_key)
-    local current_attackers = CoopSystem.count_dozer_attackers(enemy_key)
-    local already_targeting = CoopSystem.data.dozer_attackers[bot_key] == tostring(enemy_key)
-    local other_attackers = already_targeting and (current_attackers - 1) or current_attackers
-    other_attackers = math.max(0, other_attackers)
-
-    if other_attackers > 0 then
-        return math.pow(CONSTANTS.DOZER_PENALTY_BASE, other_attackers)
-    end
-    return 1
-end
-
 function CoopSystem.is_direction_covered(target_pos, my_unit)
     if not (target_pos and alive(my_unit)) then
         return false
@@ -319,7 +294,12 @@ function CoopSystem.is_direction_covered(target_pos, my_unit)
     local my_key = tostring(my_unit:key())
 
     for u_key, status in pairs(CoopSystem.data.teammates_status) do
-        if u_key ~= my_key and status.position and status.facing_direction then
+        if u_key ~= my_key
+                and status.can_fight
+                and not status.is_reloading
+                and status.position
+                and status.facing_direction
+        then
             local other_to_target = target_pos - status.position
             mvector3.normalize(other_to_target)
 
@@ -335,227 +315,256 @@ function CoopSystem.is_direction_covered(target_pos, my_unit)
     return false
 end
 
-local Hungarian = BB.Hungarian
+local function _count_entries(value)
+    local count = 0
+    for _ in pairs(value or {}) do
+        count = count + 1
+    end
+    return count
+end
 
-function CoopSystem.update_optimal_assignments()
+local function _primary_owner(owners)
+    local primary
+    for bot_key in pairs(owners or {}) do
+        if not primary or tostring(bot_key) < tostring(primary) then
+            primary = bot_key
+        end
+    end
+    return primary
+end
+
+local function _role_changed(old_snapshot, restricted, fixed_target)
+    if not old_snapshot then
+        return restricted or fixed_target ~= nil
+    end
+
+    return old_snapshot.restricted ~= restricted
+            or tostring(old_snapshot.fixed_target or "") ~= tostring(fixed_target or "")
+end
+
+function CoopSystem.submit_candidates(data, candidates, role)
+    if not (CoopSystem.is_enabled() and data and alive(data.unit)) then
+        return CoopSystem.get_assignment_snapshot()
+    end
+
+    local bot_key = tostring(data.key or data.unit:key())
+    local status = CoopSystem.update_teammate_status(data.unit, data)
+    local old_snapshot = CoopSystem.data.bot_observations[bot_key]
+
+    if not (status and status.can_fight) then
+        if old_snapshot then
+            CoopSystem.data.bot_observations[bot_key] = nil
+            CoopSystem.data.assignment_dirty = true
+        end
+        return CoopSystem.update_optimal_assignments(true)
+    end
+
+    local t = data.t or game_time()
+    local restricted = role and role.restricted == true or false
+    local fixed_target = role and role.target_key and tostring(role.target_key) or nil
+    local observation_snapshot = {
+        last_update = t,
+        targets = {},
+        restricted = restricted,
+        fixed_target = fixed_target,
+    }
+    local urgent_changed = false
+
+    for target_key, candidate in pairs(candidates or {}) do
+        target_key = tostring(target_key)
+        if candidate.coop_eligible
+                and candidate.data
+                and alive(candidate.data.unit)
+                and (candidate.valid_until or 0) >= t
+        then
+            local old_target = old_snapshot and old_snapshot.targets and old_snapshot.targets[target_key]
+            local score = math.max(candidate.coop_score or 0, 0)
+            if status.is_reloading then
+                score = score * CONSTANTS.COOP_RELOADING_FACTOR
+            end
+
+            observation_snapshot.targets[target_key] = {
+                unit = candidate.data.unit,
+                u_key = candidate.data.u_key or candidate.data.unit:key(),
+                score = score,
+                priority = score,
+                priority_slot = candidate.priority_slot,
+                urgency = candidate.urgency or 1,
+                focus = candidate.focus,
+                durable = candidate.durable == true,
+                last_seen = t,
+                valid_until = candidate.valid_until,
+                state = candidate.state or "normal",
+                verified = candidate.data.verified == true,
+                reaction = candidate.reaction,
+                pos = candidate.target_pos,
+            }
+
+            local was_urgent = old_target and (old_target.urgency or 1) >= 3 or false
+            local is_urgent = (candidate.urgency or 1) >= 3
+            if was_urgent ~= is_urgent then
+                urgent_changed = true
+            end
+        end
+    end
+
+    for target_key, old_target in pairs(old_snapshot and old_snapshot.targets or {}) do
+        if (old_target.urgency or 1) >= 3
+                and not observation_snapshot.targets[target_key]
+        then
+            urgent_changed = true
+            break
+        end
+    end
+
+    if fixed_target and not observation_snapshot.targets[fixed_target] then
+        fixed_target = nil
+        observation_snapshot.fixed_target = nil
+    end
+
+    local old_assignment = CoopSystem.get_assigned_target(bot_key)
+    local assignment_invalid = old_assignment
+            and not observation_snapshot.targets[tostring(old_assignment)]
+    local role_state_changed = _role_changed(old_snapshot, restricted, fixed_target)
+
+    CoopSystem.data.bot_observations[bot_key] = observation_snapshot
+    CoopSystem.data.assignment_dirty = true
+
+    return CoopSystem.update_optimal_assignments(
+            urgent_changed
+                    or assignment_invalid
+                    or role_state_changed
+                    or status.assignment_state_changed
+    )
+end
+
+function CoopSystem.update_optimal_assignments(force)
     local t = game_time()
     _cleanup_stale_observations(t)
 
-    if CoopSystem.data.last_assignment_update and (t - CoopSystem.data.last_assignment_update) < CONSTANTS.ASSIGNMENT_UPDATE_INTERVAL then
-        return
-    end
-    CoopSystem.data.last_assignment_update = t
-
-    local active_bots = {}
-    for u_key, status in pairs(CoopSystem.data.teammates_status) do
-        if status.unit and alive(status.unit) then
-            table.insert(active_bots, {
-                key = u_key,
-                unit = status.unit,
-                pos = status.position,
-                fwd = status.facing_direction,
-                weapon_type = ThreatAssessment.get_weapon_archetype(status.unit)
-            })
-        end
-    end
-    table.sort(active_bots, function(a, b)
-        return tostring(a.key) < tostring(b.key)
-    end)
-
-    local n_bots = #active_bots
-    if n_bots < 1 then
+    if not CoopSystem.is_enabled() then
         CoopSystem.data.assignment_snapshot = _make_assignment_snapshot(t)
         CoopSystem.data.optimal_assignments = {}
-        return
+        CoopSystem.data.assignment_dirty = false
+        return CoopSystem.data.assignment_snapshot
     end
 
-    local valid_enemies = {}
-    local targets = CoopSystem.get_priority_targets()
+    if not force then
+        if not CoopSystem.data.assignment_dirty then
+            return CoopSystem.get_assignment_snapshot()
+        end
+        if CoopSystem.data.last_assignment_update
+                and (t - CoopSystem.data.last_assignment_update) < CONSTANTS.ASSIGNMENT_UPDATE_INTERVAL
+        then
+            return CoopSystem.get_assignment_snapshot()
+        end
+    end
 
-    for k, v in pairs(targets) do
-        if v.unit and alive(v.unit) then
-            local pos = v.unit:movement() and v.unit:movement():m_head_pos()
-            if pos then
-                table.insert(valid_enemies, {
-                    key = k,
-                    unit = v.unit,
-                    pos = pos,
-                    priority = v.priority or 1,
-                    state = v.state,
-                    is_special = is_special_unit(v.unit)
-                })
+    CoopSystem.data.last_assignment_update = t
+    CoopSystem.data.assignment_dirty = false
+
+    local workers = {}
+    local edges = {}
+    local fixed_by_bot = {}
+    local targets_by_key = {}
+    local candidate_counts = {}
+    local active_count = 0
+
+    for bot_key, status in pairs(CoopSystem.data.teammates_status) do
+        local bot_snapshot = CoopSystem.data.bot_observations[bot_key]
+        if status
+                and status.can_fight
+                and status.unit
+                and alive(status.unit)
+                and bot_snapshot
+                and (t - (bot_snapshot.last_update or 0)) <= CONSTANTS.COOP_BOT_OBSERVATION_TTL
+        then
+            active_count = active_count + 1
+            candidate_counts[bot_key] = _count_entries(bot_snapshot.targets)
+
+            if bot_snapshot.restricted then
+                if bot_snapshot.fixed_target
+                        and bot_snapshot.targets[bot_snapshot.fixed_target]
+                then
+                    fixed_by_bot[bot_key] = bot_snapshot.fixed_target
+                end
+            else
+                table.insert(workers, { key = bot_key })
+                edges[bot_key] = {}
+            end
+
+            for target_key, observation in pairs(bot_snapshot.targets or {}) do
+                if observation.unit
+                        and alive(observation.unit)
+                        and t <= (observation.valid_until or 0)
+                then
+                    local target = targets_by_key[target_key]
+                    if not target then
+                        target = {
+                            key = target_key,
+                            unit = observation.unit,
+                            urgency = observation.urgency or 1,
+                            max_score = observation.score or 0,
+                            durable = observation.durable == true,
+                        }
+                        targets_by_key[target_key] = target
+                    else
+                        target.urgency = math.max(target.urgency or 1, observation.urgency or 1)
+                        target.max_score = math.max(target.max_score or 0, observation.score or 0)
+                        target.durable = target.durable or observation.durable == true
+                    end
+
+                    if not bot_snapshot.restricted then
+                        edges[bot_key][target_key] = {
+                            score = observation.score or 0,
+                            urgency = observation.urgency or 1,
+                        }
+                    end
+                end
             end
         end
     end
-    table.sort(valid_enemies, function(a, b)
+
+    table.sort(workers, function(a, b)
         return tostring(a.key) < tostring(b.key)
     end)
 
-    local n_enemies = #valid_enemies
-    local empty_snapshot = _make_assignment_snapshot(t)
-    for _, bot in ipairs(active_bots) do
-        empty_snapshot.candidate_counts[bot.key] = 0
-    end
-
-    if n_enemies == 0 then
-        empty_snapshot.dummy_assignments = n_bots
-        CoopSystem.data.assignment_debug.dummy_assignments = (CoopSystem.data.assignment_debug.dummy_assignments or 0) + n_bots
-        CoopSystem.data.assignment_snapshot = empty_snapshot
-        CoopSystem.data.optimal_assignments = {}
-        return
-    end
-
-    local cost_matrix = {}
-    local MAX_COST = 1e9
-    local vis_mask = BB.MASK.AI_visibility
-    local total_jobs = n_enemies + n_bots
-
-    local coverage_cache = {}
-    for j, enemy in ipairs(valid_enemies) do
-        coverage_cache[j] = {}
-        for i, bot in ipairs(active_bots) do
-            local bot_snapshot = CoopSystem.data.bot_observations[bot.key]
-            local bot_observation = bot_snapshot and bot_snapshot.targets and bot_snapshot.targets[enemy.key]
-            coverage_cache[j][i] = bot_observation and enemy.pos and not CoopSystem.is_direction_covered(enemy.pos, bot.unit) or false
+    local targets = {}
+    for _, target in pairs(targets_by_key) do
+        if target.urgency >= 3 then
+            target.focus = "urgent"
+        elseif target.durable and active_count >= 3 then
+            target.focus = "durable"
         end
+        table.insert(targets, target)
     end
 
-    local raycast_cache = {}
-    for i, bot in ipairs(active_bots) do
-        raycast_cache[i] = {}
-        local bot_snapshot = CoopSystem.data.bot_observations[bot.key]
-        for j, enemy in ipairs(valid_enemies) do
-            local bot_observation = bot_snapshot and bot_snapshot.targets and bot_snapshot.targets[enemy.key]
-            if bot.pos and enemy.pos and bot_observation then
-                local ray = World:raycast("ray", bot.pos, enemy.pos, "slot_mask", vis_mask, "ray_type", "ai_vision", "report")
-                raycast_cache[i][j] = ray and CONSTANTS.ASSIGNMENT_BLOCKED_FACTOR or 1
-            else
-                raycast_cache[i][j] = CONSTANTS.ASSIGNMENT_BLOCKED_FACTOR
-            end
-        end
-    end
-
-    local candidate_counts = {}
-    for i, bot in ipairs(active_bots) do
-        cost_matrix[i] = {}
-        local bot_snapshot = CoopSystem.data.bot_observations[bot.key]
-        local bot_targets = bot_snapshot and bot_snapshot.targets or {}
-        local candidate_count = 0
-
-        for j, enemy in ipairs(valid_enemies) do
-            local bot_observation = bot_targets[enemy.key]
-
-            if bot_observation then
-                candidate_count = candidate_count + 1
-
-                local priority = math.max(enemy.priority or 1, bot_observation.priority or 1)
-                local visibility_factor = raycast_cache[i] and raycast_cache[i][j] or 1
-
-                local dist = 1
-                if bot.pos and enemy.pos then
-                    dist = mvector3.distance(bot.pos, enemy.pos)
-                end
-
-                local dist_factor = 1 / (1 + dist / CONSTANTS.DIST_NORM_DIVISOR)
-
-                local angle_factor = 1
-                if bot.fwd and bot.pos and enemy.pos then
-                    local to_enemy = enemy.pos - bot.pos
-                    if mvector3.length(to_enemy) > 0.1 then
-                        mvector3.normalize(to_enemy)
-                        local dot = mvector3.dot(bot.fwd, to_enemy)
-                        angle_factor = CONSTANTS.ANGLE_FACTOR_BASE + CONSTANTS.ANGLE_FACTOR_SCALE * math.max(0, dot)
-                    end
-                end
-
-                local coverage_bonus = 0
-                if coverage_cache[j] and coverage_cache[j][i] then
-                    coverage_bonus = THREAT_WEIGHTS.DIRECTION_BONUS
-                end
-
-                local dozer_penalty = 1
-                if is_dozer_unit(enemy.unit) then
-                    dozer_penalty = CoopSystem.calculate_dozer_penalty(enemy.key, bot.key)
-                end
-
-                local state_bonus = 0
-                if enemy.state == "tasing_teammate" then
-                    state_bonus = THREAT_WEIGHTS.TASING_BONUS
-                elseif enemy.state == "spooc_attacking" then
-                    state_bonus = THREAT_WEIGHTS.SPOOC_ATTACK_BONUS
-                elseif enemy.state == "dozer_facing" then
-                    state_bonus = THREAT_WEIGHTS.COOP_DOZER_FACING_BONUS
-                elseif enemy.state == "near_teammate" then
-                    state_bonus = CONSTANTS.NEAR_TEAMMATE_STATE_BONUS
-                end
-
-                local enemy_health_ratio = get_unit_health_ratio(enemy.unit)
-                local bot_dps = get_bot_weapon_dps(bot.unit)
-                local ttk_score = 0
-                if bot_dps > 0 then
-                    local kill_power = math.min(bot_dps / 100, 5.0)
-                    local health_factor = math.max(enemy_health_ratio, 0.1)
-                    ttk_score = kill_power / health_factor
-                    if enemy_health_ratio < 0.3 then
-                        ttk_score = ttk_score * CONSTANTS.LOW_HEALTH_TTK_BONUS
-                    end
-                    if enemy.is_special and enemy_health_ratio > 0.5 then
-                        ttk_score = math.min(ttk_score, 5)
-                    end
-                end
-                ttk_score = math.min(ttk_score, CONSTANTS.TTK_SCORE_CAP)
-
-                local weapon_type_score = 0
-                local bot_weapon = bot.weapon_type
-                if bot_weapon == "sniper" then
-                    if enemy.is_special then
-                        weapon_type_score = CONSTANTS.SNIPER_SPECIAL_BONUS
-                    end
-                elseif bot_weapon == "shotgun" then
-                    if dist < CONSTANTS.SHOTGUN_EFFECTIVE_RANGE then
-                        weapon_type_score = math.max(0, CONSTANTS.SHOTGUN_MAX_BONUS - dist / CONSTANTS.SHOTGUN_RANGE_DIVISOR)
-                    end
-                    if enemy.is_special and dist < CONSTANTS.SHOTGUN_EFFECTIVE_RANGE then
-                        weapon_type_score = weapon_type_score + CONSTANTS.SHOTGUN_SPECIAL_BONUS
-                    end
-                end
-
-                local score = ((priority + coverage_bonus + state_bonus + weapon_type_score) + ttk_score) * dist_factor * angle_factor * dozer_penalty * visibility_factor
-                cost_matrix[i][j] = MAX_COST - math.max(score, 0) * 1000
-            else
-                cost_matrix[i][j] = MAX_COST
-            end
-        end
-
-        candidate_counts[bot.key] = candidate_count
-
-        for j = n_enemies + 1, total_jobs do
-            cost_matrix[i][j] = MAX_COST - CONSTANTS.ASSIGNMENT_DUMMY_SCORE * 1000
-        end
-    end
-
-    local assignment = Hungarian.solve(cost_matrix, n_bots, total_jobs)
+    local old_snapshot = CoopSystem.get_assignment_snapshot()
+    local result = AssignmentPlanner.solve({
+        bots = workers,
+        targets = targets,
+        edges = edges,
+        previous_by_bot = old_snapshot.by_bot,
+        fixed_by_bot = fixed_by_bot,
+    })
 
     local snapshot = _make_assignment_snapshot(t)
+    snapshot.by_bot = result.by_bot
+    snapshot.owners_by_target = result.owners_by_target
+    snapshot.target_load = result.target_load
     snapshot.candidate_counts = candidate_counts
+    snapshot.dummy_assignments = result.dummy_assignments or 0
 
-    for bot_idx, enemy_idx in pairs(assignment) do
-        if bot_idx <= n_bots then
-            local bot_key = active_bots[bot_idx].key
-
-            if enemy_idx <= n_enemies and candidate_counts[bot_key] > 0 then
-                local enemy_key = valid_enemies[enemy_idx].key
-                snapshot.by_bot[bot_key] = enemy_key
-                snapshot.by_target[enemy_key] = bot_key
-            else
-                snapshot.dummy_assignments = snapshot.dummy_assignments + 1
-            end
-        end
+    for target_key, owners in pairs(snapshot.owners_by_target) do
+        snapshot.by_target[target_key] = _primary_owner(owners)
     end
 
-    CoopSystem.data.assignment_debug.dummy_assignments = (CoopSystem.data.assignment_debug.dummy_assignments or 0) + snapshot.dummy_assignments
+    CoopSystem.data.assignment_debug.dummy_assignments =
+            (CoopSystem.data.assignment_debug.dummy_assignments or 0)
+            + snapshot.dummy_assignments
     CoopSystem.data.assignment_snapshot = snapshot
     CoopSystem.data.optimal_assignments = snapshot.by_bot
+    return snapshot
 end
 
 function CoopSystem.get_assignment_snapshot()
@@ -563,6 +572,15 @@ function CoopSystem.get_assignment_snapshot()
     if not (snapshot and snapshot.by_bot and snapshot.by_target and snapshot.candidate_counts) then
         snapshot = _make_assignment_snapshot(game_time())
         CoopSystem.data.assignment_snapshot = snapshot
+    end
+
+    snapshot.owners_by_target = snapshot.owners_by_target or {}
+    snapshot.target_load = snapshot.target_load or {}
+    for target_key, owner in pairs(snapshot.by_target) do
+        if owner and not snapshot.owners_by_target[target_key] then
+            snapshot.owners_by_target[target_key] = { [owner] = true }
+            snapshot.target_load[target_key] = 1
+        end
     end
 
     snapshot.age = math.max(0, game_time() - (snapshot.generated_at or 0))
@@ -584,6 +602,45 @@ function CoopSystem.get_target_owner(target_u_key)
     return snapshot.by_target[tostring(target_u_key)]
 end
 
+function CoopSystem.get_target_owners(target_u_key)
+    local snapshot = CoopSystem.get_assignment_snapshot()
+    return snapshot.owners_by_target[tostring(target_u_key)] or {}
+end
+
+function CoopSystem.get_target_load(target_u_key)
+    local snapshot = CoopSystem.get_assignment_snapshot()
+    return snapshot.target_load[tostring(target_u_key)] or 0
+end
+
+function CoopSystem.get_local_target_utility(bot_key, target_key, candidate)
+    bot_key = tostring(bot_key)
+    target_key = tostring(target_key)
+    local snapshot = CoopSystem.get_assignment_snapshot()
+    local owners = snapshot.owners_by_target[target_key] or {}
+    local load = snapshot.target_load[target_key] or 0
+    if owners[bot_key] then
+        load = math.max(load - 1, 0)
+    end
+
+    local focus = candidate.focus
+    if focus == "durable" then
+        local combat_ready = 0
+        for _, status in pairs(CoopSystem.data.teammates_status) do
+            if status and status.can_fight and status.unit and alive(status.unit) then
+                combat_ready = combat_ready + 1
+            end
+        end
+        if combat_ready < 3 then
+            focus = nil
+        end
+    end
+
+    return AssignmentPlanner.utility_for_load({
+        score = candidate.coop_score or candidate.score or 0,
+        urgency = candidate.urgency or 1,
+    }, target_key, load, focus, snapshot.by_bot[bot_key])
+end
+
 function CoopSystem.note_local_fallback()
     local debug = CoopSystem.data.assignment_debug
     debug.local_fallbacks = (debug.local_fallbacks or 0) + 1
@@ -600,37 +657,6 @@ CoopSystem.STATE_PRIORITY = {
     spooc_attacking = 4,
 }
 
-function CoopSystem.record_target_observation(observer_key, unit, priority, state_info, target_meta)
-    if not (observer_key and alive(unit) and CoopSystem.is_enabled()) then
-        return
-    end
-
-    local observer_key_str = tostring(observer_key)
-    local u_key_str = tostring(unit:key())
-    local u_key = unit:key()
-    local t = game_time()
-    local snapshot = CoopSystem.data.bot_observations[observer_key_str] or {
-        last_update = t,
-        targets = {},
-    }
-
-    snapshot.last_update = t
-    snapshot.targets = snapshot.targets or {}
-    snapshot.targets[u_key_str] = {
-        unit = unit,
-        u_key = u_key,
-        priority = priority or 0,
-        last_seen = t,
-        state = state_info or "normal",
-        verified = target_meta and target_meta.verified or false,
-        reaction = target_meta and target_meta.reaction or nil,
-        pos = target_meta and target_meta.pos or nil,
-    }
-
-    CoopSystem.data.bot_observations[observer_key_str] = snapshot
-    return snapshot.targets[u_key_str]
-end
-
 function CoopSystem.get_priority_targets()
     if not CoopSystem.is_enabled() then
         return {}
@@ -645,14 +671,14 @@ function CoopSystem.get_priority_targets()
                 if observation
                         and observation.unit
                         and alive(observation.unit)
-                        and (t - (observation.last_seen or 0)) <= CONSTANTS.COOP_TARGET_OBSERVATION_TTL
+                        and t <= (observation.valid_until or 0)
                 then
                     local aggregate = active_targets[target_key]
                     if not aggregate then
                         aggregate = {
                             unit = observation.unit,
                             u_key = observation.u_key,
-                            priority = observation.priority or 0,
+                            priority = observation.score or 0,
                             last_seen = observation.last_seen,
                             state = observation.state or "normal",
                             observed_by = {},
@@ -663,7 +689,7 @@ function CoopSystem.get_priority_targets()
                         active_targets[target_key] = aggregate
                     end
 
-                    aggregate.priority = math.max(aggregate.priority or 0, observation.priority or 0)
+                    aggregate.priority = math.max(aggregate.priority or 0, observation.score or 0)
                     aggregate.last_seen = math.max(aggregate.last_seen or 0, observation.last_seen or 0)
                     aggregate.unit = observation.unit
                     aggregate.pos = observation.pos or aggregate.pos
@@ -740,23 +766,32 @@ function CoopSystem.get_closest_teammate_info(pos)
     return min_dist, in_danger_any, who
 end
 
-function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
+function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data, target_pos, target_distance)
     if not (alive(my_unit) and att_obj and att_obj.unit and alive(att_obj.unit)) then
         return 0, "normal"
     end
 
     local enemy = att_obj.unit
     local flags = BB.classify_enemy(enemy, att_obj)
-    local pos = att_obj.m_head_pos or (enemy:movement() and enemy:movement():m_head_pos())
+    local pos = target_pos
+            or att_obj.m_head_pos
+            or (enemy:movement() and enemy:movement():m_head_pos())
     local my_head = my_unit:movement() and my_unit:movement():m_head_pos()
-    local dis = att_obj.verified_dis
+    local dis = target_distance
+            or att_obj.verified_dis
             or ((my_head and pos) and mvector3.distance(my_head, pos))
             or 2000
 
     local prio = 0
     local state = "normal"
 
-    local ally_dist, ally_in_danger = pos and CoopSystem.get_closest_teammate_info(pos)
+    local ally_dist
+    local closest_ally
+    if pos then
+        local ignored_danger
+        ally_dist, ignored_danger, closest_ally = CoopSystem.get_closest_teammate_info(pos)
+    end
+    local ally_in_danger = closest_ally and closest_ally.in_danger or false
     local team_factor = 1.0
 
     if ally_dist then
@@ -813,7 +848,7 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
     end
 
     if flags.shield then
-        local has_ap = CombatHelper.has_ap_ammo()
+        local has_ap = CombatHelper.has_ap_ammo(my_unit)
         local blocked = pos and CombatHelper.shield_blocks_default(my_unit, pos)
 
         if blocked and not has_ap and dis > CONSTANTS.MELEE_DISTANCE then
@@ -859,48 +894,8 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data)
     return prio, state
 end
 
-function CoopSystem.scan_and_update_priorities(data)
-    if not (CoopSystem.is_enabled() and data and data.unit and alive(data.unit)) then
-        return
-    end
-
-    local t = data.t or game_time()
-    local my_key = tostring(data.key)
-    local last = CoopSystem._last_scan[my_key] or 0
-
-    if t - last < CONSTANTS.COOP_REFRESH_INTERVAL then
-        return
-    end
-
-    CoopSystem._last_scan[my_key] = t
-    CoopSystem.data.bot_observations[my_key] = {
-        last_update = t,
-        targets = {},
-    }
-
-    for _, att_obj in pairs(data.detected_attention_objects or {}) do
-        if att_obj.identified
-                and att_obj.reaction
-                and att_obj.reaction >= AIAttentionObject.REACT_COMBAT
-                and att_obj.unit
-                and alive(att_obj.unit)
-        then
-            local prio, st = CoopSystem.compute_dynamic_priority(data.unit, att_obj, data)
-            if prio and prio > 0 then
-                CoopSystem.record_target_observation(my_key, att_obj.unit, prio, st, {
-                    verified = att_obj.verified or false,
-                    reaction = att_obj.reaction,
-                    pos = att_obj.m_head_pos or (att_obj.unit:movement() and att_obj.unit:movement():m_head_pos()),
-                })
-            end
-
-            if st == "tasing_teammate" or st == "spooc_attacking" then
-                CoopSystem.mark_dangerous_special(att_obj.unit, data.unit)
-            end
-        end
-    end
-
-    CoopSystem.update_optimal_assignments()
+function CoopSystem.scan_and_update_priorities(data, candidates, role)
+    return CoopSystem.submit_candidates(data, candidates, role)
 end
 
 function CoopSystem.mark_dangerous_special(enemy_unit, bot_unit)

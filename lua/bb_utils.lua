@@ -128,6 +128,39 @@ function UnitOps.health_ratio(unit)
     return damage.health_ratio and damage:health_ratio() or 0
 end
 
+function UnitOps.combat_status(unit)
+    local result = {
+        can_fight = false,
+        is_downed = false,
+        is_arrested = false,
+        is_tased = false,
+    }
+
+    if not alive(unit) then
+        return result
+    end
+
+    local damage = unit:character_damage()
+    local movement = unit:movement()
+    result.is_downed = damage
+            and damage.need_revive
+            and damage:need_revive()
+            or false
+    result.is_arrested = damage
+            and damage.arrested
+            and damage:arrested()
+            or false
+    result.is_tased = movement
+            and movement.tased
+            and movement:tased()
+            or false
+    result.can_fight = not result.is_downed
+            and not result.is_arrested
+            and not result.is_tased
+
+    return result
+end
+
 function UnitOps.is_in_slot(unit, slots_table)
     if not unit or not slots_table then
         return false

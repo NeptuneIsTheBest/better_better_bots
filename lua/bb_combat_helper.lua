@@ -25,8 +25,13 @@ function CombatHelper.shield_blocks_default(attacker, target_head_pos)
     return CombatHelper.shield_blocks(attacker, target_head_pos, BB.MASK.enemy_shield_check)
 end
 
-function CombatHelper.has_ap_ammo()
-    return managers.player
+function CombatHelper.has_ap_ammo(unit)
+    local inventory = alive(unit) and unit:inventory()
+    if inventory and inventory.has_ap_ammo and inventory:has_ap_ammo() then
+        return true
+    end
+
+    return managers and managers.player
         and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
         or false
 end

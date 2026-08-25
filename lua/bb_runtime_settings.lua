@@ -198,6 +198,20 @@ function RuntimeSettings:apply_hold_position()
     return HoldPosition:apply_setting(group_state)
 end
 
+function RuntimeSettings:apply_coop()
+    if not is_server() then
+        return false
+    end
+
+    local coop_system = BB.CoopSystem
+    if not (coop_system and coop_system.reset_level_state) then
+        return false
+    end
+
+    coop_system.reset_level_state()
+    return true
+end
+
 function RuntimeSettings:apply(key)
     if key == "move" or key == "dodge" then
         return self:apply_team_ai_movement()
@@ -207,6 +221,8 @@ function RuntimeSettings:apply(key)
         return self:apply_concussion(false)
     elseif key == "keepstaying" then
         return self:apply_hold_position()
+    elseif key == "coop" then
+        return self:apply_coop()
     end
 
     return false
