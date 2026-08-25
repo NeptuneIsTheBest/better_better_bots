@@ -136,8 +136,6 @@ function HoldPosition:should_preserve_temporary_release(unit)
         return false
     end
 
-    -- Engine-driven releases such as vehicle boarding and warps must win,
-    -- even while the bot is executing a forced objective.
     return state.long_distance_interaction_active == true
             and state.preserve_release_for_rescue == true
 end

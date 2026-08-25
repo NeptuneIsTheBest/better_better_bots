@@ -12,8 +12,6 @@ dofile(ModPath .. "lua/bb_combat_helper.lua")
 dofile(ModPath .. "lua/bb_clustering.lua")
 dofile(ModPath .. "lua/bb_threat_assessment.lua")
 
--- PlayerTweakData can load before managers.slot is instantiated. These values
--- mirror the named masks initialized by the game's SlotManager.
 local MASK = {
     AI_visibility = World:make_slot_mask(1, 11, 38, 39),
     enemy_shield_check = World:make_slot_mask(8),

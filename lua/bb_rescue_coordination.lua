@@ -609,7 +609,6 @@ function RescueCoordinator.update(group_state, force)
             end
 
             if session.guard then
-                -- Keep the guard until the rescue objective ends.
             elseif not has_threats then
                 RescueCoordinator:_finish_session(target_key, false)
             elseif not session.guard_so_id then

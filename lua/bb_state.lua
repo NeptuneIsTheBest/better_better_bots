@@ -15,8 +15,6 @@ BB.dom_failures = BB.dom_failures or {}
 BB.dom_blacklist = BB.dom_blacklist or {}
 BB.dom_pending = BB.dom_pending or {}
 
--- Older versions stored an unscoped timestamp here. It cannot be safely
--- attributed after a hot reload, so discard legacy pending entries.
 for u_key, pending in pairs(BB.dom_pending) do
     if type(pending) ~= "table" or pending.aggressor_key == nil then
         BB.dom_pending[u_key] = nil

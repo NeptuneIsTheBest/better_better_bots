@@ -30,7 +30,6 @@ function Utils.install_method_patch(patch_id, target, method_name, handler)
             error(string.format("Method patch id %s was reused for a different target", patch_id), 2)
         end
 
-        -- Keep the trampoline stable in case another hook has wrapped it.
         existing.handler = handler
         return true
     end

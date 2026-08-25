@@ -508,7 +508,6 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 and self._to_dead_clbk_id
                 and BB:get("instadwn", false)
                 then
-                    -- Finish the current damage flow before the native custody transition runs.
                     self._to_dead_t = TimerManager:game():time()
                     self._revive_reminder_line_t = nil
 
@@ -1455,6 +1454,11 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
             local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
             local REACT_IDLE = AIAttentionObject.REACT_IDLE
             local LEGACY_REFLEX_HOOK_ID = "BB_CopLogicBase_updAttentionObjDetection_FastDetect"
+            local REFLEX_DETECTION_DELAY = CONSTANTS.REFLEX_DETECTION_DELAY
+            local mvec3_copy = mvector3.copy
+            local mvec3_dis = mvector3.distance
+            local mvec3_dis_sq = mvector3.distance_sq
+            local mvec3_set = mvector3.set
 
             local function get_reflex_reaction(settings, attention_info, my_team)
                 local reaction = settings.reaction or REACT_IDLE
@@ -1480,6 +1484,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 if current_settings
                         and current_settings.reaction == reaction
                         and att_obj._bb_reflex_settings_source == settings
+                        and att_obj._bb_reflex_settings_override == current_settings
                 then
                     return current_settings
                 end
@@ -1490,13 +1495,82 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 return detected_settings
             end
 
-            local function set_reflex_unverified(att_obj, vis_ray)
+            local function clear_reflex_state(data)
+                data._bb_reflex_active = nil
+                data._bb_reflex_next_scan_t = nil
+
+                for _, att_obj in pairs(data.detected_attention_objects or {}) do
+                    local source_settings = att_obj._bb_reflex_settings_source
+                    local override_settings = att_obj._bb_reflex_settings_override
+
+                    if source_settings
+                            and override_settings
+                            and att_obj.settings == override_settings
+                    then
+                        att_obj.settings = source_settings
+                        att_obj.reaction = source_settings.reaction or REACT_IDLE
+                    end
+
+                    att_obj._bb_reflex_settings_source = nil
+                    att_obj._bb_reflex_settings_override = nil
+                    att_obj._bb_reflex_next_focus_verify_t = nil
+                end
+            end
+
+            local function is_reflex_observer(data, unit)
+                local cached = data._bb_reflex_is_team_ai
+
+                if cached == nil then
+                    cached = is_team_ai(unit) and true or false
+                    data._bb_reflex_is_team_ai = cached
+                end
+
+                return cached
+            end
+
+            local function is_reflex_candidate(att_obj, u_key, focus_key, t)
+                if not att_obj or not att_obj.identified or not att_obj.verified then
+                    return true
+                end
+
+                return u_key == focus_key
+                        and t >= (att_obj._bb_reflex_next_focus_verify_t or 0)
+            end
+
+            local function is_reflex_in_range(my_data, settings, my_pos, attention_pos)
+                local detection = my_data and my_data.detection
+                local max_dis = detection and detection.dis_max
+
+                if type(max_dis) ~= "number" or max_dis <= 0 then
+                    return false
+                end
+
+                local settings_max_dis = settings.max_range
+                if type(settings_max_dis) == "number" then
+                    max_dis = math.min(max_dis, settings_max_dis)
+                end
+
+                local settings_detection = settings.detection
+                local range_mul = settings_detection and settings_detection.range_mul
+                if type(range_mul) == "number" then
+                    max_dis = max_dis * range_mul
+                end
+
+                return max_dis > 0
+                        and mvec3_dis_sq(my_pos, attention_pos) < max_dis * max_dis
+            end
+
+            local function set_reflex_unverified(att_obj, vis_ray, t, is_focus)
                 if not att_obj then
                     return
                 end
 
                 att_obj.verified = false
                 att_obj.vis_ray = vis_ray and (vis_ray.dis or vis_ray.distance) or nil
+
+                if is_focus then
+                    att_obj._bb_reflex_next_focus_verify_t = t + REFLEX_DETECTION_DELAY
+                end
             end
 
             local function set_reflex_verified(
@@ -1505,12 +1579,13 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                     u_key,
                     attention_info,
                     settings,
+                    reaction,
                     attention_pos,
                     my_pos,
-                    t
+                    t,
+                    is_focus
             )
                 local att_obj = detected_obj[u_key]
-                local reaction = get_reflex_reaction(settings, attention_info, data.team)
                 local detected_settings = get_reflex_settings(att_obj, settings, reaction)
 
                 if not att_obj then
@@ -1532,13 +1607,19 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                     att_obj.reaction = reaction
                 end
 
-                att_obj._bb_reflex_settings_source = detected_settings ~= settings and settings or nil
+                if detected_settings ~= settings then
+                    att_obj._bb_reflex_settings_source = settings
+                    att_obj._bb_reflex_settings_override = detected_settings
+                else
+                    att_obj._bb_reflex_settings_source = nil
+                    att_obj._bb_reflex_settings_override = nil
+                end
 
                 local was_identified = att_obj.identified
                 local target_pos = att_obj.m_pos
                 local distance = data.m_pos and target_pos
-                        and mvector3.distance(data.m_pos, target_pos)
-                        or mvector3.distance(my_pos, attention_pos)
+                        and mvec3_dis(data.m_pos, target_pos)
+                        or mvec3_dis(my_pos, attention_pos)
 
                 att_obj.notice_progress = nil
                 att_obj.prev_notice_chk_t = nil
@@ -1552,21 +1633,29 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 att_obj.vis_ray = nil
                 att_obj.dis = distance
                 att_obj.verified_dis = distance
-                att_obj.next_verify_t = t + (settings.verification_interval or 0)
+                att_obj.next_verify_t = t + (settings.verification_interval or REFLEX_DETECTION_DELAY)
 
                 if att_obj.m_head_pos then
-                    mvector3.set(att_obj.m_head_pos, attention_pos)
+                    mvec3_set(att_obj.m_head_pos, attention_pos)
                 else
-                    att_obj.m_head_pos = mvector3.copy(attention_pos)
+                    att_obj.m_head_pos = mvec3_copy(attention_pos)
                 end
 
                 if att_obj.verified_pos then
-                    mvector3.set(att_obj.verified_pos, attention_pos)
+                    mvec3_set(att_obj.verified_pos, attention_pos)
                 else
-                    att_obj.verified_pos = mvector3.copy(attention_pos)
+                    att_obj.verified_pos = mvec3_copy(attention_pos)
                 end
 
-                att_obj.last_verified_pos = mvector3.copy(attention_pos)
+                if att_obj.last_verified_pos then
+                    mvec3_set(att_obj.last_verified_pos, attention_pos)
+                else
+                    att_obj.last_verified_pos = mvec3_copy(attention_pos)
+                end
+
+                if is_focus then
+                    att_obj._bb_reflex_next_focus_verify_t = t + REFLEX_DETECTION_DELAY
+                end
 
                 if not was_identified then
                     local logic = data.logic
@@ -1583,8 +1672,24 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
 
             local function update_reflex_detection(data, min_reaction, max_reaction)
                 local unit = data and data.unit
-                if not BB:get("reflex", false) or not alive(unit) or not is_team_ai(unit) then
+
+                if not BB:get("reflex", false) then
+                    if data and data._bb_reflex_active then
+                        clear_reflex_state(data)
+                    end
+
                     return false
+                end
+
+                if not alive(unit) or not is_reflex_observer(data, unit) then
+                    return false
+                end
+
+                local t = data.t or game_time()
+                local next_scan_t = data._bb_reflex_next_scan_t
+
+                if next_scan_t and t < next_scan_t then
+                    return true
                 end
 
                 local unit_mov = unit:movement()
@@ -1594,72 +1699,109 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                     return false
                 end
 
-                local t = data.t or game_time()
+                data._bb_reflex_active = true
+                data._bb_reflex_next_scan_t = t + REFLEX_DETECTION_DELAY
+
                 local my_key = data.key
                 local detected_obj = data.detected_attention_objects or {}
                 data.detected_attention_objects = detected_obj
 
                 local my_pos = unit_mov:m_head_pos()
+                local my_data = data.internal_data
                 local my_access = data.SO_access
                 local my_team = data.team
                 local slotmask = data.visibility_slotmask
+                local focus_key = data.attention_obj and data.attention_obj.u_key
                 local chk_vis_func = my_tracker.check_visibility
                 local all_attention_objects = gstate:get_AI_attention_objects_by_filter(
                         data.SO_access_str,
                         my_team
                 )
 
-                for u_key, attention_info in pairs(all_attention_objects or {}) do
+                if not all_attention_objects then
+                    return true
+                end
+
+                for u_key, attention_info in pairs(all_attention_objects) do
                     if u_key ~= my_key then
                         local att_obj = detected_obj[u_key]
-                        local att_tracker = attention_info.nav_tracker
-                        local nav_visible = not att_tracker or chk_vis_func(my_tracker, att_tracker)
+                        local is_focus = u_key == focus_key
 
-                        if nav_visible then
-                            local att_handler = attention_info.handler
-                            if att_handler
-                                    and att_handler.get_attention
-                                    and att_handler.get_detection_m_pos
-                            then
-                                local settings = att_handler:get_attention(
-                                        my_access,
-                                        min_reaction,
-                                        max_reaction,
-                                        my_team
-                                )
-                                local attention_pos = settings and att_handler:get_detection_m_pos()
+                        if is_reflex_candidate(att_obj, u_key, focus_key, t) then
+                            local att_tracker = attention_info.nav_tracker
+                            local nav_visible = not att_tracker
+                                    or chk_vis_func(my_tracker, att_tracker)
 
-                                if attention_pos then
-                                    local vis_ray = World:raycast(
-                                            "ray",
-                                            my_pos,
-                                            attention_pos,
-                                            "slot_mask",
-                                            slotmask,
-                                            "ray_type",
-                                            "ai_vision"
+                            if nav_visible then
+                                local att_handler = attention_info.handler
+                                if att_handler
+                                        and att_handler.get_attention
+                                        and att_handler.get_detection_m_pos
+                                then
+                                    local settings = att_handler:get_attention(
+                                            my_access,
+                                            min_reaction,
+                                            max_reaction,
+                                            my_team
                                     )
-                                    local visible = not vis_ray
-                                            or vis_ray.unit and vis_ray.unit:key() == u_key
+                                    local reaction = settings
+                                            and get_reflex_reaction(settings, attention_info, my_team)
 
-                                    if visible then
-                                        set_reflex_verified(
-                                                data,
-                                                detected_obj,
-                                                u_key,
-                                                attention_info,
-                                                settings,
-                                                attention_pos,
-                                                my_pos,
-                                                t
-                                        )
-                                    else
-                                        set_reflex_unverified(att_obj, vis_ray)
+                                    if reaction and reaction >= REACT_COMBAT then
+                                        local attention_pos = att_handler:get_detection_m_pos()
+
+                                        if attention_pos
+                                                and is_reflex_in_range(
+                                                        my_data,
+                                                        settings,
+                                                        my_pos,
+                                                        attention_pos
+                                                )
+                                        then
+                                            local vis_ray = World:raycast(
+                                                    "ray",
+                                                    my_pos,
+                                                    attention_pos,
+                                                    "slot_mask",
+                                                    slotmask,
+                                                    "ray_type",
+                                                    "ai_vision"
+                                            )
+                                            local visible = not vis_ray
+                                                    or vis_ray.unit and vis_ray.unit:key() == u_key
+
+                                            if visible then
+                                                set_reflex_verified(
+                                                        data,
+                                                        detected_obj,
+                                                        u_key,
+                                                        attention_info,
+                                                        settings,
+                                                        reaction,
+                                                        attention_pos,
+                                                        my_pos,
+                                                        t,
+                                                        is_focus
+                                                )
+                                            else
+                                                set_reflex_unverified(
+                                                        att_obj,
+                                                        vis_ray,
+                                                        t,
+                                                        is_focus
+                                                )
+                                            end
+                                        elseif att_obj then
+                                            set_reflex_unverified(att_obj, nil, t, is_focus)
+                                        end
                                     end
                                 end
+                            elseif att_obj
+                                    and type(att_obj.reaction) == "number"
+                                    and att_obj.reaction >= REACT_COMBAT
+                            then
+                                set_reflex_unverified(att_obj, nil, t, is_focus)
                             end
-                        else
-                            set_reflex_unverified(att_obj)
                         end
                     end
                 end
@@ -1679,11 +1821,10 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 local reflex_active = update_reflex_detection(data, min_reaction, max_reaction)
                 local delay = original(data, min_reaction, max_reaction, ...)
 
-                if reflex_active then
-                    return math.min(
-                            type(delay) == "number" and delay or math.huge,
-                            CONSTANTS.REFLEX_DETECTION_DELAY
-                    )
+                if reflex_active
+                        and (type(delay) ~= "number" or delay > REFLEX_DETECTION_DELAY)
+                then
+                    return REFLEX_DETECTION_DELAY
                 end
 
                 return delay
