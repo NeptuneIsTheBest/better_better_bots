@@ -289,20 +289,6 @@ local function collect_known_targets(group_state, players, max_distance, t)
     return targets, targets_by_key
 end
 
-local function player_has_active_engagement(group_state, player_unit)
-    local record = group_state
-            and alive(player_unit)
-            and group_state:criminal_record(player_unit:key())
-
-    if not record then
-        return true
-    end
-
-    return (record.engaged_force or 0) > 0
-            or record.being_tased ~= nil
-            or record.being_arrested ~= nil
-end
-
 function ProactiveAttack:is_enabled()
     return Network:is_server() and BB:get("proactive", false) or false
 end
@@ -335,6 +321,21 @@ local function recall_objective_is_current(recall)
             and objective.follow_unit == recall.caller
             and not objective.forced
             and not objective.action
+end
+
+local function get_active_recalled_guard(all_units)
+    local guard_key = state.guard_key
+    local recall = guard_key and state.recall_holds[guard_key]
+
+    -- A recalled current guard still fills the guard slot while returning.
+    if not recall_objective_is_current(recall)
+            or all_units[guard_key] ~= recall.unit
+    then
+        return nil
+    end
+
+    local status = UnitOps.combat_status(recall.unit)
+    return status.can_fight and recall or nil
 end
 
 function ProactiveAttack:_clear_recall_hold(bot_key)
@@ -406,14 +407,12 @@ function ProactiveAttack:on_long_distance_interacted(
         unit = unit,
         caller = other_unit,
         objective = objective,
-        issued_t = game_time(),
     }
 
     return true
 end
 
 function ProactiveAttack:_update_recall_holds(group_state, t, suspend_release)
-    local engagement_by_caller = {}
     local keys = {}
     for bot_key in pairs(state.recall_holds) do
         table.insert(keys, bot_key)
@@ -435,42 +434,26 @@ function ProactiveAttack:_update_recall_holds(group_state, t, suspend_release)
             if not movement or movement:should_stay() or keeper_active then
                 self:_clear_recall_hold(bot_key)
             elseif suspend_release then
-                recall.unengaged_since_t = nil
+                recall.arrived_since_t = nil
             else
                 local status = UnitOps.combat_status(unit)
-                local bot_position = get_unit_position(unit)
-                local caller_position = get_unit_position(recall.caller)
-                local arrived = bot_position
-                        and caller_position
-                        and mvector3.distance(bot_position, caller_position)
-                                <= CONSTANTS.PROACTIVE_RECALL_ARRIVAL_DISTANCE
+                local arrived = recall.objective.in_place == true
 
                 if not status.can_fight
                         or movement:carrying_bag()
                         or not arrived
                 then
-                    recall.unengaged_since_t = nil
-                else
-                    local caller_key = tostring(recall.caller:key())
-                    local engaged = engagement_by_caller[caller_key]
-                    if engaged == nil then
-                        engaged = player_has_active_engagement(group_state, recall.caller)
-                        engagement_by_caller[caller_key] = engaged
-                    end
-
-                    if engaged then
-                        recall.unengaged_since_t = nil
-                    elseif not recall.unengaged_since_t then
-                        recall.unengaged_since_t = t
-                    elseif t - recall.unengaged_since_t
-                            >= CONSTANTS.PROACTIVE_RECALL_UNENGAGED_DURATION
-                    then
-                        local objective = recall.objective
-                        self:_clear_recall_hold(bot_key)
-                        objective.called = false
-                        objective.is_default = true
-                        state.next_update_t = 0
-                    end
+                    recall.arrived_since_t = nil
+                elseif not recall.arrived_since_t then
+                    recall.arrived_since_t = t
+                elseif t - recall.arrived_since_t
+                        >= CONSTANTS.PROACTIVE_RECALL_HOLD_DURATION
+                then
+                    local objective = recall.objective
+                    self:_clear_recall_hold(bot_key)
+                    objective.called = false
+                    objective.is_default = true
+                    state.next_update_t = 0
                 end
             end
         end
@@ -1031,12 +1014,20 @@ function ProactiveAttack:_update(group_state, t)
         end
     end
 
+    local recalled_guard = get_active_recalled_guard(all_units)
     if #eligible == 0 then
-        state.guard_key = nil
+        if not recalled_guard then
+            state.guard_key = nil
+        end
+
         return true
     end
 
-    local guard = select_guard(eligible, eligible_by_key)
+    local guard
+    if not recalled_guard then
+        guard = select_guard(eligible, eligible_by_key)
+    end
+
     if guard then
         self:_release_bot(guard.unit, group_state, true)
     end
@@ -1048,7 +1039,8 @@ function ProactiveAttack:_update(group_state, t)
         end
     end
 
-    local max_target_distance = #eligible == 1
+    local available_bot_count = #eligible + (recalled_guard and 1 or 0)
+    local max_target_distance = available_bot_count == 1
             and CONSTANTS.PROACTIVE_SOLO_TARGET_DISTANCE
             or CONSTANTS.PROACTIVE_MAX_TARGET_DISTANCE
     local targets, targets_by_key = collect_known_targets(
