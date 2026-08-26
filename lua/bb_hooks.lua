@@ -329,8 +329,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             "BB_GroupAIStateBase_onSimulationEnded_ResetLevelState",
             function(self, ...)
                 BB:reset_level_state()
-            end
-    )
+            end)
 
     if Network:is_server() then
         Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_PreloadConcussion", function(self, ...)
@@ -399,8 +398,7 @@ if RequiredScript == "lib/managers/hudmanagerpd2" then
             "BB_HUDManager_setAIStopped_StatusIcon",
             function(self, ai_id, stopped, ...)
                 StatusIcons:on_native_ai_stopped(ai_id, stopped)
-            end
-    )
+            end)
 end
 
 if RequiredScript == "lib/units/player_team/teamaibase" then
@@ -621,66 +619,70 @@ if RequiredScript == "lib/managers/criminalsmanager" then
             return original(self, unit, ...)
     end)
 
-    if Network:is_server() then
-        local char_preset = tweak_data.character.presets
-        local gang_weapon = char_preset.weapon
-                and (char_preset.weapon.bot_weapons or char_preset.weapon.gang_member)
+    local char_preset = tweak_data.character.presets
+    local gang_weapon = char_preset.weapon
+            and (char_preset.weapon.bot_weapons or char_preset.weapon.gang_member)
 
-        if gang_weapon then
-            for _, v in pairs(tweak_data.character) do
-                if type(v) == "table" and v.access == "teamAI1" then
-                    v.no_run_start = true
-                    v.no_run_stop = true
-                    v.always_face_enemy = true
-                    v.crouch_move = true
-                    apply_team_ai_weapon_responsiveness(v)
+    if gang_weapon then
+        for _, v in pairs(tweak_data.character) do
+            if type(v) == "table" and v.access == "teamAI1" then
+                v.no_run_start = true
+                v.no_run_stop = true
+                v.always_face_enemy = true
+                v.crouch_move = true
+                apply_team_ai_weapon_responsiveness(v)
 
-                    if char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
-                        v.damage.hurt_severity = char_preset.hurt_severities.no_hurts
-                    end
+                if char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
+                    v.damage.hurt_severity = char_preset.hurt_severities.no_hurts
+                end
 
-                    if char_preset.move_speed and char_preset.move_speed.lightning then
-                        v.move_speed = char_preset.move_speed.lightning
-                    end
+                if char_preset.move_speed and char_preset.move_speed.lightning then
+                    v.move_speed = char_preset.move_speed.lightning
                 end
             end
         end
+    end
 
+    if Network:is_server() then
         RuntimeSettings:apply_all()
     end
 end
 
 if RequiredScript == "lib/tweak_data/playertweakdata" then
-        if Network:is_server() then
-            function PlayerTweakData:_set_singleplayer(...)
-                return
-            end
-        end
+    function PlayerTweakData:_set_singleplayer(...)
+        return
     end
+end
 
 local function remove_ai_and_players_from_bullet_mask(self)
-        local user_unit = self._setup and self._setup.user_unit
-        if alive(user_unit)
-                and (is_unit_in_slot(user_unit, SLOTS.PLAYERS)
-                or is_unit_in_slot(user_unit, SLOTS.CRIMINALS_NO_DEPLOYABLES))
-                and self._bullet_slotmask
-        then
-            local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
-            self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
-        end
+    local user_unit = self._setup and self._setup.user_unit
+    if alive(user_unit)
+            and (is_unit_in_slot(user_unit, SLOTS.PLAYERS)
+            or is_unit_in_slot(user_unit, SLOTS.CRIMINALS_NO_DEPLOYABLES))
+            and self._bullet_slotmask
+    then
+        local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
+        self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
     end
+end
 
 if RequiredScript == "lib/units/weapons/newnpcraycastweaponbase" then
-        if Network:is_server() then
-            Hooks:PostHook(NewNPCRaycastWeaponBase, "setup", "BB_NewNPCRaycastWeaponBase_setup_RemoveFriendlyMask", remove_ai_and_players_from_bullet_mask)
-        end
-    end
+    Hooks:PostHook(
+            NewNPCRaycastWeaponBase,
+            "setup",
+            "BB_NewNPCRaycastWeaponBase_setup_RemoveFriendlyMask",
+            remove_ai_and_players_from_bullet_mask
+    )
+end
 
 if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
-        if Network:is_server() then
-            Hooks:PostHook(NPCRaycastWeaponBase, "setup", "BB_NPCRaycastWeaponBase_setup_RemoveFriendlyMask", remove_ai_and_players_from_bullet_mask)
-        end
-    end
+    Hooks:PostHook(
+            NPCRaycastWeaponBase,
+            "setup",
+            "BB_NPCRaycastWeaponBase_setup_RemoveFriendlyMask",
+            remove_ai_and_players_from_bullet_mask
+    )
+end
 
 if RequiredScript == "lib/units/player_team/teamaimovement" then
     if Network:is_server() then
@@ -721,88 +723,90 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 
             return original(self, ...)
         end)
+    end
 
-        install_method_patch(
-                "BB_TeamAIMovement_checkVisualEquipment",
-                TeamAIMovement,
-                "check_visual_equipment",
-                function(original, self, ...)
-            if is_bot_weapons_active() or BB:get("equip", false) then
-                return original(self, ...)
-            end
-
-            local lvl_td = tweak_data.levels[managers.job:current_level_id()]
-            local bags = {
-                { g_medicbag = true },
-                { g_ammobag = true },
-            }
-            local bag = bags[math.random(#bags)]
-
-            for k, v in pairs(bag) do
-                local mesh_obj = self._unit:get_object(Idstring(k))
-                if mesh_obj then
-                    mesh_obj:set_visibility(v)
+    install_method_patch(
+            "BB_TeamAIMovement_checkVisualEquipment",
+            TeamAIMovement,
+            "check_visual_equipment",
+            function(original, self, ...)
+                if is_bot_weapons_active() or BB:get("equip", false) then
+                    return original(self, ...)
                 end
-            end
 
-            if lvl_td and not lvl_td.player_sequence then
-                local damage_ext = self._unit:damage()
-                if damage_ext then
-                    damage_ext:run_sequence_simple("var_model_02")
+                local lvl_td = tweak_data.levels[managers.job:current_level_id()]
+                local bags = {
+                    { g_medicbag = true },
+                    { g_ammobag = true },
+                }
+                local bag = bags[math.random(#bags)]
+
+                for k, v in pairs(bag) do
+                    local mesh_obj = self._unit:get_object(Idstring(k))
+                    if mesh_obj then
+                        mesh_obj:set_visibility(v)
+                    end
                 end
-            end
-        end)
 
-        install_method_patch(
-                "BB_TeamAIMovement_setCarryingBag",
-                TeamAIMovement,
-                "set_carrying_bag",
-                function(original, self, unit, ...)
-            original(self, unit, ...)
-
-            if is_bot_weapons_active() or not managers.hud then
-                return
-            end
-
-            local unit_data = self._unit and self._unit:unit_data()
-            local name_label_id = unit_data and unit_data.name_label_id
-            local name_label = name_label_id and managers.hud:_get_name_label(name_label_id)
-
-            if name_label and name_label.panel then
-                local bag_panel = name_label.panel:child("bag")
-                if bag_panel then
-                    bag_panel:set_visible(unit and true or false)
+                if lvl_td and not lvl_td.player_sequence then
+                    local damage_ext = self._unit:damage()
+                    if damage_ext then
+                        damage_ext:run_sequence_simple("var_model_02")
+                    end
                 end
-            end
-        end)
+            end)
 
-        install_method_patch(
-                "BB_TeamAIMovement_setCarrySpeedModifier",
-                TeamAIMovement,
-                "set_carry_speed_modifier",
-                function(original, self, ...)
-            original(self, ...)
+    install_method_patch(
+            "BB_TeamAIMovement_setCarryingBag",
+            TeamAIMovement,
+            "set_carrying_bag",
+            function(original, self, unit, ...)
+                original(self, unit, ...)
 
-            if self._carry_speed_modifier then
-                local modifier = math.min(1, self._carry_speed_modifier * CONSTANTS.BAG_SPEED_MUL)
-                self._carry_speed_modifier = modifier < 1 and modifier or nil
-            end
-        end)
+                if is_bot_weapons_active() or not managers.hud then
+                    return
+                end
 
-        install_method_patch(
-                "BB_TeamAIMovement_getReloadSpeedMultiplier",
-                TeamAIMovement,
-                "get_reload_speed_multiplier",
-                function(original, self, ...)
-            local multiplier = original(self, ...)
-            if BB:get("combat", false)
-                    and not is_bot_weapons_active()
-            then
-                return (multiplier or 1) * CONSTANTS.RELOAD_SPEED_MUL
-            end
-            return multiplier
-        end)
+                local unit_data = self._unit and self._unit:unit_data()
+                local name_label_id = unit_data and unit_data.name_label_id
+                local name_label = name_label_id and managers.hud:_get_name_label(name_label_id)
 
+                if name_label and name_label.panel then
+                    local bag_panel = name_label.panel:child("bag")
+                    if bag_panel then
+                        bag_panel:set_visible(unit and true or false)
+                    end
+                end
+            end)
+
+    install_method_patch(
+            "BB_TeamAIMovement_setCarrySpeedModifier",
+            TeamAIMovement,
+            "set_carry_speed_modifier",
+            function(original, self, ...)
+                original(self, ...)
+
+                if self._carry_speed_modifier then
+                    local modifier = math.min(1, self._carry_speed_modifier * CONSTANTS.BAG_SPEED_MUL)
+                    self._carry_speed_modifier = modifier < 1 and modifier or nil
+                end
+            end)
+
+    install_method_patch(
+            "BB_TeamAIMovement_getReloadSpeedMultiplier",
+            TeamAIMovement,
+            "get_reload_speed_multiplier",
+            function(original, self, ...)
+                local multiplier = original(self, ...)
+                if BB:get("combat", false)
+                        and not is_bot_weapons_active()
+                then
+                    return (multiplier or 1) * CONSTANTS.RELOAD_SPEED_MUL
+                end
+                return multiplier
+            end)
+
+    if Network:is_server() then
         install_method_patch(
                 "BB_TeamAIMovement_throwBag",
                 TeamAIMovement,
@@ -1258,12 +1262,11 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
     end
 
 if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" then
-        if Network:is_server() then
-            install_method_patch(
-                    "BB_CopActionShoot_onAttention_Reflex",
-                    CopActionShoot,
-                    "on_attention",
-                    function(original, self, attention, ...)
+    install_method_patch(
+            "BB_CopActionShoot_onAttention_Reflex",
+            CopActionShoot,
+            "on_attention",
+            function(original, self, attention, ...)
                 local result = original(self, attention, ...)
 
                 if attention
@@ -1278,11 +1281,11 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 return result
             end)
 
-            install_method_patch(
-                    "BB_CopActionShoot_update",
-                    CopActionShoot,
-                    "update",
-                    function(original, self, t)
+    install_method_patch(
+            "BB_CopActionShoot_update",
+            CopActionShoot,
+            "update",
+            function(original, self, t)
                 if not is_team_ai_move_shoot_unit(self._unit) then
                     return original(self, t)
                 end
@@ -1306,11 +1309,11 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 end
             end)
 
-            install_method_patch(
-                    "BB_CopActionShoot_getTargetPos",
-                    CopActionShoot,
-                    "_get_target_pos",
-                    function(original, self, shoot_from_pos, attention, ...)
+    install_method_patch(
+            "BB_CopActionShoot_getTargetPos",
+            CopActionShoot,
+            "_get_target_pos",
+            function(original, self, shoot_from_pos, attention, ...)
                 local target_pos, target_vec, target_dis, autotarget = original(self, shoot_from_pos, attention, ...)
 
                 if not BB:get("combat", false) or not is_team_ai(self._unit) then
@@ -1323,13 +1326,14 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 end
 
                 return target_pos, target_vec, target_dis, autotarget
-            end)
+            end
+    )
 
-            install_method_patch(
-                    "BB_CopActionShoot_getTransitionTargetPos",
-                    CopActionShoot,
-                    "_get_transition_target_pos",
-                    function(original, self, shoot_from_pos, attention, t, ...)
+    install_method_patch(
+            "BB_CopActionShoot_getTransitionTargetPos",
+            CopActionShoot,
+            "_get_transition_target_pos",
+            function(original, self, shoot_from_pos, attention, t, ...)
                 local target_pos, target_vec, target_dis, autotarget = original(self, shoot_from_pos, attention, t, ...)
 
                 if not BB:get("combat", false) or not is_team_ai(self._unit) then
@@ -1350,9 +1354,9 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 end
 
                 return target_pos, target_vec, target_dis, autotarget
-            end)
-        end
-    end
+            end
+    )
+end
 
 if RequiredScript == "lib/units/enemies/cop/copbrain" then
         if Network:is_server() then
@@ -1999,9 +2003,11 @@ if RequiredScript == "lib/units/player_team/teamaibrain" then
     end
 
 if RequiredScript == "lib/units/equipment/sentry_gun/sentrygunbase" then
-        if Network:is_server() then
-            Hooks:PostHook(SentryGunBase, "activate_as_module", "BB_SentryGunBase_FixTurretTargeting", function(self)
+    Hooks:PostHook(
+            SentryGunBase,
+            "activate_as_module",
+            "BB_SentryGunBase_FixTurretTargeting",
+            function(self)
                 self._unit:movement():set_team(self._unit:movement():team())
             end)
-        end
-    end
+end

@@ -7,10 +7,6 @@ function Hungarian.solve(cost_matrix, n_workers, n_jobs)
     n_jobs = math.max(tonumber(n_jobs) or 0, 0)
     if n_workers == 0 or n_jobs == 0 then return {} end
 
-    -- The shortest augmenting-path form of the Hungarian algorithm only
-    -- requires workers <= jobs. Padding columns (rather than the whole
-    -- matrix) keeps the common PAYDAY case of a few bots and many enemies at
-    -- O(workers^2 * jobs), instead of O(jobs^3).
     local effective_jobs = math.max(n_workers, n_jobs)
 
     local INF = 1e18
