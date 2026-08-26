@@ -1226,7 +1226,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
         if Network:is_server() then
-            local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
+            local REACT_SHOOT = AIAttentionObject.REACT_SHOOT
 
             Hooks:PostHook(
                     TeamAILogicBase,
@@ -1238,7 +1238,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
             )
 
             function TeamAILogicBase._get_logic_state_from_reaction(data, reaction)
-                return (not reaction or reaction < REACT_COMBAT) and "idle" or "assault"
+                return (not reaction or reaction < REACT_SHOOT) and "idle" or "assault"
             end
         end
     end
@@ -1915,6 +1915,42 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 
 if RequiredScript == "lib/units/player_team/teamaibrain" then
         if Network:is_server() then
+            Hooks:PostHook(
+                    TeamAIBrain,
+                    "on_cop_neutralized",
+                    "BB_TeamAIBrain_onCopNeutralized_RefreshDetection",
+                    function(self, cop_key)
+                        if not BB:get("coop", false)
+                                or not alive(self._unit)
+                                or not BB.CoopSystem.is_teammate_combat_ready(self._unit)
+                        then
+                            return
+                        end
+
+                        local data = self._logic_data
+                        local my_data = data and data.internal_data
+                        local task_key = my_data and my_data.detection_task_key
+                        if not (task_key
+                                and my_data.queued_tasks
+                                and my_data.queued_tasks[task_key])
+                        then
+                            return
+                        end
+
+                        local enemy_manager = managers.enemy
+                        if enemy_manager and enemy_manager.update_queue_task then
+                            enemy_manager:update_queue_task(
+                                    task_key,
+                                    nil,
+                                    nil,
+                                    game_time(),
+                                    nil,
+                                    true
+                            )
+                        end
+                    end
+            )
+
             install_method_patch(
                     TeamAILogicDisabled,
                     "_register_revive_SO",

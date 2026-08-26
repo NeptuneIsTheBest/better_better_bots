@@ -326,6 +326,34 @@ local function _role_changed(old_snapshot, restricted, fixed_target)
             or tostring(old_snapshot.fixed_target or "") ~= tostring(fixed_target or "")
 end
 
+local function _assignment_targets_changed(old_snapshot, new_snapshot)
+    if not old_snapshot then
+        return true
+    end
+
+    local old_targets = old_snapshot.targets or {}
+    local new_targets = new_snapshot.targets or {}
+
+    for target_key, new_target in pairs(new_targets) do
+        local old_target = old_targets[target_key]
+        if not old_target
+                or old_target.unit ~= new_target.unit
+                or (old_target.urgency or 1) ~= (new_target.urgency or 1)
+                or old_target.durable ~= new_target.durable
+        then
+            return true
+        end
+    end
+
+    for target_key in pairs(old_targets) do
+        if not new_targets[target_key] then
+            return true
+        end
+    end
+
+    return false
+end
+
 local _update_assignments
 
 function CoopSystem.submit_candidates(data, candidates, role)
@@ -355,16 +383,13 @@ function CoopSystem.submit_candidates(data, candidates, role)
         fixed_target = fixed_target,
         is_reloading = status.is_reloading,
     }
-    local urgent_changed = false
-
     for target_key, candidate in pairs(candidates or {}) do
         target_key = tostring(target_key)
-        if candidate.coop_eligible
+        if candidate.coop_assignable
                 and candidate.data
                 and alive(candidate.data.unit)
                 and (candidate.valid_until or 0) >= t
         then
-            local old_target = old_snapshot and old_snapshot.targets and old_snapshot.targets[target_key]
             local score = math.max(candidate.coop_score or 0, 0)
             if status.is_reloading then
                 score = score * CONSTANTS.COOP_RELOADING_FACTOR
@@ -377,21 +402,6 @@ function CoopSystem.submit_candidates(data, candidates, role)
                 durable = candidate.durable == true,
                 valid_until = candidate.valid_until,
             }
-
-            local was_urgent = old_target and (old_target.urgency or 1) >= 3 or false
-            local is_urgent = (candidate.urgency or 1) >= 3
-            if was_urgent ~= is_urgent then
-                urgent_changed = true
-            end
-        end
-    end
-
-    for target_key, old_target in pairs(old_snapshot and old_snapshot.targets or {}) do
-        if (old_target.urgency or 1) >= 3
-                and not observation_snapshot.targets[target_key]
-        then
-            urgent_changed = true
-            break
         end
     end
 
@@ -403,19 +413,28 @@ function CoopSystem.submit_candidates(data, candidates, role)
     local old_assignment = _get_assignment_snapshot().by_bot[bot_key]
     local assignment_invalid = old_assignment
             and not observation_snapshot.targets[tostring(old_assignment)]
+    local target_structure_changed = _assignment_targets_changed(
+            old_snapshot,
+            observation_snapshot
+    )
     local role_state_changed = _role_changed(old_snapshot, restricted, fixed_target)
-    local reload_state_changed = not old_snapshot
-            or old_snapshot.is_reloading ~= observation_snapshot.is_reloading
+    local reload_state_changed = old_snapshot
+            and old_snapshot.is_reloading ~= observation_snapshot.is_reloading
+            or false
+    local score_refresh_interval = CONSTANTS.ASSIGNMENT_SCORE_REFRESH_INTERVAL or 1
+    local score_refresh_due = t - (CoopSystem.data.last_assignment_update or 0)
+            >= score_refresh_interval
+    local force_replan = target_structure_changed
+            or assignment_invalid
+            or role_state_changed
+            or reload_state_changed
 
     CoopSystem.data.bot_observations[bot_key] = observation_snapshot
-    CoopSystem.data.assignment_dirty = true
+    if force_replan or score_refresh_due then
+        CoopSystem.data.assignment_dirty = true
+    end
 
-    _update_assignments(
-            urgent_changed
-                    or assignment_invalid
-                    or role_state_changed
-                    or reload_state_changed
-    )
+    _update_assignments(force_replan)
 end
 
 _update_assignments = function(force)
@@ -430,11 +449,6 @@ _update_assignments = function(force)
 
     if not force then
         if not CoopSystem.data.assignment_dirty then
-            return
-        end
-        if CoopSystem.data.last_assignment_update
-                and (t - CoopSystem.data.last_assignment_update) < CONSTANTS.ASSIGNMENT_UPDATE_INTERVAL
-        then
             return
         end
     end
@@ -569,10 +583,15 @@ end
 
 function CoopSystem.remove_target(target_u_key)
     local target_key = tostring(target_u_key)
+    local changed = false
 
     for _, bot_snapshot in pairs(CoopSystem.data.bot_observations) do
-        if bot_snapshot and bot_snapshot.targets then
+        if bot_snapshot
+                and bot_snapshot.targets
+                and bot_snapshot.targets[target_key]
+        then
             bot_snapshot.targets[target_key] = nil
+            changed = true
         end
     end
 
@@ -580,12 +599,22 @@ function CoopSystem.remove_target(target_u_key)
     for bot_key, assigned_target in pairs(snapshot.by_bot) do
         if tostring(assigned_target) == target_key then
             snapshot.by_bot[bot_key] = nil
+            changed = true
         end
     end
 
+    if snapshot.owners_by_target[target_key] or snapshot.target_load[target_key] then
+        changed = true
+    end
     snapshot.owners_by_target[target_key] = nil
     snapshot.target_load[target_key] = nil
-    CoopSystem.data.assignment_dirty = true
+
+    if changed then
+        CoopSystem.data.assignment_dirty = true
+        _update_assignments(true)
+    end
+
+    return changed
 end
 
 local function _get_closest_teammate_info(pos)

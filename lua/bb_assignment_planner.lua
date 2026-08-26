@@ -7,6 +7,7 @@ local AssignmentPlanner = {}
 local URGENCY_BAND = 1000000
 local PRIMARY_BAND = 200000
 local PREFERRED_FOCUS_BAND = 175000
+local PREVIOUS_TARGET_BONUS = 25000
 local MAX_EDGE_SCORE = 99999
 local FORBIDDEN_COST = 1000000000000
 
@@ -124,12 +125,15 @@ local function _edge_utility(edge, job, previous_target)
     local coverage_band = job.slot == 1 and PRIMARY_BAND
             or job.preferred and PREFERRED_FOCUS_BAND
             or 0
+    local previous_bonus = previous_target
+            and tostring(previous_target) == tostring(job.target_key)
+            and PREVIOUS_TARGET_BONUS
+            or 0
 
-    if previous_target and tostring(previous_target) == tostring(job.target_key) then
-        score = math.min(score * 1.15, MAX_EDGE_SCORE)
-    end
-
-    return urgency * URGENCY_BAND + coverage_band + score * job.factor
+    return urgency * URGENCY_BAND
+            + coverage_band
+            + previous_bonus
+            + score * job.factor
 end
 
 function AssignmentPlanner.utility_for_load(edge, target_key, current_load, focus, previous_target)
