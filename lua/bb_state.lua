@@ -43,6 +43,8 @@ function BB:reset_level_state()
     self.MarkingSystem.reset_level_state()
     self.CoopSystem.reset_level_state()
     self.RescueCoordinator.reset_level_state()
+    self.ProactiveAttack:reset_level_state()
+    self.StatusIcons:reset_level_state()
     self.CacheManager.reset_all_instances()
 
     return true

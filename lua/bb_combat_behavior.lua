@@ -50,19 +50,9 @@ local function _attention_is_selectable(attention_data, t)
 end
 
 local function _resolve_reaction(data, attention_data, reaction_func)
-    reaction_func = reaction_func
-            or TeamAILogicBase and TeamAILogicBase._chk_reaction_to_attention_object
+    reaction_func = reaction_func or TeamAILogicBase._chk_reaction_to_attention_object
 
-    if reaction_func then
-        local stationary = CopLogicAttack
-                and CopLogicAttack._can_move
-                and not CopLogicAttack._can_move(data)
-                or false
-        return reaction_func(data, attention_data, stationary)
-    end
-
-    return attention_data.reaction
-            or attention_data.settings and attention_data.settings.reaction
+    return reaction_func(data, attention_data, not CopLogicAttack._can_move(data))
 end
 
 local function _get_coop_visibility(attention_data, t)
@@ -208,7 +198,7 @@ local function _filter_potential_targets(
     local force_unlock = false
     local potential_targets_map = {}
 
-    for u_key, attention_data in pairs(attention_objects or {}) do
+    for u_key, attention_data in pairs(attention_objects) do
         local u_key_str = tostring(u_key)
         if attention_data.identified
                 and alive(attention_data.unit)
@@ -427,10 +417,6 @@ end
 
 function CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
     local unit = data.unit
-    if not (alive(unit) and unit:movement()) then
-        return
-    end
-
     local t = data.t or game_time()
     local is_team_ai_unit = BB.UnitOps.is_team_ai(unit)
     local coop_requested = BB:get("coop", false) and is_team_ai_unit
@@ -556,7 +542,7 @@ local function _scan_nearby_threats(data, unit)
         result.active_enemy = attention.unit
     end
 
-    for _, u_char in pairs(data.detected_attention_objects or {}) do
+    for _, u_char in pairs(data.detected_attention_objects) do
         if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
             result.nearby = result.nearby + 1
             local dis = u_char.verified_dis or math.huge
@@ -682,8 +668,6 @@ function CombatBehavior.check_smart_reload(data)
     end
 
     local brain = unit:brain()
-    if not brain then return end
-
     if not is_empty and threats.active > 0 then
         local objective = data.objective
         local in_cover = objective and objective.in_place
@@ -723,7 +707,7 @@ function CombatBehavior.execute_melee_attack(data, criminal)
     local best_melee_target
     local best_melee_priority = 0
 
-    for _, u_char in pairs(data.detected_attention_objects or {}) do
+    for _, u_char in pairs(data.detected_attention_objects) do
         if u_char.identified
                 and alive(u_char.unit)
                 and are_units_foes(criminal, u_char.unit)

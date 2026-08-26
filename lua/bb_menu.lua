@@ -13,6 +13,7 @@ local RUNTIME_SETTING_KEYS = {
     biglob = true,
     conc = true,
     coop = true,
+    proactive = true,
     keepstaying = true,
 }
 local MENU_ITEMS = {
@@ -197,6 +198,15 @@ local MENU_ITEMS = {
     },
     {
         type = "toggle",
+        id = "proactive_toggle",
+        title = "proactive_toggle_title",
+        desc = "proactive_toggle_desc",
+        callback = "callback_proactive_toggle",
+        data_key = "proactive",
+        default_value = false,
+    },
+    {
+        type = "toggle",
         id = "keepstaying_toggle",
         title = "keepstaying_toggle_title",
         desc = "keepstaying_toggle_desc",
@@ -285,6 +295,7 @@ Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_ma
         "ammo",
         "conc",
         "coop",
+        "proactive",
         "keepstaying",
     }
 

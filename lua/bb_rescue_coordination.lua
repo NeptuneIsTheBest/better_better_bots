@@ -77,22 +77,13 @@ local function _is_dead(unit)
     return damage and ((damage.dead and damage:dead()) or damage._dead) or false
 end
 
-local function _is_healthy_team_ai(unit)
-    if not (alive(unit) and is_team_ai(unit)) or _is_dead(unit) then
+local function _is_healthy_team_ai(unit, combat_status)
+    if not is_team_ai(unit) then
         return false
     end
 
-    local damage = unit:character_damage()
-    if damage then
-        if damage.need_revive and damage:need_revive() then
-            return false
-        end
-        if damage.arrested and damage:arrested() then
-            return false
-        end
-    end
-
-    return true
+    combat_status = combat_status or UnitOps.combat_status(unit)
+    return combat_status.can_fight
 end
 
 local function _get_group_state()
@@ -328,7 +319,7 @@ local function _collect_active_rescues(group_state, sessions)
             local target_key = _unit_key(rescue_unit)
             local current = target_key and rescues[target_key]
             local session = target_key and sessions[target_key]
-            local logic_data = rescuer:brain() and rescuer:brain()._logic_data
+            local logic_data = rescuer:brain()._logic_data
             local internal_data = logic_data and logic_data.internal_data
             local is_acting = internal_data and internal_data.reviving == rescue_unit
 
@@ -422,7 +413,7 @@ function RescueCoordinator:_is_basic_guard_candidate(session, unit, check_availa
     end
 
     local movement = unit:movement()
-    if movement and movement.should_stay and movement:should_stay() then
+    if movement:should_stay() then
         return false
     end
 
@@ -436,7 +427,7 @@ function RescueCoordinator:_is_basic_guard_candidate(session, unit, check_availa
     end
 
     local brain = unit:brain()
-    local objective = brain and brain:objective()
+    local objective = brain:objective()
     if objective then
         if objective.type == "revive"
                 or objective._bb_rescue_guard
@@ -446,7 +437,7 @@ function RescueCoordinator:_is_basic_guard_candidate(session, unit, check_availa
         end
     end
 
-    if check_availability and brain then
+    if check_availability then
         if not brain:is_available_for_assignment(session.guard_template) then
             return false
         end
@@ -508,10 +499,7 @@ function RescueCoordinator:_release_orphan_guard(unit, target_key)
     if group_state then
         group_state:on_criminal_objective_complete(unit, objective)
     else
-        local brain = unit:brain()
-        if brain then
-            brain:set_objective(nil)
-        end
+        unit:brain():set_objective(nil)
     end
 end
 
@@ -622,10 +610,7 @@ function RescueCoordinator:_finish_session(target_key, release_guard)
         if group_state then
             group_state:on_criminal_objective_complete(session.guard, objective)
         else
-            local brain = session.guard:brain()
-            if brain then
-                brain:set_objective(nil)
-            end
+            session.guard:brain():set_objective(nil)
         end
     end
 end
@@ -736,6 +721,39 @@ function RescueCoordinator.has_guard_support(revive_unit)
     end
 
     return RescueCoordinator:_guard_is_current(session)
+end
+
+function RescueCoordinator.get_status_role(unit, combat_status)
+    if not _is_healthy_team_ai(unit, combat_status) then
+        return nil
+    end
+
+    local objective = _get_objective(unit)
+    if not objective then
+        return nil
+    end
+
+    if objective.type == "revive"
+            and RescueCoordinator.target_needs_help(objective.follow_unit)
+    then
+        return "rescue"
+    end
+
+    if not objective._bb_rescue_guard then
+        return nil
+    end
+
+    local target_key = objective._bb_rescue_target_key
+    local session = target_key and RescueCoordinator._sessions[tostring(target_key)]
+    if session
+            and session.guard == unit
+            and RescueCoordinator.target_needs_help(session.target)
+            and RescueCoordinator:_guard_is_current(session)
+    then
+        return "rescue_guard"
+    end
+
+    return nil
 end
 
 local function _find_nearby_cloaker(data, preferred_key)

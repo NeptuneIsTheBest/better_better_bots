@@ -12,6 +12,8 @@ local RuntimeSettings = BB.RuntimeSettings
 local HoldPosition = BB.HoldPosition
 local MarkingSystem = BB.MarkingSystem
 local RescueCoordinator = BB.RescueCoordinator
+local ProactiveAttack = BB.ProactiveAttack
+local StatusIcons = BB.StatusIcons
 
 local install_method_patch = Utils.install_method_patch
 local game_time = Utils.game_time
@@ -230,11 +232,9 @@ local function apply_team_ai_weapon_responsiveness(char_tweak)
 end
 
 local function get_team_ai_player_color_limit()
-    local chat_colors = tweak_data and tweak_data.chat_colors
-    local max_players = tweak_data and tweak_data.max_players or 4
-    local chat_color_count = type(chat_colors) == "table" and #chat_colors or 0
+    local chat_color_count = #tweak_data.chat_colors
 
-    return math.max(math.min(max_players, chat_color_count - 1), 0)
+    return math.max(math.min(tweak_data.max_players, chat_color_count - 1), 0)
 end
 
 local function get_team_ai_player_color_id(manager, unit)
@@ -247,8 +247,7 @@ local function get_team_ai_player_color_id(manager, unit)
         return nil
     end
 
-    local chat_colors = tweak_data and tweak_data.chat_colors
-    local fallback_color_id = type(chat_colors) == "table" and #chat_colors or nil
+    local fallback_color_id = #tweak_data.chat_colors
     local player_color_limit = get_team_ai_player_color_limit()
     if player_color_limit < 1 then
         return fallback_color_id
@@ -344,6 +343,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
                 "upd_team_AI_distance",
                 function(original, self, ...)
             RescueCoordinator.update(self)
+            ProactiveAttack:update(self)
 
             if BB:get("keepstaying", false) then
                 HoldPosition:apply_setting(self)
@@ -392,6 +392,17 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
     end
 end
 
+if RequiredScript == "lib/managers/hudmanagerpd2" then
+    Hooks:PostHook(
+            HUDManager,
+            "set_ai_stopped",
+            "BB_HUDManager_setAIStopped_StatusIcon",
+            function(self, ai_id, stopped, ...)
+                StatusIcons:on_native_ai_stopped(ai_id, stopped)
+            end
+    )
+end
+
 if RequiredScript == "lib/units/player_team/teamaibase" then
     if Network:is_server() then
         Hooks:PostHook(TeamAIBase, "post_init", "BB_TeamAIBase_postInit_SetupUpgrades", function(self, ...)
@@ -413,7 +424,6 @@ if RequiredScript == "lib/units/player_team/teamaibase" then
         end)
 
         function TeamAIBase:set_upgrade_value(category, upgrade, level)
-            if not managers.player then return end
             self._upgrades = self._upgrades or {}
             self._upgrades[category] = self._upgrades[category] or {}
 
@@ -460,10 +470,6 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 return
             end
 
-            if not self._unit then
-                return
-            end
-
             local brain = self._unit:brain()
             if not (brain and brain._logic_data) then
                 return
@@ -473,9 +479,7 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
             if my_data and not my_data.said_hurt then
                 if self._health_ratio and self._health_ratio <= 0.2 and not self:need_revive() then
                     my_data.said_hurt = true
-                    if self._unit:sound() then
-                        safe_say(self._unit, "g80x_plu", true, true)
-                    end
+                    safe_say(self._unit, "g80x_plu", true, true)
                 end
             end
         end)
@@ -485,13 +489,11 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 return
             end
 
-            if self._unit then
-                local brain = self._unit:brain()
-                if brain and brain._logic_data then
-                    local my_data = brain._logic_data.internal_data
-                    if my_data then
-                        my_data.said_hurt = false
-                    end
+            local brain = self._unit:brain()
+            if brain and brain._logic_data then
+                local my_data = brain._logic_data.internal_data
+                if my_data then
+                    my_data.said_hurt = false
                 end
             end
         end)
@@ -527,10 +529,7 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 TeamAIDamage,
                 "accuracy_multiplier",
                 function(original, self, ...)
-                if BB:get("combat", false)
-                and self._unit and alive(self._unit)
-                and is_team_ai(self._unit)
-                then
+                if BB:get("combat", false) then
                      local ThreatAssessment = BB.ThreatAssessment
                      local archetype = ThreatAssessment.get_weapon_archetype(self._unit)
                      local acc_mul = CONSTANTS.ACC_MUL_DEFAULT
@@ -555,10 +554,7 @@ if RequiredScript == "lib/units/interactions/interactionext" then
                 return
             end
 
-            local gstate = managers.groupai and managers.groupai:state()
-            if not gstate then
-                return
-            end
+            local gstate = managers.groupai:state()
 
             local revive_key = revive_unit:key()
             local rescuer_key = rescuer:key()
@@ -626,26 +622,25 @@ if RequiredScript == "lib/managers/criminalsmanager" then
     end)
 
     if Network:is_server() then
-        if tweak_data and tweak_data.character and tweak_data.character.presets then
-            local char_preset = tweak_data.character.presets
-            local gang_weapon = char_preset.weapon and (char_preset.weapon.bot_weapons or char_preset.weapon.gang_member)
+        local char_preset = tweak_data.character.presets
+        local gang_weapon = char_preset.weapon
+                and (char_preset.weapon.bot_weapons or char_preset.weapon.gang_member)
 
-            if gang_weapon then
-                for _, v in pairs(tweak_data.character) do
-                    if type(v) == "table" and v.access == "teamAI1" then
-                        v.no_run_start = true
-                        v.no_run_stop = true
-                        v.always_face_enemy = true
-                        v.crouch_move = true
-                        apply_team_ai_weapon_responsiveness(v)
+        if gang_weapon then
+            for _, v in pairs(tweak_data.character) do
+                if type(v) == "table" and v.access == "teamAI1" then
+                    v.no_run_start = true
+                    v.no_run_stop = true
+                    v.always_face_enemy = true
+                    v.crouch_move = true
+                    apply_team_ai_weapon_responsiveness(v)
 
-                        if char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
-                            v.damage.hurt_severity = char_preset.hurt_severities.no_hurts
-                        end
+                    if char_preset.hurt_severities and char_preset.hurt_severities.no_hurts then
+                        v.damage.hurt_severity = char_preset.hurt_severities.no_hurts
+                    end
 
-                        if char_preset.move_speed and char_preset.move_speed.lightning then
-                            v.move_speed = char_preset.move_speed.lightning
-                        end
+                    if char_preset.move_speed and char_preset.move_speed.lightning then
+                        v.move_speed = char_preset.move_speed.lightning
                     end
                 end
             end
@@ -802,8 +797,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
             local multiplier = original(self, ...)
             if BB:get("combat", false)
                     and not is_bot_weapons_active()
-                    and self._unit
-                    and is_team_ai(self._unit)
             then
                 return (multiplier or 1) * CONSTANTS.RELOAD_SPEED_MUL
             end
@@ -1320,7 +1313,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                     function(original, self, shoot_from_pos, attention, ...)
                 local target_pos, target_vec, target_dis, autotarget = original(self, shoot_from_pos, attention, ...)
 
-                if not BB:get("combat", false) or not (self._unit and alive(self._unit) and is_team_ai(self._unit)) then
+                if not BB:get("combat", false) or not is_team_ai(self._unit) then
                     return target_pos, target_vec, target_dis, autotarget
                 end
 
@@ -1339,7 +1332,7 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                     function(original, self, shoot_from_pos, attention, t, ...)
                 local target_pos, target_vec, target_dis, autotarget = original(self, shoot_from_pos, attention, t, ...)
 
-                if not BB:get("combat", false) or not (self._unit and alive(self._unit) and is_team_ai(self._unit)) then
+                if not BB:get("combat", false) or not is_team_ai(self._unit) then
                     return target_pos, target_vec, target_dis, autotarget
                 end
 
@@ -1378,7 +1371,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
         if Network:is_server() then
             local function handle_taser_damage(self, variant)
                 if variant == "taser_tased" or variant == 5 then
-                    if self._unit and not EnemyClassifier.is_special(self._unit) then
+                    if not EnemyClassifier.is_special(self._unit) then
                         BB:add_cop_to_intimidation_list(self._unit:key())
                     end
                 end
@@ -1409,8 +1402,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                     "damage_bullet",
                     "BB_CopDamage_damageBullet_SimpleDamage",
                     function(self, attack_data, ...)
-                        if self._unit and alive(self._unit)
-                        and attack_data.attacker_unit
+                        if attack_data.attacker_unit
                         and alive(attack_data.attacker_unit)
                         and is_team_ai(attack_data.attacker_unit)
                         and attack_data.damage
@@ -1740,9 +1732,9 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 end
 
                 local unit_mov = unit:movement()
-                local my_tracker = unit_mov and unit_mov:nav_tracker()
-                local gstate = managers.groupai and managers.groupai:state()
-                if not my_tracker or not gstate then
+                local my_tracker = unit_mov:nav_tracker()
+                local gstate = managers.groupai:state()
+                if not my_tracker then
                     return false
                 end
 
@@ -1856,9 +1848,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 return true
             end
 
-            if Hooks.RemovePreHook then
-                Hooks:RemovePreHook(LEGACY_REFLEX_HOOK_ID, CopLogicBase)
-            end
+            Hooks:RemovePreHook(LEGACY_REFLEX_HOOK_ID, CopLogicBase)
 
             install_method_patch(
                     "BB_CopLogicBase_updAttentionObjDetection_Reflex",
@@ -1924,6 +1914,15 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
     end
 
 if RequiredScript == "lib/setups/gamesetup" then
+    Hooks:PostHook(
+            GameSetup,
+            "update",
+            "BB_GameSetup_update_StatusIcons",
+            function(self, t, dt, ...)
+                StatusIcons:update(t, dt)
+            end
+    )
+
     Hooks:PreHook(
             GameSetup,
             "gather_packages_to_unload",
@@ -1947,30 +1946,17 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
                 if is_offline
                         and self._values.enabled
                         and self._values.state == "success"
-                        and managers.platform
                         and managers.platform:presence() == "Playing"
                 then
-                    local num_winners = 0
-                    if managers.network and managers.network:session() then
-                        num_winners = managers.network:session():amount_of_alive_players()
-                    end
+                    local session = managers.network:session()
+                    local num_winners = session:amount_of_alive_players()
+                            + managers.groupai:state():amount_of_winning_ai_criminals()
 
-                    if managers.groupai and managers.groupai:state() then
-                        num_winners = num_winners + managers.groupai:state():amount_of_winning_ai_criminals()
-                    end
-
-                    if managers.network and managers.network:session() then
-                        managers.network:session():send_to_peers("mission_ended", true, num_winners)
-                    end
-
-                    if game_state_machine then
-                        game_state_machine:change_state_by_name("victoryscreen", {
-                            num_winners = num_winners,
-                            personal_win = managers.player
-                                and managers.player:player_unit()
-                                and alive(managers.player:player_unit()) or false,
-                        })
-                    end
+                    session:send_to_peers("mission_ended", true, num_winners)
+                    game_state_machine:change_state_by_name("victoryscreen", {
+                        num_winners = num_winners,
+                        personal_win = alive(managers.player:player_unit()),
+                    })
 
                     ElementMissionEnd.super.on_executed(self, instigator)
                 else

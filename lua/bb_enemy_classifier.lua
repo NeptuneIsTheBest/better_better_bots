@@ -131,7 +131,7 @@ function EnemyClassifier.classify(unit, att_obj)
 
     local char_tweak = (att_obj and att_obj.char_tweak)
             or (base and base.char_tweak and base:char_tweak())
-            or (tweak_data and tweak_data.character and tweak_name and tweak_data.character[tweak_name])
+            or (tweak_name and tweak_data.character[tweak_name])
 
     if tweak_name then
         local direct = ENEMY_TWEAK_MAP[tweak_name]

@@ -23,7 +23,7 @@ local function restore_movement_entry(entry, original)
 end
 
 local function ensure_loadout_slots(limit)
-    local criminal_manager = managers and managers.criminals
+    local criminal_manager = managers.criminals
     local loadout_slots = criminal_manager and criminal_manager._loadout_slots
 
     if type(loadout_slots) ~= "table" or type(limit) ~= "number" then
@@ -38,11 +38,7 @@ local function ensure_loadout_slots(limit)
 end
 
 local function get_concussion_unit_path()
-    local blackmarket = tweak_data and tweak_data.blackmarket
-    local projectiles = blackmarket and blackmarket.projectiles
-    local concussion = projectiles and projectiles.concussion
-
-    return concussion and concussion.unit
+    return tweak_data.blackmarket.projectiles.concussion.unit
 end
 
 function RuntimeSettings:apply_team_ai_movement()
@@ -50,12 +46,8 @@ function RuntimeSettings:apply_team_ai_movement()
         return false
     end
 
-    local character_tweaks = tweak_data and tweak_data.character
-    local presets = character_tweaks and character_tweaks.presets
-
-    if not (character_tweaks and presets) then
-        return false
-    end
+    local character_tweaks = tweak_data.character
+    local presets = character_tweaks.presets
 
     if self._movement_character_tweaks ~= character_tweaks then
         self._movement_character_tweaks = character_tweaks
@@ -82,7 +74,7 @@ function RuntimeSettings:apply_team_ai_movement()
 
     local dodge_idx = tonumber(BB:get("dodge", 4)) or 4
     local dodge_name = DODGE_OPTIONS[dodge_idx] or DODGE_OPTIONS[4]
-    local dodge_preset = presets.dodge and presets.dodge[dodge_name]
+    local dodge_preset = presets.dodge[dodge_name]
 
     for _, entry in pairs(character_tweaks) do
         if type(entry) == "table" and entry.access == "teamAI1" then
@@ -164,7 +156,7 @@ function RuntimeSettings:apply_concussion(allow_acquire)
         return self:release_concussion_resource()
     end
 
-    if not allow_acquire and not (managers and managers.groupai) then
+    if not allow_acquire and not managers.groupai then
         return false
     end
 
@@ -192,7 +184,7 @@ function RuntimeSettings:apply_hold_position()
         return false
     end
 
-    local group_ai = managers and managers.groupai
+    local group_ai = managers.groupai
     local group_state = group_ai and group_ai:state() or nil
 
     return HoldPosition:apply_setting(group_state)
@@ -204,12 +196,20 @@ function RuntimeSettings:apply_coop()
     end
 
     local coop_system = BB.CoopSystem
-    if not (coop_system and coop_system.reset_level_state) then
+    coop_system.reset_level_state()
+    return true
+end
+
+function RuntimeSettings:apply_proactive()
+    if not is_server() then
         return false
     end
 
-    coop_system.reset_level_state()
-    return true
+    local proactive_attack = BB.ProactiveAttack
+    local group_ai = managers.groupai
+    local group_state = group_ai and group_ai:state() or nil
+
+    return proactive_attack:apply_setting(group_state)
 end
 
 function RuntimeSettings:apply(key)
@@ -223,6 +223,8 @@ function RuntimeSettings:apply(key)
         return self:apply_hold_position()
     elseif key == "coop" then
         return self:apply_coop()
+    elseif key == "proactive" then
+        return self:apply_proactive()
     end
 
     return false
@@ -232,6 +234,10 @@ function RuntimeSettings:apply_all()
     local movement_applied = self:apply_team_ai_movement()
     local big_lobby_applied = self:apply_big_lobby()
     local hold_position_applied = self:apply_hold_position()
+    local proactive_applied = self:apply_proactive()
 
-    return movement_applied or big_lobby_applied or hold_position_applied
+    return movement_applied
+            or big_lobby_applied
+            or hold_position_applied
+            or proactive_applied
 end

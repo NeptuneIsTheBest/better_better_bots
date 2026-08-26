@@ -31,7 +31,7 @@ function CombatHelper.has_ap_ammo(unit)
         return true
     end
 
-    return managers and managers.player
+    return managers.player
         and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
         or false
 end
@@ -45,7 +45,7 @@ function CombatHelper.acquire_dyn_unit(unit_path)
         return true
     end
 
-    local dyn_res = managers and managers.dyn_resource
+    local dyn_res = managers.dyn_resource
     local package_name = dyn_res and dyn_res.DYN_RESOURCES_PACKAGE
     if not (dyn_res and package_name) then
         return false
@@ -70,7 +70,7 @@ function CombatHelper.release_dyn_unit(unit_path)
         return true
     end
 
-    local dyn_res = managers and managers.dyn_resource
+    local dyn_res = managers.dyn_resource
     if not dyn_res then
         return false
     end

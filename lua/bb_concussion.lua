@@ -154,8 +154,7 @@ function ConcussionSystem.throw(data, criminal)
     local adjusted_pos = Vector3()
     mvector3.set(adjusted_pos, best_cluster_pos)
 
-    local gstate = managers.groupai and managers.groupai:state()
-    local player_criminals = gstate and gstate:all_player_criminals() or {}
+    local player_criminals = managers.groupai:state():all_player_criminals()
 
     local max_adjustments = 3
     for _ = 1, max_adjustments do

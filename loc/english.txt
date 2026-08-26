@@ -51,6 +51,8 @@
   "conc_toggle_desc": "If checked, bots will throw concussion grenades when encountering groups of nearby enemies.",
   "coop_toggle_title": "Coordinated Combat",
   "coop_toggle_desc": "If checked, bots will use the Hungarian Algorithm to optimally assign targets and coordinate fire. Each bot is assigned the best target based on distance, angle, and threat priority, while providing covering fire for reloading teammates and covering different angles of attack.",
+  "proactive_toggle_title": "Proactive Attack",
+  "proactive_toggle_desc": "If checked, bots may leave the player during loud combat to pursue nearby enemies already detected by the team. When multiple bots are available, one stays behind to guard the players. Player commands, carrying bags, holding position, and rescues take priority.",
   "keepstaying_toggle_title": "Keep Staying",
   "keepstaying_toggle_desc": "If checked, bots ordered to stay will hold the commanded position while still changing stance, shooting, and reloading. After reviving someone or being moved, they will return to that position.\nNote: If you use the Keepers mod, it is better to leave this disabled."
 }

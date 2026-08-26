@@ -131,6 +131,8 @@ end
 function UnitOps.combat_status(unit)
     local result = {
         can_fight = false,
+        is_alive = false,
+        is_dead = false,
         is_downed = false,
         is_arrested = false,
         is_tased = false,
@@ -140,8 +142,14 @@ function UnitOps.combat_status(unit)
         return result
     end
 
+    result.is_alive = true
+
     local damage = unit:character_damage()
     local movement = unit:movement()
+    result.is_dead = damage
+            and damage.dead
+            and damage:dead()
+            or false
     result.is_downed = damage
             and damage.need_revive
             and damage:need_revive()
@@ -154,7 +162,8 @@ function UnitOps.combat_status(unit)
             and movement.tased
             and movement:tased()
             or false
-    result.can_fight = not result.is_downed
+    result.can_fight = not result.is_dead
+            and not result.is_downed
             and not result.is_arrested
             and not result.is_tased
 

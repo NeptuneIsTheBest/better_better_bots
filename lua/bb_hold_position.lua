@@ -21,7 +21,7 @@ local function get_unit_key(unit)
 end
 
 local function get_group_state()
-    local group_ai = managers and managers.groupai
+    local group_ai = managers.groupai
     return group_ai and group_ai:state() or nil
 end
 
@@ -39,10 +39,10 @@ local function get_current_objective(unit)
 end
 
 local function get_anchor_nav_seg(movement, position)
-    local tracker = movement and movement.nav_tracker and movement:nav_tracker()
+    local tracker = movement:nav_tracker()
     local nav_seg = tracker and tracker:nav_segment()
 
-    if not nav_seg and managers and managers.navigation then
+    if not nav_seg then
         nav_seg = managers.navigation:get_nav_seg_from_pos(position)
     end
 
@@ -61,7 +61,7 @@ local function is_hold_objective(objective)
 end
 
 local function clear_table(value)
-    for key in pairs(value or {}) do
+    for key in pairs(value) do
         value[key] = nil
     end
 end
@@ -103,7 +103,6 @@ function HoldPosition:begin_long_distance_interaction(unit, other_unit, secondar
     if not state
             and self:is_enabled()
             and movement
-            and movement.should_stay
             and movement:should_stay()
     then
         self:capture(unit)
@@ -156,7 +155,7 @@ function HoldPosition:capture(unit, defer_objective_update)
 
     local key = get_unit_key(unit)
     local movement = get_unit_movement(unit)
-    local position = movement and movement.m_pos and movement:m_pos()
+    local position = movement and movement:m_pos()
 
     if not (key and position) then
         return false
@@ -283,23 +282,19 @@ function HoldPosition:apply_setting(group_state)
 end
 
 function HoldPosition:_resolve_anchor_nav_seg(state)
-    local navigation = managers and managers.navigation
-    if not navigation then
-        return nil
-    end
-
+    local navigation = managers.navigation
     local nav_seg = state.nav_seg
     local nav_segments = navigation._nav_segments
-    local nav_seg_data = nav_segments and nav_seg and nav_segments[nav_seg]
+    local nav_seg_data = nav_seg and nav_segments[nav_seg]
 
     if nav_seg_data and not nav_seg_data.disabled then
         return nav_seg
     end
 
     nav_seg = navigation:get_nav_seg_from_pos(state.position)
-    nav_seg_data = nav_segments and nav_seg and nav_segments[nav_seg]
+    nav_seg_data = nav_seg and nav_segments[nav_seg]
 
-    if nav_seg and (not nav_segments or nav_seg_data and not nav_seg_data.disabled) then
+    if nav_seg_data and not nav_seg_data.disabled then
         state.nav_seg = nav_seg
         return nav_seg
     end
@@ -423,7 +418,7 @@ function HoldPosition:prepare_objective_completion(unit, objective)
     end
 
     local movement = get_unit_movement(unit)
-    if not (movement and movement.should_stay and movement:should_stay()) then
+    if not movement or not movement:should_stay() then
         return false
     end
 
@@ -465,7 +460,7 @@ function HoldPosition:_can_start_return(unit, objective)
     end
 
     local damage = unit:character_damage()
-    if damage and ((damage.dead and damage:dead()) or (damage.need_revive and damage:need_revive())) then
+    if damage:dead() or damage:need_revive() then
         return false
     end
 
@@ -504,7 +499,7 @@ end
 
 function HoldPosition:_update_unit(unit, t)
     local movement = get_unit_movement(unit)
-    if not (movement and movement.should_stay and movement:should_stay()) then
+    if not movement or not movement:should_stay() then
         self:clear(unit, false)
         return
     end
@@ -540,10 +535,7 @@ function HoldPosition:_update_unit(unit, t)
         return
     end
 
-    local position = movement.m_pos and movement:m_pos()
-    if not position then
-        return
-    end
+    local position = movement:m_pos()
 
     local return_distance = CONSTANTS.HOLD_POSITION_RETURN_DISTANCE
     if mvector3.distance_sq(position, state.position) <= return_distance * return_distance then
@@ -608,7 +600,7 @@ function HoldPosition:is_stationary(unit)
     end
 
     local movement = get_unit_movement(unit)
-    if not (movement and movement.should_stay and movement:should_stay()) then
+    if not movement or not movement:should_stay() then
         return false
     end
 
@@ -638,9 +630,7 @@ function HoldPosition:can_turn_in_place(data, my_data)
         return false
     end
 
-    local movement = get_unit_movement(data.unit)
-
-    return movement and not movement:chk_action_forbidden("turn") or false
+    return not data.unit:movement():chk_action_forbidden("turn")
 end
 
 function HoldPosition:prepare_reload_pose(data)

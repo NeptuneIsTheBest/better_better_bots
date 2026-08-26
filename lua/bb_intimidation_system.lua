@@ -62,7 +62,7 @@ local function has_interaction_line_of_sight(data, my_pos, target_pos)
 end
 
 function IntimidationSystem.get_intimidate_range()
-    local ldi = tweak_data and tweak_data.player and tweak_data.player.long_dis_interaction
+    local ldi = tweak_data.player.long_dis_interaction
     return (ldi and ldi.intimidate_range_enemies) or CONSTANTS.INTIMIDATE_DISTANCE
 end
 
@@ -77,7 +77,7 @@ function IntimidationSystem.get_char_tweak(unit)
     end
 
     local tbl = base and base._tweak_table
-    return tweak_data and tweak_data.character and tbl and tweak_data.character[tbl]
+    return tbl and tweak_data.character[tbl]
 end
 
 function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_new_attempts)
