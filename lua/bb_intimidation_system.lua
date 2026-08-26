@@ -2,7 +2,6 @@ local BB = _G.BB
 local CONSTANTS = BB.CONSTANTS
 local Utils = BB.Utils
 local UnitOps = BB.UnitOps
-local CombatBehavior = BB.CombatBehavior
 
 local game_time = Utils.game_time
 local are_units_foes = UnitOps.are_foes
@@ -393,15 +392,6 @@ function IntimidationSystem.perform_interaction_check(data)
         if intimidated then
             my_data._intimidate_t = t
             return
-        end
-    end
-
-    local nmy = CombatBehavior.find_enemy_to_mark(data.detected_attention_objects, unit)
-    if alive(nmy) then
-        data._last_mark_t = data._last_mark_t or 0
-        if data._last_mark_t + CONSTANTS.MARK_COOLDOWN < t then
-            CombatBehavior.mark_enemy(data, unit, nmy, true, allow_actions)
-            data._last_mark_t = t
         end
     end
 end

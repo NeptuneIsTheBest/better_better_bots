@@ -40,6 +40,7 @@ function BB:reset_level_state()
     self.dom_pending = clear_table(self.dom_pending)
 
     self.HoldPosition:reset_level_state()
+    self.MarkingSystem.reset_level_state()
     self.CoopSystem.reset_level_state()
     self.RescueCoordinator.reset_level_state()
     self.CacheManager.reset_all_instances()

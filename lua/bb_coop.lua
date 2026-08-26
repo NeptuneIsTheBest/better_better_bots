@@ -898,21 +898,6 @@ function CoopSystem.scan_and_update_priorities(data, candidates, role)
     return CoopSystem.submit_candidates(data, candidates, role)
 end
 
-function CoopSystem.mark_dangerous_special(enemy_unit, bot_unit)
-    if not (alive(enemy_unit) and alive(bot_unit)) then
-        return
-    end
-
-    local contour = enemy_unit:contour()
-    if contour and managers.player then
-        local mark_id = managers.player:get_contour_for_marked_enemy()
-        if mark_id and (not contour._contour_list or not contour:has_id(mark_id)) then
-            UnitOps.say(bot_unit, "f32x_any", true, true)
-            contour:add(mark_id, true)
-        end
-    end
-end
-
 function CoopSystem.calculate_team_pressure(unit, data)
     if not (alive(unit) and CoopSystem.is_enabled()) then
         return 0

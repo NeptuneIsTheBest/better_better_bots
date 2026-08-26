@@ -11,6 +11,7 @@ dofile(ModPath .. "lua/bb_enemy_classifier.lua")
 dofile(ModPath .. "lua/bb_combat_helper.lua")
 dofile(ModPath .. "lua/bb_clustering.lua")
 dofile(ModPath .. "lua/bb_threat_assessment.lua")
+dofile(ModPath .. "lua/bb_marking_system.lua")
 
 local MASK = {
     AI_visibility = World:make_slot_mask(1, 11, 38, 39),

@@ -34,6 +34,24 @@ local function _unit_position(unit)
     return unit:position()
 end
 
+local function _navigation_position(unit)
+    if not alive(unit) then
+        return nil, nil
+    end
+
+    local movement = unit:movement()
+    local tracker = movement and movement:nav_tracker()
+    if not tracker then
+        return nil, nil
+    end
+
+    local position = tracker:lost()
+            and tracker:field_position()
+            or movement:m_newest_pos()
+
+    return position or tracker:field_position(), tracker
+end
+
 local function _attention_position(attention_data)
     if not attention_data then
         return nil
@@ -226,6 +244,71 @@ function RescueCoordinator.collect_known_threats(group_state, rescue_unit)
     end
 
     return threats
+end
+
+local function _nearest_threat_position(session, rescue_pos)
+    local nearest_pos
+    local nearest_dis_sq
+
+    for _, threat in pairs(session and session.threats or {}) do
+        local attention_data = threat.attention
+        local tracker = attention_data and attention_data.nav_tracker
+        local threat_pos = tracker and tracker:field_position()
+                or select(1, _navigation_position(threat.unit))
+                or _attention_position(attention_data)
+
+        if threat_pos then
+            local dis_sq = mvector3.distance_sq(rescue_pos, threat_pos)
+            if not nearest_dis_sq or dis_sq < nearest_dis_sq then
+                nearest_dis_sq = dis_sq
+                nearest_pos = threat_pos
+            end
+        end
+    end
+
+    return nearest_pos
+end
+
+function RescueCoordinator.get_guard_destination_occupation(data, objective)
+    if not (objective
+            and objective._bb_rescue_guard == true
+            and alive(objective.follow_unit))
+    then
+        return nil
+    end
+
+    local rescue_pos, tracker = _navigation_position(objective.follow_unit)
+    local nav_seg = tracker and tracker:nav_segment()
+    if not (rescue_pos and nav_seg) then
+        return nil
+    end
+
+    local session = RescueCoordinator._sessions[tostring(objective._bb_rescue_target_key)]
+    local threat_pos = _nearest_threat_position(session, rescue_pos)
+    local max_range = CONSTANTS.RESCUE_GUARD_POSITION_RANGE
+    local cover = threat_pos and managers.navigation:find_cover_in_nav_seg_3(
+            nav_seg,
+            max_range,
+            rescue_pos,
+            threat_pos
+    )
+    local cover_pos = cover and cover[1]
+
+    if cover_pos
+            and mvector3.distance_sq(rescue_pos, cover_pos) <= max_range * max_range
+    then
+        return {
+            type = "defend",
+            cover = { cover },
+        }
+    end
+
+    local guard_pos = CopLogicTravel._get_pos_on_wall(rescue_pos, max_range)
+
+    return {
+        type = "defend",
+        pos = guard_pos or mvector3.copy(rescue_pos),
+    }
 end
 
 local function _collect_active_rescues(group_state, sessions)
@@ -477,10 +560,8 @@ end
 
 function RescueCoordinator:_register_guard(session, group_state)
     local target = session.target
-    local movement = alive(target) and target:movement()
-    local tracker = movement and movement.nav_tracker and movement:nav_tracker()
+    local search_pos, tracker = _navigation_position(target)
     local nav_seg = tracker and tracker:nav_segment()
-    local search_pos = _unit_position(target)
     if not (nav_seg and search_pos) then
         return false
     end
@@ -585,12 +666,14 @@ function RescueCoordinator.update(group_state, force)
                 objective = rescue.objective,
                 rescuer = rescue.rescuer,
                 target = rescue.target,
+                threats = threats,
             }
             RescueCoordinator._sessions[target_key] = session
         end
 
         if session then
             session.objective = rescue.objective
+            session.threats = threats
 
             if session.guard and not RescueCoordinator:_guard_is_current(session) then
                 session.guard = nil

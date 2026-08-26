@@ -10,6 +10,7 @@ local CoopCacheManager = BB.CoopCacheManager
 local EnemyClassifier = BB.EnemyClassifier
 local RuntimeSettings = BB.RuntimeSettings
 local HoldPosition = BB.HoldPosition
+local MarkingSystem = BB.MarkingSystem
 local RescueCoordinator = BB.RescueCoordinator
 
 local install_method_patch = Utils.install_method_patch
@@ -895,6 +896,26 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
     end
 end
 
+if RequiredScript == "lib/units/player_team/logics/teamailogictravel" then
+        if Network:is_server() then
+            install_method_patch(
+                    "BB_TeamAILogicTravel_determineDestinationOccupation_RescueGuard",
+                    TeamAILogicTravel,
+                    "_determine_destination_occupation",
+                    function(original, data, objective, ...)
+                local occupation = RescueCoordinator.get_guard_destination_occupation(
+                        data,
+                        objective
+                )
+                if occupation then
+                    return occupation
+                end
+
+                return original(data, objective, ...)
+            end)
+    end
+end
+
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
         if Network:is_server() then
             install_method_patch(
@@ -1128,9 +1149,21 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
         if Network:is_server() then
-            TeamAILogicAssault.mark_enemy = CombatBehavior.mark_enemy
             TeamAILogicAssault.check_smart_reload = CombatBehavior.check_smart_reload
             TeamAILogicAssault._get_priority_attention = CombatBehavior.find_priority_attention
+
+            Hooks:OverrideFunction(TeamAILogicAssault, "find_enemy_to_mark", function()
+                return nil
+            end)
+
+            Hooks:PostHook(
+                    TeamAILogicAssault,
+                    "_upd_enemy_detection",
+                    "BB_TeamAILogicAssault_updEnemyDetection_Marking",
+                    function(data, ...)
+                        MarkingSystem.on_detection_updated(data)
+                    end
+            )
 
             install_method_patch(
                     "BB_TeamAILogicAssault_chkShouldTurn_HoldPosition",

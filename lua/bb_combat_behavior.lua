@@ -6,13 +6,12 @@ local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 local CoopCacheManager = BB.CoopCacheManager
 local HoldPosition = BB.HoldPosition
+local MarkingSystem = BB.MarkingSystem
 local RescueCoordinator = BB.RescueCoordinator
 
 local clamp = Utils.clamp
 local game_time = Utils.game_time
 local are_units_foes = UnitOps.are_foes
-local safe_say = UnitOps.say
-local request_act = UnitOps.request_act
 local play_net_redirect = UnitOps.play_redirect
 local is_surrendering = UnitOps.is_surrendering
 local get_unit_health_ratio = UnitOps.health_ratio
@@ -21,32 +20,6 @@ local SLOTS = BB.SLOTS
 local CombatHelper = BB.CombatHelper
 
 local CombatBehavior = {}
-
-local MARK_CONTOUR_IDS = {
-    "mark_enemy",
-    "mark_enemy_damage_bonus",
-    "mark_enemy_damage_bonus_distance",
-    "mark_unit_dangerous",
-    "mark_unit_dangerous_damage_bonus",
-    "mark_unit_dangerous_damage_bonus_distance",
-}
-
-local function _get_mark_contour_id(unit)
-    local base = unit:base()
-    local enemy_type = base and base.get_type and base:get_type()
-
-    return managers.player:get_contour_for_marked_enemy(enemy_type)
-end
-
-local function _has_mark_contour(contour)
-    for _, contour_id in ipairs(MARK_CONTOUR_IDS) do
-        if contour:has_id(contour_id) then
-            return true
-        end
-    end
-
-    return false
-end
 
 local function _update_target_lock(data, new_u_key, old_u_key, t)
     data._last_target_u_key = tostring(new_u_key)
@@ -182,7 +155,7 @@ local function _native_priority_slot(data, attention_data, flags, distance, reac
     end
 
     local contour = attention_data.unit:contour()
-    local been_marked = mark_dt < 8 or contour and _has_mark_contour(contour)
+    local been_marked = mark_dt < 8 or contour and MarkingSystem.has_mark_contour(contour)
     local near = distance < 800
     local has_alerted = alert_dt < 5
     local has_damaged = damage_dt < 2
@@ -285,7 +258,6 @@ local function _filter_potential_targets(
                     local urgency = 1
                     if flags.tasing then
                         threat = threat * CONSTANTS.TASING_THREAT_MUL
-                        BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
                         force_unlock = true
                         urgency = 3
                     end
@@ -294,7 +266,6 @@ local function _filter_potential_targets(
                         if attention_data.verified_dis and attention_data.verified_dis < CONSTANTS.SPOOC_CLOSE_RANGE then
                             threat = threat * CONSTANTS.SPOOC_CLOSE_MUL
                         end
-                        BB.CoopSystem.mark_dangerous_special(attention_data.unit, unit)
                         force_unlock = true
                         urgency = 3
                     end
@@ -531,114 +502,6 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
     end
 
     return _select_coop_target(data, potential_targets_map, old_target_u_key, my_key_str, t)
-end
-
-
-
-function CombatBehavior.find_enemy_to_mark(enemies, my_unit)
-    if not alive(my_unit) then
-        return
-    end
-
-    local unit_movement = my_unit:movement()
-    local has_ap = CombatHelper.has_ap_ammo(my_unit)
-
-    local my_head = unit_movement:m_head_pos()
-    local best_unit
-    local best_score
-
-    for _, attention_info in pairs(enemies or {}) do
-        if attention_info.identified and (attention_info.verified or attention_info.nearly_visible) then
-            local att_unit = attention_info.unit
-            if alive(att_unit) then
-                local reaction = attention_info.reaction or AIAttentionObject.REACT_IDLE
-                if reaction >= AIAttentionObject.REACT_COMBAT then
-                    local flags = BB.classify_enemy(att_unit, attention_info)
-                    local is_special = flags.special or flags.turret
-
-                    if is_special then
-                        local target_head = attention_info.m_head_pos
-                                or (att_unit:movement() and att_unit:movement():m_head_pos())
-                        local dis = attention_info.verified_dis
-                                or (target_head and mvector3.distance(my_head, target_head))
-
-                        if dis and dis <= CONSTANTS.MARK_DISTANCE then
-                            local u_contour = att_unit:contour()
-                            local contour_id = _get_mark_contour_id(att_unit)
-                            local already_marked = u_contour and _has_mark_contour(u_contour)
-
-                            if contour_id and contour_id ~= "" and u_contour and not already_marked then
-                                local shield_blocked = target_head and CombatHelper.shield_blocks_default(my_unit, target_head)
-                                local can_hit = has_ap
-                                        or dis <= CONSTANTS.MELEE_DISTANCE
-                                        or not shield_blocked
-
-                                if (not flags.shield) or can_hit then
-                                    local score = dis
-                                    if attention_info.verified then
-                                        score = score - CONSTANTS.MARK_VERIFIED_BONUS
-                                    end
-                                    if flags.shield then
-                                        score = score - CONSTANTS.MARK_SHIELD_BONUS
-                                    end
-
-                                    if (not best_score) or score < best_score then
-                                        best_score = score
-                                        best_unit = att_unit
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return best_unit
-end
-
-function CombatBehavior.mark_enemy(data, criminal, to_mark, play_sound, play_action)
-    if not (alive(criminal) and alive(to_mark)) then
-        return
-    end
-
-    local t = game_time()
-    data._ai_last_mark_t = data._ai_last_mark_t or 0
-    if t - data._ai_last_mark_t < CONSTANTS.MARK_COOLDOWN then
-        return
-    end
-
-    local base = to_mark:base()
-    local char_tweak = base and base.char_tweak and base:char_tweak() or nil
-    local is_turret = EnemyClassifier.is_turret(to_mark)
-    local is_special_enemy = EnemyClassifier.is_special(to_mark)
-
-    if not is_special_enemy and not is_turret then
-        return
-    end
-
-    if play_sound then
-        local sound_name = is_turret and "f44" or (char_tweak and char_tweak.priority_shout)
-        if sound_name then
-            safe_say(criminal, tostring(sound_name) .. "x_any", true, true)
-        end
-    end
-
-    if play_action then
-        request_act(criminal, "arrest", data)
-    end
-
-    local contour = to_mark:contour()
-    if contour then
-        local c_id = _get_mark_contour_id(to_mark)
-
-        if c_id and not _has_mark_contour(contour) then
-            contour:add(c_id, true)
-        end
-    end
-
-    data._ai_last_mark_t = t
 end
 
 local function _is_enemy_actively_firing(enemy_unit, my_unit)
