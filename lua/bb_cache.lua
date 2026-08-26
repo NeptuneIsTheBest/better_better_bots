@@ -204,7 +204,7 @@ local CACHE_NAMES = {"teammate_status", "threat_value", "suitability", "teammate
 
 function CoopCacheManager.init()
     CoopCacheManager.teammate_status = CacheManager.new({
-        ttl = 0.5,
+        ttl = BB.CONSTANTS.COOP_STATUS_CACHE_TTL,
         max_size = 64,
         cleanup_interval = 2,
         name = "TeammateStatus"

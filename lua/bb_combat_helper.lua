@@ -4,6 +4,7 @@ local UnitOps = BB.UnitOps
 
 local CombatHelper = BB.CombatHelper or {}
 local owned_dyn_units = BB._owned_dyn_units or {}
+local enemy_shield_check_mask
 
 BB._owned_dyn_units = owned_dyn_units
 
@@ -22,7 +23,10 @@ function CombatHelper.shield_blocks(attacker, target_head_pos, mask)
 end
 
 function CombatHelper.shield_blocks_default(attacker, target_head_pos)
-    return CombatHelper.shield_blocks(attacker, target_head_pos, BB.MASK.enemy_shield_check)
+    enemy_shield_check_mask = enemy_shield_check_mask
+            or managers.slot:get_mask("enemy_shield_check")
+
+    return CombatHelper.shield_blocks(attacker, target_head_pos, enemy_shield_check_mask)
 end
 
 function CombatHelper.has_ap_ammo(unit)

@@ -5,6 +5,7 @@ local UnitOps = BB.UnitOps
 local EnemyClassifier = BB.EnemyClassifier
 local ThreatAssessment = BB.ThreatAssessment
 local AssignmentPlanner = BB.AssignmentPlanner
+local RescueCoordinator = BB.RescueCoordinator
 local Utils = BB.Utils
 
 local game_time = Utils.game_time
@@ -14,17 +15,21 @@ BB.ProactiveAttack = ProactiveAttack
 
 local state = BB.proactive_attack_state or {
     assignments = {},
+    recall_holds = {},
     retry_until = {},
     guard_key = nil,
     next_update_t = 0,
     next_assignment_id = 0,
+    next_recall_id = 0,
 }
 BB.proactive_attack_state = state
 
 state.assignments = state.assignments or {}
+state.recall_holds = state.recall_holds or {}
 state.retry_until = state.retry_until or {}
 state.next_update_t = state.next_update_t or 0
 state.next_assignment_id = state.next_assignment_id or 0
+state.next_recall_id = state.next_recall_id or 0
 
 local function clear_table(value)
     for key in pairs(value) do
@@ -35,6 +40,16 @@ end
 local function get_group_state()
     local group_ai = managers.groupai
     return group_ai and group_ai:state() or nil
+end
+
+local function loud_combat_is_active(group_state)
+    if not group_state then
+        return false
+    end
+
+    return not group_state:whisper_mode()
+            and group_state:enemy_weapons_hot()
+            or false
 end
 
 local function get_unit_key(unit)
@@ -98,30 +113,32 @@ local function get_live_players(group_state)
     for _, record in pairs(group_state:all_player_criminals()) do
         local unit = record and record.unit
         local status = record and record.status
-        if alive(unit) and status ~= "dead" then
-            local position = get_unit_position(unit)
-            if position then
-                table.insert(players, {
-                    unit = unit,
-                    position = position,
-                })
-            end
-
-            local damage = unit:character_damage()
-            local needs_revive = damage
-                    and damage.need_revive
-                    and damage:need_revive()
-                    or false
-            local arrested = damage
-                    and damage.arrested
-                    and damage:arrested()
-                    or false
+        if alive(unit) then
             local disabled_status = status
                     and status ~= "electrified"
                     and status ~= "dead"
 
-            if needs_revive or arrested or disabled_status then
+            if RescueCoordinator.target_needs_help(unit) or disabled_status then
                 distressed = true
+            end
+
+            if status ~= "dead" then
+                local position = get_unit_position(unit)
+                if position then
+                    table.insert(players, {
+                        unit = unit,
+                        position = position,
+                    })
+                end
+            end
+        end
+    end
+
+    if not distressed then
+        for _, record in pairs(group_state:all_AI_criminals()) do
+            if RescueCoordinator.target_needs_help(record and record.unit) then
+                distressed = true
+                break
             end
         end
     end
@@ -204,6 +221,13 @@ local function make_target_observation(observer, attention_data, t)
     }
 end
 
+local function observation_is_fresher(observation, current)
+    return observation.last_seen_t > current.last_seen_t
+            or observation.last_seen_t == current.last_seen_t
+            and observation.verified
+            and not current.verified
+end
+
 local function collect_known_targets(group_state, players, max_distance, t)
     local targets_by_key = {}
 
@@ -224,10 +248,7 @@ local function collect_known_targets(group_state, players, max_distance, t)
                         target = observation
                         targets_by_key[observation.key] = target
                     else
-                        local fresher = observation.last_seen_t > target.last_seen_t
-                                or observation.last_seen_t == target.last_seen_t
-                                and observation.verified
-                                and not target.verified
+                        local fresher = observation_is_fresher(observation, target)
                         if fresher then
                             target.unit = observation.unit
                             target.position = observation.position
@@ -268,12 +289,194 @@ local function collect_known_targets(group_state, players, max_distance, t)
     return targets, targets_by_key
 end
 
+local function player_has_active_engagement(group_state, player_unit)
+    local record = group_state
+            and alive(player_unit)
+            and group_state:criminal_record(player_unit:key())
+
+    if not record then
+        return true
+    end
+
+    return (record.engaged_force or 0) > 0
+            or record.being_tased ~= nil
+            or record.being_arrested ~= nil
+end
+
 function ProactiveAttack:is_enabled()
     return Network:is_server() and BB:get("proactive", false) or false
 end
 
 function ProactiveAttack:is_attack_objective(objective)
     return objective and objective._bb_proactive_attack == true or false
+end
+
+local function is_live_player(group_state, unit)
+    if not (group_state and alive(unit)) then
+        return false
+    end
+
+    local record = group_state:all_player_criminals()[unit:key()]
+
+    return record ~= nil and record.status ~= "dead"
+end
+
+local function recall_objective_is_current(recall)
+    if not (recall and alive(recall.unit) and alive(recall.caller)) then
+        return false
+    end
+
+    local brain = recall.unit:brain()
+    local objective = brain and brain:objective()
+
+    return objective == recall.objective
+            and objective._bb_proactive_recall_id == recall.id
+            and objective.type == "follow"
+            and objective.follow_unit == recall.caller
+            and not objective.forced
+            and not objective.action
+end
+
+function ProactiveAttack:_clear_recall_hold(bot_key)
+    if bot_key == nil then
+        return false
+    end
+
+    bot_key = tostring(bot_key)
+    local recall = state.recall_holds[bot_key]
+    if not recall then
+        return false
+    end
+
+    local objective = recall.objective
+    if objective and objective._bb_proactive_recall_id == recall.id then
+        objective._bb_proactive_recall_id = nil
+    end
+
+    state.recall_holds[bot_key] = nil
+    return true
+end
+
+function ProactiveAttack:_clear_all_recall_holds()
+    local keys = {}
+    for bot_key in pairs(state.recall_holds) do
+        table.insert(keys, bot_key)
+    end
+
+    for _, bot_key in ipairs(keys) do
+        self:_clear_recall_hold(bot_key)
+    end
+
+    return true
+end
+
+function ProactiveAttack:on_long_distance_interacted(
+        unit,
+        other_unit,
+        secondary,
+        previous_objective
+)
+    local objective = unit:brain():objective()
+    local command_applied = objective
+            and objective ~= previous_objective
+            and (objective.follow_unit == other_unit
+            or objective.type == "throw_bag" and objective.unit == other_unit)
+    if not command_applied then
+        return false
+    end
+
+    local bot_key = tostring(unit:key())
+    self:_clear_recall_hold(bot_key)
+    state.assignments[bot_key] = nil
+    state.next_update_t = 0
+
+    if not self:is_enabled()
+            or secondary
+            or not is_live_player(get_group_state(), other_unit)
+            or objective.type ~= "follow"
+    then
+        return false
+    end
+
+    state.next_recall_id = state.next_recall_id + 1
+    local recall_id = state.next_recall_id
+    objective._bb_proactive_recall_id = recall_id
+    state.recall_holds[bot_key] = {
+        id = recall_id,
+        unit = unit,
+        caller = other_unit,
+        objective = objective,
+        issued_t = game_time(),
+    }
+
+    return true
+end
+
+function ProactiveAttack:_update_recall_holds(group_state, t, suspend_release)
+    local engagement_by_caller = {}
+    local keys = {}
+    for bot_key in pairs(state.recall_holds) do
+        table.insert(keys, bot_key)
+    end
+
+    for _, bot_key in ipairs(keys) do
+        local recall = state.recall_holds[bot_key]
+        if not recall_objective_is_current(recall)
+                or not is_live_player(group_state, recall and recall.caller)
+        then
+            self:_clear_recall_hold(bot_key)
+        else
+            local unit = recall.unit
+            local movement = unit:movement()
+            local base = unit:base()
+            local keeper_active = base.kpr_is_keeper
+                    or type(base.kpr_mode) == "number" and base.kpr_mode > 1
+
+            if not movement or movement:should_stay() or keeper_active then
+                self:_clear_recall_hold(bot_key)
+            elseif suspend_release then
+                recall.unengaged_since_t = nil
+            else
+                local status = UnitOps.combat_status(unit)
+                local bot_position = get_unit_position(unit)
+                local caller_position = get_unit_position(recall.caller)
+                local arrived = bot_position
+                        and caller_position
+                        and mvector3.distance(bot_position, caller_position)
+                                <= CONSTANTS.PROACTIVE_RECALL_ARRIVAL_DISTANCE
+
+                if not status.can_fight
+                        or movement:carrying_bag()
+                        or not arrived
+                then
+                    recall.unengaged_since_t = nil
+                else
+                    local caller_key = tostring(recall.caller:key())
+                    local engaged = engagement_by_caller[caller_key]
+                    if engaged == nil then
+                        engaged = player_has_active_engagement(group_state, recall.caller)
+                        engagement_by_caller[caller_key] = engaged
+                    end
+
+                    if engaged then
+                        recall.unengaged_since_t = nil
+                    elseif not recall.unengaged_since_t then
+                        recall.unengaged_since_t = t
+                    elseif t - recall.unengaged_since_t
+                            >= CONSTANTS.PROACTIVE_RECALL_UNENGAGED_DURATION
+                    then
+                        local objective = recall.objective
+                        self:_clear_recall_hold(bot_key)
+                        objective.called = false
+                        objective.is_default = true
+                        state.next_update_t = 0
+                    end
+                end
+            end
+        end
+    end
+
+    return true
 end
 
 local function objective_allows_attack(objective)
@@ -297,6 +500,11 @@ end
 
 local function bot_is_eligible(unit, players, status)
     if not status.can_fight then
+        return false
+    end
+
+    local bot_key = tostring(unit:key())
+    if state.recall_holds[bot_key] then
         return false
     end
 
@@ -340,7 +548,7 @@ local function bot_is_eligible(unit, players, status)
     end
 
     return true, {
-        key = tostring(unit:key()),
+        key = bot_key,
         unit = unit,
         brain = brain,
         data = logic_data,
@@ -393,6 +601,37 @@ local function can_restore_native_objective(unit)
             and logic_name ~= "surrender"
 end
 
+local function target_damage_supports_objective_listeners(unit)
+    if not alive(unit) then
+        return false
+    end
+
+    local damage = unit:character_damage()
+
+    return not damage
+            or type(damage.add_listener) == "function"
+            and type(damage.remove_listener) == "function"
+end
+
+local function prepare_objective_for_removal(objective)
+    local follow_unit = objective and objective.follow_unit
+    if not follow_unit then
+        return
+    end
+
+    if not alive(follow_unit) then
+        objective.destroy_clbk_key = nil
+        objective.death_clbk_key = nil
+        return
+    end
+
+    if objective.death_clbk_key
+            and not target_damage_supports_objective_listeners(follow_unit)
+    then
+        objective.death_clbk_key = nil
+    end
+end
+
 function ProactiveAttack:_release_bot(unit, group_state, restore_native)
     local bot_key = get_unit_key(unit)
     if not bot_key then
@@ -410,6 +649,7 @@ function ProactiveAttack:_release_bot(unit, group_state, restore_native)
     objective.fail_clbk = nil
     objective.complete_clbk = nil
     objective.followup_objective = nil
+    prepare_objective_for_removal(objective)
     brain:set_objective(nil)
 
     if restore_native and group_state and can_restore_native_objective(unit) then
@@ -468,7 +708,6 @@ end
 
 local function select_guard(eligible, eligible_by_key)
     if #eligible < 2 then
-        state.guard_key = nil
         return nil
     end
 
@@ -582,6 +821,10 @@ function ProactiveAttack:_on_objective_failed(bot_key, assignment_id, unit)
     local failed_current_objective = self:is_attack_objective(current_objective)
             and current_objective._bb_proactive_assignment_id == assignment_id
 
+    if failed_current_objective then
+        prepare_objective_for_removal(current_objective)
+    end
+
     state.assignments[bot_key] = nil
     state.next_update_t = 0
 
@@ -595,6 +838,11 @@ end
 function ProactiveAttack:_assign_target(bot, target)
     local current_assignment = state.assignments[bot.key]
     local current_objective = bot.brain:objective()
+
+    if self:is_attack_objective(current_objective) then
+        prepare_objective_for_removal(current_objective)
+    end
+
     local t = game_time()
     local target_distance = bot.position
             and target.position
@@ -625,6 +873,7 @@ function ProactiveAttack:_assign_target(bot, target)
 
     state.next_assignment_id = state.next_assignment_id + 1
     local assignment_id = state.next_assignment_id
+    local manual_destroy_clbk_key
     local objective = {
         is_default = true,
         called = false,
@@ -647,6 +896,15 @@ function ProactiveAttack:_assign_target(bot, target)
         ),
     }
 
+    if not target_damage_supports_objective_listeners(target.unit) then
+        manual_destroy_clbk_key = string.format(
+                "BB_ProactiveAttack_objective_%s_%d",
+                bot.key,
+                assignment_id
+        )
+        objective.destroy_clbk_key = manual_destroy_clbk_key
+    end
+
     state.assignments[bot.key] = {
         id = assignment_id,
         unit = bot.unit,
@@ -658,6 +916,16 @@ function ProactiveAttack:_assign_target(bot, target)
     }
 
     bot.brain:set_objective(objective)
+
+    if manual_destroy_clbk_key
+            and bot.brain:objective() == objective
+            and alive(target.unit)
+    then
+        target.unit:base():add_destroy_listener(
+                manual_destroy_clbk_key,
+                callback(bot.brain, bot.brain, "on_objective_unit_destroyed")
+        )
+    end
 
     return true
 end
@@ -681,48 +949,67 @@ local function reconcile_assignments(all_units)
     end
 end
 
-local function has_current_attack_assignment()
-    for _, assignment in pairs(state.assignments) do
-        if assignment_is_current(assignment, assignment.unit) then
-            return true
-        end
-    end
-
-    return false
-end
-
 function ProactiveAttack:get_status_role(unit, combat_status)
     combat_status = combat_status or UnitOps.combat_status(unit)
-    if not self:is_enabled() or not combat_status.can_fight then
+    if not self:is_enabled()
+            or not loud_combat_is_active(get_group_state())
+            or not combat_status.can_fight
+    then
+        return nil
+    end
+
+    local movement = unit:movement()
+    if not movement or movement:should_stay() then
         return nil
     end
 
     local bot_key = tostring(unit:key())
+    local recall = state.recall_holds[bot_key]
+    if recall_objective_is_current(recall) then
+        return "proactive_guard"
+    end
+
+    local brain = unit:brain()
+    local logic_data = brain and brain._logic_data
+    local logic_name = logic_data and logic_data.name
+    local base = unit:base()
+    local keeper_active = base
+            and (base.kpr_is_keeper
+            or type(base.kpr_mode) == "number" and base.kpr_mode > 1)
+
+    if movement:carrying_bag()
+            or keeper_active
+            or not brain
+            or not logic_data
+            or logic_name == "disabled"
+            or logic_name == "inactive"
+            or logic_name == "surrender"
+    then
+        return "proactive_guard"
+    end
+
     local assignment = state.assignments[bot_key]
     if assignment_is_current(assignment, unit) then
         return "proactive_attack"
     end
 
-    if not (state.guard_key == bot_key and has_current_attack_assignment()) then
-        return nil
+    if state.guard_key == bot_key then
+        return "proactive_guard"
     end
 
-    local movement = unit:movement()
-    if movement:should_stay() or movement:carrying_bag() then
-        return nil
-    end
-
-    local brain = unit:brain()
     if not objective_allows_attack(brain:objective()) then
-        return nil
+        return "proactive_guard"
     end
 
-    return "proactive_guard"
+    return "proactive_attack"
 end
 
 function ProactiveAttack:_update(group_state, t)
-    local players, player_distressed = get_live_players(group_state)
-    if #players == 0 or player_distressed then
+    local players, team_distressed = get_live_players(group_state)
+    local suspend_recall_release = #players == 0 or team_distressed
+    self:_update_recall_holds(group_state, t, suspend_recall_release)
+
+    if suspend_recall_release then
         self:release_all(group_state, true)
         return true
     end
@@ -797,6 +1084,9 @@ function ProactiveAttack:update(group_state, force)
     end
 
     if not self:is_enabled() then
+        if next(state.recall_holds) then
+            self:_clear_all_recall_holds()
+        end
         if next(state.assignments) then
             self:release_all(group_state, true)
         end
@@ -811,9 +1101,8 @@ function ProactiveAttack:update(group_state, force)
 
     cleanup_retry_cooldowns(t)
 
-    local whisper_mode = group_state:whisper_mode()
-    local weapons_hot = group_state:enemy_weapons_hot()
-    if whisper_mode or not weapons_hot then
+    if not loud_combat_is_active(group_state) then
+        self:_update_recall_holds(group_state, t, true)
         self:release_all(group_state, true)
         return true
     end
@@ -826,6 +1115,7 @@ function ProactiveAttack:apply_setting(group_state)
 
     if not self:is_enabled() then
         clear_table(state.retry_until)
+        self:_clear_all_recall_holds()
         return self:release_all(group_state, true)
     end
 
@@ -833,11 +1123,14 @@ function ProactiveAttack:apply_setting(group_state)
 end
 
 function ProactiveAttack:reset_level_state()
+    self:_clear_all_recall_holds()
     clear_table(state.assignments)
+    clear_table(state.recall_holds)
     clear_table(state.retry_until)
     state.guard_key = nil
     state.next_update_t = 0
     state.next_assignment_id = 0
+    state.next_recall_id = 0
 
     return true
 end

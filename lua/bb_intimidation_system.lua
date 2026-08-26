@@ -40,7 +40,7 @@ local function get_interaction_geometry(data, target_unit)
 end
 
 local function has_interaction_line_of_sight(data, my_pos, target_pos)
-    local visibility_mask = (data and data.visibility_slotmask) or BB.MASK.AI_visibility
+    local visibility_mask = (data and data.visibility_slotmask) or managers.slot:get_mask("AI_visibility")
     if not (visibility_mask and my_pos and target_pos) then
         return false
     end

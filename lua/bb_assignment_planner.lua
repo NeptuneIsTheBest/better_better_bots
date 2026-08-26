@@ -178,7 +178,6 @@ function AssignmentPlanner.solve(params)
     end
 
     local jobs = _build_jobs(targets, #bots, target_load)
-    local attack_job_count = #jobs
     for _ = 1, #bots do
         table.insert(jobs, { dummy = true })
     end
@@ -188,8 +187,6 @@ function AssignmentPlanner.solve(params)
             by_bot = by_bot,
             owners_by_target = owners_by_target,
             target_load = target_load,
-            jobs = jobs,
-            dummy_assignments = 0,
         }
     end
 
@@ -229,19 +226,16 @@ function AssignmentPlanner.solve(params)
     end
 
     local assignment = Hungarian.solve(cost_matrix, #bots, #jobs)
-    local dummy_assignments = 0
 
     for bot_index, job_index in pairs(assignment) do
         local bot_key = tostring(bots[bot_index].key)
         local job = jobs[job_index]
-        if job and not job.dummy and job_index <= attack_job_count then
+        if job and not job.dummy then
             local target_key = job.target_key
             by_bot[bot_key] = target_key
             owners_by_target[target_key] = owners_by_target[target_key] or {}
             owners_by_target[target_key][bot_key] = true
             target_load[target_key] = (target_load[target_key] or 0) + 1
-        else
-            dummy_assignments = dummy_assignments + 1
         end
     end
 
@@ -249,8 +243,6 @@ function AssignmentPlanner.solve(params)
         by_bot = by_bot,
         owners_by_target = owners_by_target,
         target_load = target_load,
-        jobs = jobs,
-        dummy_assignments = dummy_assignments,
     }
 end
 

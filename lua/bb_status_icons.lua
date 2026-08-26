@@ -405,13 +405,18 @@ function StatusIcons:_collect_authoritative_roles()
                 and criminals:character_name_by_unit(unit)
         if character_name then
             local role = BB.RescueCoordinator.get_status_role(unit, combat_status)
+            local movement = unit:movement()
+
+            if not role
+                    and combat_status.can_fight
+                    and movement
+                    and movement:should_stay()
+            then
+                role = self.ROLES.hold
+            end
 
             if not role then
                 role = BB.ProactiveAttack:get_status_role(unit, combat_status)
-            end
-
-            if not role and combat_status.can_fight and unit:movement():should_stay() then
-                role = self.ROLES.hold
             end
 
             if role and ROLE_DEFS[role] then

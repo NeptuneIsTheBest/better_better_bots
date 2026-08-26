@@ -1,8 +1,6 @@
 local BB = _G.BB
 
 local ENEMY_TWEAK_MAP = BB.ENEMY_TWEAK_MAP
-local METHOD_PATCHES = BB._method_patches or {}
-BB._method_patches = METHOD_PATCHES
 
 local Utils = {}
 
@@ -10,43 +8,22 @@ function Utils.log(msg, level)
     log(string.format("[Better Bots][%s] %s", level or "INFO", tostring(msg)))
 end
 
-function Utils.install_method_patch(patch_id, target, method_name, handler)
-    if type(patch_id) ~= "string"
-            or type(target) ~= "table"
+function Utils.install_method_patch(target, method_name, handler)
+    if type(target) ~= "table"
             or type(method_name) ~= "string"
             or type(handler) ~= "function"
     then
-        error(string.format("Invalid method patch registration: %s", tostring(patch_id)), 2)
+        error(string.format("Invalid method patch registration for %s", tostring(method_name)), 2)
     end
 
     local current = target[method_name]
     if type(current) ~= "function" then
-        error(string.format("Method patch %s could not find %s", patch_id, method_name), 2)
+        error(string.format("Method patch could not find %s", method_name), 2)
     end
 
-    local existing = METHOD_PATCHES[patch_id]
-    if existing then
-        if existing.target ~= target or existing.method_name ~= method_name then
-            error(string.format("Method patch id %s was reused for a different target", patch_id), 2)
-        end
-
-        existing.handler = handler
-        return true
+    target[method_name] = function(...)
+        return handler(current, ...)
     end
-
-    local patch = {
-        target = target,
-        method_name = method_name,
-        original = current,
-        handler = handler,
-    }
-
-    patch.wrapper = function(...)
-        return patch.handler(patch.original, ...)
-    end
-
-    target[method_name] = patch.wrapper
-    METHOD_PATCHES[patch_id] = patch
 
     return true
 end
@@ -170,20 +147,6 @@ function UnitOps.combat_status(unit)
     return result
 end
 
-function UnitOps.is_in_slot(unit, slots_table)
-    if not unit or not slots_table then
-        return false
-    end
-
-    for _, slot in ipairs(slots_table) do
-        if unit:in_slot(slot) then
-            return true
-        end
-    end
-
-    return false
-end
-
 function UnitOps.say(unit, line, important, skip_forced)
     if not alive(unit) then
         return
@@ -197,14 +160,21 @@ end
 
 function UnitOps.play_redirect(unit, variant)
     local mov = alive(unit) and unit:movement()
-    if mov and mov.play_redirect then
-        mov:play_redirect(variant)
-
-        local sess = managers.network and managers.network:session()
-        if sess and Network:is_server() then
-            sess:send_to_peers_synched("play_distance_interact_redirect", unit, variant)
-        end
+    if not (mov and mov.play_redirect) then
+        return
     end
+
+    local redirect_state = mov:play_redirect(variant)
+    if not redirect_state then
+        return
+    end
+
+    local sess = managers.network and managers.network:session()
+    if sess and Network:is_server() then
+        sess:send_to_peers_synched("play_distance_interact_redirect", unit, variant)
+    end
+
+    return redirect_state
 end
 
 function UnitOps.is_surrendering(unit)

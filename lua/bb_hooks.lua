@@ -1,8 +1,6 @@
 local BB = _G.BB
 local Utils = BB.Utils
 local CONSTANTS = BB.CONSTANTS
-local SLOTS = BB.SLOTS
-local MASK = BB.MASK
 local UnitOps = BB.UnitOps
 local CombatBehavior = BB.CombatBehavior
 local IntimidationSystem = BB.IntimidationSystem
@@ -18,11 +16,8 @@ local StatusIcons = BB.StatusIcons
 local install_method_patch = Utils.install_method_patch
 local game_time = Utils.game_time
 local is_team_ai = UnitOps.is_team_ai
-local is_unit_in_slot = UnitOps.is_in_slot
 local unit_head_pos = UnitOps.head_pos
 local safe_say = UnitOps.say
-local move_shoot_path_vec = Vector3()
-local move_shoot_enemy_vec = Vector3()
 local move_shoot_watch_vec = Vector3()
 local move_shoot_walk_vec = Vector3()
 local DEFAULT_TEAM_AI_FIRE_RANGE = 500
@@ -39,51 +34,48 @@ local function get_valid_weapon_range(value)
     return type(value) == "number" and value > 0 and value or nil
 end
 
-local function get_team_ai_weapon_ranges(weapon_range)
-    if type(weapon_range) == "number" then
-        local range = get_valid_weapon_range(weapon_range) or DEFAULT_TEAM_AI_FIRE_RANGE
-
-        return range, range, range
-    end
-
-    if type(weapon_range) ~= "table" then
-        return DEFAULT_TEAM_AI_FIRE_RANGE, DEFAULT_TEAM_AI_FIRE_RANGE, DEFAULT_TEAM_AI_FIRE_RANGE
-    end
-
-    local close_range = get_valid_weapon_range(weapon_range.close)
-    local optimal_range = get_valid_weapon_range(weapon_range.optimal)
-    local far_range = get_valid_weapon_range(weapon_range.far)
-
-    close_range = close_range or optimal_range or far_range or DEFAULT_TEAM_AI_FIRE_RANGE
-    optimal_range = math.max(optimal_range or close_range, close_range)
-    far_range = math.max(far_range or optimal_range, optimal_range)
-
-    return close_range, optimal_range, far_range
-end
-
 local function get_team_ai_running_fire_range(weapon_range)
-    local close_range, optimal_range, far_range = get_team_ai_weapon_ranges(weapon_range)
+    local numeric_range = get_valid_weapon_range(weapon_range)
+    if numeric_range then
+        return numeric_range
+    end
 
     if type(weapon_range) == "table" then
         local range_key = CONSTANTS.MOVE_SHOOT_RUNNING_RANGE or "optimal"
         local configured_range = get_valid_weapon_range(weapon_range[range_key])
 
         if configured_range then
-            return math.min(configured_range, far_range)
+            return configured_range
         end
+
+        return get_valid_weapon_range(weapon_range.optimal)
+                or get_valid_weapon_range(weapon_range.close)
+                or get_valid_weapon_range(weapon_range.far)
+                or DEFAULT_TEAM_AI_FIRE_RANGE
     end
 
-    return optimal_range or close_range
+    return DEFAULT_TEAM_AI_FIRE_RANGE
 end
 
 local function is_team_ai_running(unit, my_data)
+    local lower_body_action = unit:movement():get_action(2)
+
+    if lower_body_action then
+        if lower_body_action:type() ~= "walk" then
+            return false
+        end
+
+        return not lower_body_action:stopping()
+                and lower_body_action:haste() == "run"
+    end
+
     local advancing = my_data and my_data.advancing
 
-    if advancing and advancing.stopping and advancing.haste then
+    if advancing then
         return not advancing:stopping() and advancing:haste() == "run"
     end
 
-    local anim_data = unit and unit:anim_data()
+    local anim_data = unit:anim_data()
 
     return anim_data and anim_data.run or false
 end
@@ -100,27 +92,6 @@ local function get_team_ai_attention_distance(data, focus_enemy)
     end
 
     return math.huge
-end
-
-local function is_team_ai_move_direction_allowed(data, movement, target_pos, target_dis, running_range)
-    if target_dis <= running_range then
-        return true
-    end
-
-    local walk_to_pos = movement and movement:get_walk_to_pos()
-
-    if not (data and data.m_pos and walk_to_pos and target_pos) then
-        return true
-    end
-
-    local path_dis = mvector3.direction(move_shoot_path_vec, data.m_pos, walk_to_pos)
-    local enemy_dis = mvector3.direction(move_shoot_enemy_vec, data.m_pos, target_pos)
-
-    if path_dis <= 0 or enemy_dis <= 0 then
-        return true
-    end
-
-    return mvector3.dot(move_shoot_path_vec, move_shoot_enemy_vec) >= CONSTANTS.MOVE_SHOOT_BACKWARD_DOT
 end
 
 local function can_team_ai_watch_position_while_running(data, movement, watch_pos)
@@ -208,6 +179,13 @@ local function reset_team_ai_attention(data, my_data)
     my_data._bb_aim_attention_kind = nil
     my_data._bb_aim_attention_key = nil
     my_data._bb_aim_attention_pos = nil
+end
+
+local function clear_team_ai_attention_cache(my_data)
+    my_data._bb_aim_attention_kind = nil
+    my_data._bb_aim_attention_key = nil
+    my_data._bb_aim_attention_pos = nil
+    my_data._bb_aim_stop_requested = nil
 end
 
 local function apply_team_ai_weapon_responsiveness(char_tweak)
@@ -337,7 +315,24 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
         end)
 
         install_method_patch(
-                "BB_GroupAIStateBase_updTeamAIDistance",
+                GroupAIStateBase,
+                "add_special_objective",
+                function(original, self, so_id, objective_data, ...)
+            local is_rescue = RescueCoordinator.prepare_rescue_special_objective(
+                    self,
+                    so_id,
+                    objective_data
+            )
+            local result = original(self, so_id, objective_data, ...)
+
+            if is_rescue then
+                RescueCoordinator.on_rescue_special_objective_added(self, so_id)
+            end
+
+            return result
+        end)
+
+        install_method_patch(
                 GroupAIStateBase,
                 "upd_team_AI_distance",
                 function(original, self, ...)
@@ -356,7 +351,6 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
         end)
 
         install_method_patch(
-                "BB_GroupAIStateBase_onCriminalObjectiveComplete_HoldPosition",
                 GroupAIStateBase,
                 "on_criminal_objective_complete",
                 function(original, self, unit, objective, ...)
@@ -366,7 +360,6 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
         end)
 
         install_method_patch(
-                "BB_GroupAIStateBase_chkSayTeamAICombatChatter",
                 GroupAIStateBase,
                 "chk_say_teamAI_combat_chatter",
                 function(original, self, ...)
@@ -497,7 +490,6 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
         end)
 
         install_method_patch(
-                "BB_TeamAIDamage_checkBleedOut",
                 TeamAIDamage,
                 "_check_bleed_out",
                 function(original, self)
@@ -523,7 +515,6 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
         end
 
         install_method_patch(
-                "BB_TeamAIDamage_accuracyMultiplier",
                 TeamAIDamage,
                 "accuracy_multiplier",
                 function(original, self, ...)
@@ -547,6 +538,13 @@ end
 
 if RequiredScript == "lib/units/interactions/interactionext" then
     if Network:is_server() then
+        local function pack_results(...)
+            local results = { ... }
+            results.n = select("#", ...)
+
+            return results
+        end
+
         local function cancel_other_rescue_objectives(revive_unit, rescuer)
             if not (alive(revive_unit) and alive(rescuer)) then
                 return
@@ -593,21 +591,68 @@ if RequiredScript == "lib/units/interactions/interactionext" then
                 "BB_ReviveInteractionExt_atInteractInterrupt_RescueGuard",
                 function(self, player, complete, ...)
                     if (self.tweak_data == "revive" or self.tweak_data == "free")
+                            and complete ~= true
                     then
                         RescueCoordinator.on_rescue_interaction(
                                 self._unit,
                                 player,
-                                complete == true
+                                false
                         )
                     end
                 end
         )
+
+        install_method_patch(
+                ReviveInteractionExt,
+                "remove_interact",
+                function(original, self, ...)
+            local results = pack_results(original(self, ...))
+            local attempt = self._bb_rescue_interact_attempt
+
+            if attempt then
+                attempt.completed = true
+            end
+
+            return unpack(results, 1, results.n)
+        end)
+
+        install_method_patch(
+                ReviveInteractionExt,
+                "interact",
+                function(original, self, player, ...)
+            local is_rescue = self.tweak_data == "revive" or self.tweak_data == "free"
+            if not is_rescue then
+                return original(self, player, ...)
+            end
+
+            local previous_attempt = self._bb_rescue_interact_attempt
+            local attempt = {}
+            self._bb_rescue_interact_attempt = attempt
+
+            local results = pack_results(pcall(original, self, player, ...))
+
+            self._bb_rescue_interact_attempt = previous_attempt
+
+            if not results[1] then
+                error(results[2], 0)
+            end
+
+            if attempt.completed then
+                self._tweak_data_at_interact_start = nil
+                RescueCoordinator.on_rescue_interaction(
+                        self._unit,
+                        player,
+                        true
+                )
+            end
+
+            return unpack(results, 2, results.n)
+        end)
     end
 end
 
 if RequiredScript == "lib/managers/criminalsmanager" then
     install_method_patch(
-            "BB_CriminalsManager_characterColorIdByUnit",
             CriminalsManager,
             "character_color_id_by_unit",
             function(original, self, unit, ...)
@@ -654,15 +699,34 @@ if RequiredScript == "lib/tweak_data/playertweakdata" then
     end
 end
 
-local function remove_ai_and_players_from_bullet_mask(self)
+local friendly_weapon_user_mask
+local friendly_bullet_collision_mask
+
+local function get_friendly_weapon_masks()
+    if not friendly_weapon_user_mask then
+        friendly_weapon_user_mask = managers.slot:get_mask(
+                "criminals_no_deployables",
+                "harmless_criminals"
+        )
+        friendly_bullet_collision_mask = managers.slot:get_mask(
+                "criminals_no_deployables",
+                "harmless_criminals",
+                "hostages"
+        )
+    end
+
+    return friendly_weapon_user_mask, friendly_bullet_collision_mask
+end
+
+local function remove_friendly_characters_from_bullet_mask(self)
     local user_unit = self._setup and self._setup.user_unit
-    if alive(user_unit)
-            and (is_unit_in_slot(user_unit, SLOTS.PLAYERS)
-            or is_unit_in_slot(user_unit, SLOTS.CRIMINALS_NO_DEPLOYABLES))
-            and self._bullet_slotmask
-    then
-        local ai_friends_mask = MASK.criminals_no_deployables + MASK.players + MASK.hostages
-        self._bullet_slotmask = self._bullet_slotmask - ai_friends_mask
+    if not (alive(user_unit) and self._bullet_slotmask) then
+        return
+    end
+
+    local weapon_user_mask, collision_mask = get_friendly_weapon_masks()
+    if user_unit:in_slot(weapon_user_mask) then
+        self._bullet_slotmask = self._bullet_slotmask - collision_mask
     end
 end
 
@@ -671,7 +735,7 @@ if RequiredScript == "lib/units/weapons/newnpcraycastweaponbase" then
             NewNPCRaycastWeaponBase,
             "setup",
             "BB_NewNPCRaycastWeaponBase_setup_RemoveFriendlyMask",
-            remove_ai_and_players_from_bullet_mask
+            remove_friendly_characters_from_bullet_mask
     )
 end
 
@@ -680,14 +744,13 @@ if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
             NPCRaycastWeaponBase,
             "setup",
             "BB_NPCRaycastWeaponBase_setup_RemoveFriendlyMask",
-            remove_ai_and_players_from_bullet_mask
+            remove_friendly_characters_from_bullet_mask
     )
 end
 
 if RequiredScript == "lib/units/player_team/teamaimovement" then
     if Network:is_server() then
         install_method_patch(
-                "BB_TeamAIMovement_setShouldStay_HoldPosition",
                 TeamAIMovement,
                 "set_should_stay",
                 function(original, self, should_stay, ...)
@@ -709,7 +772,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
         end)
 
         install_method_patch(
-                "BB_TeamAIMovement_onSPOOCed",
                 TeamAIMovement,
                 "on_SPOOCed",
                 function(original, self, ...)
@@ -726,7 +788,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
     end
 
     install_method_patch(
-            "BB_TeamAIMovement_checkVisualEquipment",
             TeamAIMovement,
             "check_visual_equipment",
             function(original, self, ...)
@@ -757,7 +818,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
             end)
 
     install_method_patch(
-            "BB_TeamAIMovement_setCarryingBag",
             TeamAIMovement,
             "set_carrying_bag",
             function(original, self, unit, ...)
@@ -780,7 +840,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
             end)
 
     install_method_patch(
-            "BB_TeamAIMovement_setCarrySpeedModifier",
             TeamAIMovement,
             "set_carry_speed_modifier",
             function(original, self, ...)
@@ -793,7 +852,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
             end)
 
     install_method_patch(
-            "BB_TeamAIMovement_getReloadSpeedMultiplier",
             TeamAIMovement,
             "get_reload_speed_multiplier",
             function(original, self, ...)
@@ -808,7 +866,6 @@ if RequiredScript == "lib/units/player_team/teamaimovement" then
 
     if Network:is_server() then
         install_method_patch(
-                "BB_TeamAIMovement_throwBag",
                 TeamAIMovement,
                 "throw_bag",
                 function(original, self, ...)
@@ -839,7 +896,6 @@ end
 if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
         if Network:is_server() then
             install_method_patch(
-                    "BB_TeamAILogicIdle_getPriorityAttention",
                     TeamAILogicIdle,
                     "_get_priority_attention",
                     function(original, data, attention_objects, reaction_func)
@@ -847,7 +903,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end)
 
             install_method_patch(
-                    "BB_TeamAILogicIdle_enter_RescueGuard",
                     TeamAILogicIdle,
                     "enter",
                     function(original, data, ...)
@@ -859,7 +914,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
             end)
 
             install_method_patch(
-                    "BB_TeamAILogicIdle_updEnemyDetection_RescueGuard",
                     TeamAILogicIdle,
                     "_upd_enemy_detection",
                     function(original, data, ...)
@@ -896,7 +950,6 @@ end
 if RequiredScript == "lib/units/player_team/logics/teamailogictravel" then
         if Network:is_server() then
             install_method_patch(
-                    "BB_TeamAILogicTravel_determineDestinationOccupation_RescueGuard",
                     TeamAILogicTravel,
                     "_determine_destination_occupation",
                     function(original, data, objective, ...)
@@ -916,13 +969,18 @@ end
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
         if Network:is_server() then
             install_method_patch(
-                    "BB_CopLogicAttack_updAim",
                     CopLogicAttack,
                     "_upd_aim",
                     function(original, data, my_data)
                 local unit = data and data.unit
 
                 if not is_team_ai_move_shoot_unit(unit) then
+                    return original(data, my_data)
+                end
+
+                if not is_team_ai_running(unit, my_data) then
+                    clear_team_ai_attention_cache(my_data)
+
                     return original(data, my_data)
                 end
 
@@ -936,159 +994,74 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                 local shoot = false
                 local aim = false
                 local attention_pos
-                local movement_blocked = false
 
                 if focus_alive and type(reaction) == "number" then
-                    local weapon_range = my_data.weapon_range
-                    local _, _, far_range = get_team_ai_weapon_ranges(weapon_range)
-                    local running_range = get_team_ai_running_fire_range(weapon_range)
-                    local running = is_team_ai_running(unit, my_data)
+                    local running_range = get_team_ai_running_fire_range(my_data.weapon_range)
                     local target_dis = get_team_ai_attention_distance(data, focus_enemy)
                     local verified = focus_enemy.verified == true
-                    local target_pos = focus_enemy.m_pos or focus_enemy.verified_pos or focus_enemy.last_verified_pos
                     local look_pos = focus_enemy.last_verified_pos or focus_enemy.verified_pos
-
-                    far_range = math.max(far_range, running_range)
-
-                    if verified and running then
-                        movement_blocked = not is_team_ai_move_direction_allowed(
-                                data,
-                                movement,
-                                target_pos,
-                                target_dis,
-                                running_range
-                        )
-                    end
 
                     if reaction >= AIAttentionObject.REACT_AIM then
                         if verified then
-                            if not movement_blocked then
-                                aim = true
+                            aim = true
 
-                                if reaction >= AIAttentionObject.REACT_SHOOT then
-                                    local firing_range = running and running_range or far_range
-                                    local t = data.t or game_time()
-                                    local damage_ext = unit:character_damage()
-                                    local last_sup_t = damage_ext
-                                            and damage_ext.last_suppression_t
-                                            and damage_ext:last_suppression_t()
-                                    local suppression_window = running and 2.1 or 7
-                                    local recently_suppressed = last_sup_t
-                                            and t - last_sup_t < suppression_window
-                                    local criminal_record = focus_enemy.criminal_record
-                                    local assault_t = criminal_record and criminal_record.assault_t
-                                    local recently_assaulted = assault_t and t - assault_t < 2
-
-                                    if running and (recently_suppressed or recently_assaulted) then
-                                        firing_range = far_range
-                                    end
-
-                                    shoot = target_dis <= firing_range
-                                end
+                            if reaction >= AIAttentionObject.REACT_SHOOT then
+                                shoot = target_dis <= running_range
                             end
                         else
                             local t = data.t or game_time()
                             local time_since_verification = focus_enemy.verified_t
                                     and t - focus_enemy.verified_t
+                            local distance_lerp = math.min(
+                                    math.max((target_dis - 500) / 600, 0),
+                                    1
+                            )
+                            local tracking_window = math.lerp(5, 1, distance_lerp)
+                            local recently_visible = focus_enemy.nearly_visible
+                                    or time_since_verification
+                                    and time_since_verification < tracking_window
 
-                            if running then
-                                local distance_lerp = math.min(
-                                        math.max((target_dis - 500) / 600, 0),
-                                        1
-                                )
-                                local tracking_window = math.lerp(5, 1, distance_lerp)
-                                local recently_visible = focus_enemy.nearly_visible
-                                        or time_since_verification
-                                        and time_since_verification < tracking_window
+                            if recently_visible and look_pos then
+                                aim = true
+                                attention_pos = look_pos
+                            else
+                                local expected_pos = CopLogicAttack._get_expected_attention_position(data, my_data)
 
-                                if recently_visible and look_pos then
-                                    local direction_allowed = is_team_ai_move_direction_allowed(
-                                            data,
-                                            movement,
-                                            look_pos,
-                                            target_dis,
-                                            running_range
-                                    )
-
-                                    movement_blocked = not direction_allowed
-
-                                    if direction_allowed then
-                                        aim = true
-                                        attention_pos = look_pos
-                                    end
-                                else
-                                    local expected_pos = CopLogicAttack._get_expected_attention_position(data, my_data)
-
-                                    if expected_pos then
-                                        local watch_allowed = can_team_ai_watch_position_while_running(
+                                if expected_pos
+                                        and can_team_ai_watch_position_while_running(
                                                 data,
                                                 movement,
                                                 expected_pos
                                         )
-
-                                        movement_blocked = not watch_allowed
-
-                                        if watch_allowed then
-                                            aim = true
-                                            attention_pos = expected_pos
-                                        end
-                                    end
+                                then
+                                    aim = true
+                                    attention_pos = expected_pos
                                 end
-                            else
-                                attention_pos = look_pos
-
-                                if not attention_pos then
-                                    attention_pos = CopLogicAttack._get_expected_attention_position(data, my_data)
-                                end
-
-                                aim = attention_pos and true or false
                             end
                         end
                     end
 
                     if not aim
-                            and not movement_blocked
                             and data.char_tweak
                             and data.char_tweak.always_face_enemy
                             and reaction >= AIAttentionObject.REACT_COMBAT
                     then
                         if verified then
                             aim = true
-                        else
-                            attention_pos = attention_pos or look_pos
-
-                            if attention_pos and running then
-                                local direction_allowed = is_team_ai_move_direction_allowed(
+                        elseif look_pos
+                                and can_team_ai_watch_position_while_running(
                                         data,
                                         movement,
-                                        attention_pos,
-                                        target_dis,
-                                        running_range
+                                        look_pos
                                 )
-
-                                movement_blocked = not direction_allowed
-                                aim = direction_allowed
-                            else
-                                aim = attention_pos and true or false
-                            end
+                        then
+                            aim = true
+                            attention_pos = look_pos
                         end
                     end
 
                     if aim and not verified and not attention_pos then
                         aim = false
-                    end
-
-                    if aim and data.logic.chk_should_turn(data, my_data) then
-                        local turn_pos = verified and target_pos or attention_pos
-
-                        if turn_pos then
-                            CopLogicAttack._chk_request_action_turn_to_enemy(
-                                    data,
-                                    my_data,
-                                    data.m_pos,
-                                    turn_pos
-                            )
-                        end
                     end
 
                     if aim then
@@ -1139,6 +1112,10 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                     reset_team_ai_attention(data, my_data)
                 end
 
+                if shoot and not my_data.shooting then
+                    shoot = false
+                end
+
                 CopLogicAttack.aim_allow_fire(shoot, aim, data, my_data)
             end)
         end
@@ -1163,7 +1140,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             )
 
             install_method_patch(
-                    "BB_TeamAILogicAssault_chkShouldTurn_HoldPosition",
                     TeamAILogicAssault,
                     "chk_should_turn",
                     function(original, data, my_data, ...)
@@ -1175,7 +1151,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
             end)
 
             install_method_patch(
-                    "BB_TeamAILogicAssault_update",
                     TeamAILogicAssault,
                     "update",
                     function(original, data, ...)
@@ -1208,7 +1183,14 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
                 if (not my_data.melee_t) or (my_data.melee_t + CONSTANTS.MELEE_CHECK_INTERVAL < t) then
                     my_data.melee_t = t
-                    CombatBehavior.execute_melee_attack(data, unit)
+
+                    if (not data._bb_melee_cooldown_t) or t >= data._bb_melee_cooldown_t then
+                        local retry_delay = CombatBehavior.execute_melee_attack(data, unit)
+
+                        if retry_delay then
+                            data._bb_melee_cooldown_t = t + retry_delay
+                        end
+                    end
                 end
 
                 if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
@@ -1263,7 +1245,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
 
 if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" then
     install_method_patch(
-            "BB_CopActionShoot_onAttention_Reflex",
             CopActionShoot,
             "on_attention",
             function(original, self, attention, ...)
@@ -1282,15 +1263,20 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
             end)
 
     install_method_patch(
-            "BB_CopActionShoot_update",
             CopActionShoot,
             "update",
             function(original, self, t)
-                if not is_team_ai_move_shoot_unit(self._unit) then
+                if not is_team_ai_move_shoot_unit(self._unit)
+                        or not is_team_ai_running(self._unit)
+                then
                     return original(self, t)
                 end
 
                 local forced_lod = CONSTANTS.TEAMAI_SHOOT_LOD_FORCE
+                if not forced_lod then
+                    return original(self, t)
+                end
+
                 local ext_base = self._ext_base
                 local original_lod_stage = ext_base.lod_stage
 
@@ -1310,7 +1296,6 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
             end)
 
     install_method_patch(
-            "BB_CopActionShoot_getTargetPos",
             CopActionShoot,
             "_get_target_pos",
             function(original, self, shoot_from_pos, attention, ...)
@@ -1330,7 +1315,6 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
     )
 
     install_method_patch(
-            "BB_CopActionShoot_getTransitionTargetPos",
             CopActionShoot,
             "_get_transition_target_pos",
             function(original, self, shoot_from_pos, attention, t, ...)
@@ -1451,41 +1435,7 @@ if RequiredScript == "lib/units/enemies/cop/copdamage" then
                                 EnemyClassifier._cache_manager:clear(u_key_str)
                             end
 
-                            local coop_data = BB.coop_data
-                            coop_data.priority_targets[u_key_str] = nil
-
-                            for _, snapshot in pairs(coop_data.bot_observations) do
-                                if snapshot and snapshot.targets then
-                                    snapshot.targets[u_key_str] = nil
-                                end
-                            end
-
-                            local snapshot = coop_data.assignment_snapshot
-                            if snapshot and snapshot.by_target then
-                                local owners = snapshot.owners_by_target
-                                        and snapshot.owners_by_target[u_key_str]
-                                if owners and snapshot.by_bot then
-                                    for owner_key in pairs(owners) do
-                                        snapshot.by_bot[owner_key] = nil
-                                    end
-                                else
-                                    local owner = snapshot.by_target[u_key_str]
-                                    if owner and snapshot.by_bot then
-                                        snapshot.by_bot[owner] = nil
-                                    end
-                                end
-
-                                snapshot.by_target[u_key_str] = nil
-                                if snapshot.owners_by_target then
-                                    snapshot.owners_by_target[u_key_str] = nil
-                                end
-                                if snapshot.target_load then
-                                    snapshot.target_load[u_key_str] = nil
-                                end
-                            end
-
-                            coop_data.assignment_dirty = true
-                            coop_data.optimal_assignments = snapshot and snapshot.by_bot or {}
+                            BB.CoopSystem.remove_target(u_key_str)
                         end
                     end
             )
@@ -1496,7 +1446,6 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
         if Network:is_server() then
             local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
             local REACT_IDLE = AIAttentionObject.REACT_IDLE
-            local LEGACY_REFLEX_HOOK_ID = "BB_CopLogicBase_updAttentionObjDetection_FastDetect"
             local REFLEX_DETECTION_DELAY = CONSTANTS.REFLEX_DETECTION_DELAY
             local mvec3_copy = mvector3.copy
             local mvec3_dis = mvector3.distance
@@ -1852,10 +1801,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 return true
             end
 
-            Hooks:RemovePreHook(LEGACY_REFLEX_HOOK_ID, CopLogicBase)
-
             install_method_patch(
-                    "BB_CopLogicBase_updAttentionObjDetection_Reflex",
                     CopLogicBase,
                     "_upd_attention_obj_detection",
                     function(original, data, min_reaction, max_reaction, ...)
@@ -1882,7 +1828,6 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
             end)
 
             install_method_patch(
-                    "BB_CopLogicIdle_onIntimidated",
                     CopLogicIdle,
                     "on_intimidated",
                     function(original, data, amount, aggressor_unit, ...)
@@ -1904,7 +1849,6 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
             end)
 
             install_method_patch(
-                    "BB_CopLogicIdle_getPriorityAttention",
                     CopLogicIdle,
                     "_get_priority_attention",
                     function(original, data, attention_objects, reaction_func)
@@ -1941,7 +1885,6 @@ end
 if RequiredScript == "lib/managers/mission/elementmissionend" then
         if Network:is_server() then
             install_method_patch(
-                    "BB_ElementMissionEnd_onExecuted",
                     ElementMissionEnd,
                     "on_executed",
                     function(original, self, instigator)
@@ -1973,10 +1916,21 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 if RequiredScript == "lib/units/player_team/teamaibrain" then
         if Network:is_server() then
             install_method_patch(
-                    "BB_TeamAIBrain_onLongDisInteracted_HoldPosition",
+                    TeamAILogicDisabled,
+                    "_register_revive_SO",
+                    function(original, data, my_data, rescue_type, ...)
+                if data and data.name == "surrender" then
+                    rescue_type = "untie"
+                end
+
+                return original(data, my_data, rescue_type, ...)
+            end)
+
+            install_method_patch(
                     TeamAIBrain,
                     "on_long_dis_interacted",
                     function(original, self, amount, other_unit, secondary, ...)
+                local previous_objective = self:objective()
                 HoldPosition:begin_long_distance_interaction(self._unit, other_unit, secondary)
 
                 local results = {
@@ -1990,12 +1944,19 @@ if RequiredScript == "lib/units/player_team/teamaibrain" then
                     error(results[1], 0)
                 end
 
+                ProactiveAttack:on_long_distance_interacted(
+                        self._unit,
+                        other_unit,
+                        secondary,
+                        previous_objective
+                )
+
                 return unpack(results)
             end)
 
             Hooks:PostHook(TeamAIBrain, "_reset_logic_data", "BB_TeamAIBrain_resetLogicData_AddTurretMask", function(self)
                 if self._logic_data and self._logic_data.enemy_slotmask then
-                    local turrets_mask = World:make_slot_mask(SLOTS.TURRETS)
+                    local turrets_mask = managers.slot:get_mask("sentry_gun")
                     self._logic_data.enemy_slotmask = self._logic_data.enemy_slotmask + turrets_mask
                 end
             end)

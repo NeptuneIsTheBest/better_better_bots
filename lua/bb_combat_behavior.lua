@@ -16,7 +16,6 @@ local play_net_redirect = UnitOps.play_redirect
 local is_surrendering = UnitOps.is_surrendering
 local get_unit_health_ratio = UnitOps.health_ratio
 
-local SLOTS = BB.SLOTS
 local CombatHelper = BB.CombatHelper
 
 local CombatBehavior = {}
@@ -186,7 +185,7 @@ local function _filter_potential_targets(
         attention_objects,
         reaction_func,
         t,
-        coop_requested
+        coop_active
 )
     local ThreatAssessment = BB.ThreatAssessment
     local IntimidationSystem = BB.IntimidationSystem
@@ -205,7 +204,7 @@ local function _filter_potential_targets(
                 and _attention_is_selectable(attention_data, t)
         then
             local reaction = _resolve_reaction(data, attention_data, reaction_func)
-            local coop_eligible, visibility_factor, valid_until, target_pos, visibility_state =
+            local coop_eligible, visibility_factor, valid_until, target_pos =
                     _get_coop_visibility(attention_data, t)
             target_pos = target_pos
                     or attention_data.m_head_pos
@@ -214,7 +213,7 @@ local function _filter_potential_targets(
                     or attention_data.verified_dis
                     or attention_data.dis
 
-            coop_eligible = coop_requested
+            coop_eligible = coop_active
                     and coop_eligible
                     and are_units_foes(unit, attention_data.unit)
                     or false
@@ -260,7 +259,7 @@ local function _filter_potential_targets(
                         urgency = 3
                     end
 
-                    if not coop_requested
+                    if not coop_active
                             and old_target_u_key
                             and old_target_u_key == u_key_str
                             and (t - last_target_t) <= CONSTANTS.TARGET_SWITCH_DELAY
@@ -334,10 +333,7 @@ local function _filter_potential_targets(
                         urgency = urgency,
                         focus = focus,
                         durable = durable,
-                        state = state,
-                        target_pos = target_pos,
                         valid_until = valid_until,
-                        visibility_state = visibility_state,
                     }
                 end
             end
@@ -367,8 +363,7 @@ local function _select_solo_target(data, potential_targets_map, old_target_u_key
 end
 
 local function _select_coop_target(data, potential_targets_map, old_target_u_key, my_key_str, t)
-    local assignment_snapshot = BB.CoopSystem.get_assignment_snapshot()
-    local assigned_target_key = assignment_snapshot.by_bot[my_key_str]
+    local assigned_target_key = BB.CoopSystem.get_assigned_target(my_key_str)
     local assigned_local_target = assigned_target_key and potential_targets_map[assigned_target_key]
 
     if assigned_local_target
@@ -379,10 +374,6 @@ local function _select_coop_target(data, potential_targets_map, old_target_u_key
         return assigned_local_target.data,
                 assigned_local_target.priority_slot,
                 assigned_local_target.reaction
-    end
-
-    if assigned_target_key then
-        BB.CoopSystem.note_local_fallback()
     end
 
     local best_target
@@ -410,7 +401,6 @@ local function _select_coop_target(data, potential_targets_map, old_target_u_key
         return nil, nil, nil
     end
 
-    BB.CoopSystem.note_local_fallback()
     _update_target_lock(data, best_target.data.u_key, old_target_u_key, t)
     return best_target.data, best_target.priority_slot, best_target.reaction
 end
@@ -420,10 +410,9 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
     local t = data.t or game_time()
     local is_team_ai_unit = BB.UnitOps.is_team_ai(unit)
     local coop_requested = BB:get("coop", false) and is_team_ai_unit
-    local teammate_status = coop_requested
-            and BB.CoopSystem.update_teammate_status(unit, data)
-            or nil
-    local coop_active = teammate_status and teammate_status.can_fight or false
+    local coop_active = coop_requested
+            and BB.CoopSystem.is_teammate_combat_ready(unit)
+            or false
 
     local old_target_u_key = data._last_target_u_key and tostring(data._last_target_u_key)
     local my_key_str = tostring(data.key)
@@ -434,7 +423,7 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
             attention_objects,
             reaction_func,
             t,
-            coop_requested
+            coop_active
     )
 
     local role_target, restrict_to_role = RescueCoordinator.select_role_target(
@@ -443,7 +432,7 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
     )
 
     if coop_requested then
-        BB.CoopSystem.scan_and_update_priorities(data, potential_targets_map, {
+        BB.CoopSystem.submit_candidates(data, potential_targets_map, {
             restricted = restrict_to_role,
             target_key = role_target
                     and tostring(role_target.data.u_key or role_target.data.unit:key())
@@ -681,20 +670,37 @@ function CombatBehavior.check_smart_reload(data)
     brain:action_request({ type = "reload", body_part = 3 })
 end
 
+local function _get_melee_retry_delay(data, weapon_base)
+    local usage = weapon_base:weapon_tweak_data().usage
+    local retry_delay = data.char_tweak.weapon[usage].melee_retry_delay
+
+    return retry_delay
+            and math.lerp(retry_delay[1], retry_delay[2], math.random())
+            or 1
+end
+
 function CombatBehavior.execute_melee_attack(data, criminal)
     if not alive(criminal) then
         return
     end
 
     local current_wep = criminal:inventory():equipped_unit()
+    local weapon_base = current_wep and current_wep:base()
     local crim_mov = criminal:movement()
+    local criminal_anim = criminal:anim_data()
+
+    if criminal_anim
+            and (criminal_anim.melee or criminal_anim.reload or criminal_anim.equip)
+    then
+        return
+    end
 
     local my_pos = crim_mov:m_head_pos()
     local look_vec = crim_mov:m_rot():y()
 
     local current_ammo_ratio = 1
-    if current_wep and current_wep:base() then
-        local ammo_max, ammo = current_wep:base():ammo_info()
+    if weapon_base then
+        local ammo_max, ammo = weapon_base:ammo_info()
         if ammo_max and ammo_max > 0 then
             current_ammo_ratio = ammo / ammo_max
         end
@@ -780,6 +786,10 @@ function CombatBehavior.execute_melee_attack(data, criminal)
         origin = my_pos,
     }
 
+    if not play_net_redirect(criminal, "melee") then
+        return
+    end
+
     if target_is_shield then
         damage_info.damage_effect = 1
         damage_info.shield_knock = true
@@ -789,7 +799,7 @@ function CombatBehavior.execute_melee_attack(data, criminal)
         damage:damage_bullet(damage_info)
     end
 
-    play_net_redirect(criminal, "melee")
+    return _get_melee_retry_delay(data, weapon_base)
 end
 
 function CombatBehavior.throw_concussion_grenade(data, criminal)

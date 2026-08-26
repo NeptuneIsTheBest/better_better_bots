@@ -189,7 +189,7 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data, ta
 
     threat = threat * ThreatAssessment.distance_falloff(dist, flags)
 
-    CoopCacheManager.threat_value:set(cache_key, threat, CONSTANTS.COOP_REFRESH_INTERVAL)
+    CoopCacheManager.threat_value:set(cache_key, threat, CONSTANTS.COOP_SCORE_CACHE_TTL)
 
     return threat
 end
@@ -264,14 +264,14 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data, target_po
 
     local bot_fwd = bot_mov:m_head_fwd()
     if not bot_fwd then
-        CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_REFRESH_INTERVAL)
+        CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_SCORE_CACHE_TTL)
         return score
     end
     target_pos = target_pos
             or target_data.m_head_pos
             or (target_unit:movement() and target_unit:movement():m_head_pos())
     if not target_pos then
-        CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_REFRESH_INTERVAL)
+        CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_SCORE_CACHE_TTL)
         return score
     end
     local dir_to_target = target_pos - bot_head
@@ -289,7 +289,7 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data, target_po
         end
     end
 
-    CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_REFRESH_INTERVAL)
+    CoopCacheManager.suitability:set(cache_key, score, CONSTANTS.COOP_SCORE_CACHE_TTL)
 
     return score
 end

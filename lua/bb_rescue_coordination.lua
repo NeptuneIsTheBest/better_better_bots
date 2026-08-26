@@ -90,6 +90,44 @@ local function _get_group_state()
     return managers.groupai and managers.groupai:state() or nil
 end
 
+local function _is_criminal_unit(group_state, unit)
+    if not (group_state and alive(unit)) then
+        return false
+    end
+
+    return group_state:all_char_criminals()[unit:key()] ~= nil
+end
+
+local function _is_native_rescue_so_id(so_id)
+    if type(so_id) ~= "string" then
+        return false
+    end
+
+    return so_id == "Playerrevive"
+            or so_id:find("^PlayerHusk_revive") ~= nil
+            or so_id:find("^TeamAIrevive") ~= nil
+end
+
+local function _is_rescue_special_objective(group_state, so_id, objective_data)
+    local objective = objective_data and objective_data.objective
+
+    return _is_native_rescue_so_id(so_id)
+            and objective_data
+            and objective_data.AI_group == "friendlies"
+            and objective_data.usage_amount == 1
+            and objective
+            and objective.type == "revive"
+            and alive(objective.follow_unit)
+            and _is_criminal_unit(group_state, objective.follow_unit)
+end
+
+local function _has_active_rescue_interaction(unit)
+    local interaction = alive(unit) and unit:interaction()
+    local active_tweak = interaction and interaction._tweak_data_at_interact_start
+
+    return active_tweak == "revive" or active_tweak == "free"
+end
+
 local function _combat_reaction()
     return AIAttentionObject.REACT_COMBAT
 end
@@ -159,6 +197,126 @@ end
 function RescueCoordinator.is_rescue_urgent(unit)
     local remaining = RescueCoordinator.get_remaining_rescue_time(unit)
     return remaining and remaining <= CONSTANTS.RESCUE_URGENT_TIME or false
+end
+
+function RescueCoordinator.prepare_rescue_special_objective(group_state, so_id, objective_data)
+    if not (Network:is_server()
+            and _is_rescue_special_objective(group_state, so_id, objective_data))
+    then
+        return false
+    end
+
+    objective_data.search_dis_sq = nil
+
+    local retry_interval = CONSTANTS.RESCUE_ASSIGN_RETRY_INTERVAL
+    if type(objective_data.interval) ~= "number"
+            or objective_data.interval > retry_interval
+    then
+        objective_data.interval = retry_interval
+    end
+
+    objective_data._bb_rescue_assignment = true
+
+    return true
+end
+
+function RescueCoordinator:_get_pending_rescue_so(group_state, so_id)
+    local special_objectives = group_state and group_state._special_objectives
+    local so = special_objectives and special_objectives[so_id]
+    if not so then
+        return nil
+    end
+
+    if not so.data._bb_rescue_assignment
+            and not RescueCoordinator.prepare_rescue_special_objective(
+                    group_state,
+                    so_id,
+                    so.data
+            )
+    then
+        return nil
+    end
+
+    return so
+end
+
+function RescueCoordinator:_try_assign_pending_rescue(group_state, so_id)
+    local so = self:_get_pending_rescue_so(group_state, so_id)
+    if not so then
+        return false
+    end
+
+    if _has_active_rescue_interaction(so.data.objective.follow_unit) then
+        return false
+    end
+
+    local assigned = group_state:_execute_so(
+            so.data,
+            so.rooms,
+            so.administered
+    )
+    if not assigned then
+        return false
+    end
+
+    if group_state._special_objectives
+            and group_state._special_objectives[so_id] == so
+    then
+        group_state:remove_special_objective(so_id)
+    end
+
+    return true
+end
+
+function RescueCoordinator.on_rescue_special_objective_added(group_state, so_id)
+    if not (Network:is_server() and group_state and so_id) then
+        return false
+    end
+
+    RescueCoordinator._next_update_t = 0
+
+    local added_so = RescueCoordinator:_get_pending_rescue_so(group_state, so_id)
+    if not added_so then
+        return false
+    end
+
+    RescueCoordinator.assign_pending_rescues(group_state)
+
+    return group_state._special_objectives[so_id] ~= added_so
+end
+
+function RescueCoordinator.assign_pending_rescues(group_state)
+    local pending = {}
+
+    for so_id in pairs(group_state and group_state._special_objectives or {}) do
+        local so = RescueCoordinator:_get_pending_rescue_so(group_state, so_id)
+        local target = so and so.data.objective.follow_unit
+        if target and RescueCoordinator.target_needs_help(target) then
+            table.insert(pending, {
+                id = so_id,
+                key = _unit_key(target) or tostring(so_id),
+                remaining = RescueCoordinator.get_remaining_rescue_time(target)
+                        or math.huge,
+            })
+        end
+    end
+
+    table.sort(pending, function(a, b)
+        if a.remaining ~= b.remaining then
+            return a.remaining < b.remaining
+        end
+
+        return a.key < b.key
+    end)
+
+    local assigned = 0
+    for _, rescue in ipairs(pending) do
+        if RescueCoordinator:_try_assign_pending_rescue(group_state, rescue.id) then
+            assigned = assigned + 1
+        end
+    end
+
+    return assigned
 end
 
 local function _is_known_combat_attention(observer, attention_data, t)
@@ -591,6 +749,38 @@ function RescueCoordinator:_register_guard(session, group_state)
     return true
 end
 
+function RescueCoordinator:_clear_guard(session, group_state, release_assigned)
+    if not session then
+        return
+    end
+
+    if session.guard_so_id and group_state then
+        group_state:remove_special_objective(session.guard_so_id)
+    end
+    session.guard_so_id = nil
+
+    if not release_assigned then
+        return
+    end
+
+    local guard_is_current = self:_guard_is_current(session)
+    local guard = session.guard
+    local objective = session.guard_objective
+
+    session.guard = nil
+    session.guard_objective = nil
+
+    if not guard_is_current then
+        return
+    end
+
+    if group_state then
+        group_state:on_criminal_objective_complete(guard, objective)
+    else
+        guard:brain():set_objective(nil)
+    end
+end
+
 function RescueCoordinator:_finish_session(target_key, release_guard)
     local key = tostring(target_key)
     local session = self._sessions[key]
@@ -601,18 +791,7 @@ function RescueCoordinator:_finish_session(target_key, release_guard)
     self._sessions[key] = nil
 
     local group_state = _get_group_state()
-    if session.guard_so_id and group_state then
-        group_state:remove_special_objective(session.guard_so_id)
-    end
-
-    if release_guard and self:_guard_is_current(session) then
-        local objective = session.guard_objective
-        if group_state then
-            group_state:on_criminal_objective_complete(session.guard, objective)
-        else
-            session.guard:brain():set_objective(nil)
-        end
-    end
+    self:_clear_guard(session, group_state, release_guard)
 end
 
 function RescueCoordinator.update(group_state, force)
@@ -626,7 +805,17 @@ function RescueCoordinator.update(group_state, force)
     end
     RescueCoordinator._next_update_t = t + CONSTANTS.RESCUE_COORD_UPDATE_INTERVAL
 
+    local uncovered_targets = _count_uncovered_help_targets(group_state)
+    if uncovered_targets > 0 then
+        for _, session in pairs(RescueCoordinator._sessions) do
+            RescueCoordinator:_clear_guard(session, group_state, true)
+        end
+    end
+
+    RescueCoordinator.assign_pending_rescues(group_state)
+
     local active_rescues = _collect_active_rescues(group_state, RescueCoordinator._sessions)
+    uncovered_targets = _count_uncovered_help_targets(group_state)
 
     for target_key, session in pairs(RescueCoordinator._sessions) do
         local active = active_rescues[target_key]
@@ -672,14 +861,18 @@ function RescueCoordinator.update(group_state, force)
                 session.guard_so_id = nil
             end
 
-            if session.guard_so_id and not session.guard then
+            if uncovered_targets > 0
+                    and (session.guard or session.guard_so_id)
+            then
+                RescueCoordinator:_clear_guard(session, group_state, true)
+            elseif session.guard_so_id and not session.guard then
                 RescueCoordinator:_try_assign_pending_guard(session, group_state)
             end
 
             if session.guard then
             elseif not has_threats then
                 RescueCoordinator:_finish_session(target_key, false)
-            elseif not session.guard_so_id then
+            elseif uncovered_targets == 0 and not session.guard_so_id then
                 RescueCoordinator:_register_guard(session, group_state)
             end
         end
