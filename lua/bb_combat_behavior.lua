@@ -219,6 +219,7 @@ local function _filter_potential_targets(
             coop_assignable = coop_foe and coop_assignable or false
             coop_trackable = coop_foe and coop_trackable or false
 
+            -- Vanilla caps stationary person targets at REACT_SHOOT so they can fight in place.
             if reaction
                     and reaction >= AIAttentionObject.REACT_SHOOT
                     and dist

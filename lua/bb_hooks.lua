@@ -1226,8 +1226,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
 if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
         if Network:is_server() then
-            local REACT_SHOOT = AIAttentionObject.REACT_SHOOT
-
             Hooks:PostHook(
                     TeamAILogicBase,
                     "_set_attention_obj",
@@ -1236,10 +1234,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
                         IntimidationSystem.perform_interaction_check(data)
                     end
             )
-
-            function TeamAILogicBase._get_logic_state_from_reaction(data, reaction)
-                return (not reaction or reaction < REACT_SHOOT) and "idle" or "assault"
-            end
         end
     end
 
