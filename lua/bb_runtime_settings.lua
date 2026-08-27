@@ -225,6 +225,8 @@ function RuntimeSettings:apply(key)
         return self:apply_coop()
     elseif key == "proactive" then
         return self:apply_proactive()
+    elseif key == "debug" then
+        return BB.DebugOverlay:apply_setting()
     end
 
     return false

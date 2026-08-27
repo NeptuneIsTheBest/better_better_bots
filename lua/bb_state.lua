@@ -44,6 +44,7 @@ function BB:reset_level_state()
     self.CoopSystem.reset_level_state()
     self.RescueCoordinator.reset_level_state()
     self.ProactiveAttack:reset_level_state()
+    self.DebugOverlay:reset_level_state()
     self.StatusIcons:reset_level_state()
     self.CacheManager.reset_all_instances()
 

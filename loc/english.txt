@@ -54,5 +54,7 @@
   "proactive_toggle_title": "Proactive Attack",
   "proactive_toggle_desc": "If checked, bots may leave the player during loud combat to pursue nearby enemies already detected by the team. When multiple bots are available, one stays behind to guard the players. Player commands, carrying bags, holding position, and rescues take priority.",
   "keepstaying_toggle_title": "Keep Staying",
-  "keepstaying_toggle_desc": "If checked, bots ordered to stay will hold the commanded position while still changing stance, shooting, and reloading. After reviving someone or being moved, they will return to that position.\nNote: If you use the Keepers mod, it is better to leave this disabled."
+  "keepstaying_toggle_desc": "If checked, bots ordered to stay will hold the commanded position while still changing stance, shooting, and reloading. After reviving someone or being moved, they will return to that position.\nNote: If you use the Keepers mod, it is better to leave this disabled.",
+  "debug_toggle_title": "Bot Debug Overlay",
+  "debug_toggle_desc": "If checked while hosting or playing offline, detailed AI state and decision data will be displayed above every bot. This setting has no effect while connected as a client."
 }

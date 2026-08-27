@@ -15,6 +15,7 @@ local RUNTIME_SETTING_KEYS = {
     coop = true,
     proactive = true,
     keepstaying = true,
+    debug = true,
 }
 local MENU_ITEMS = {
     {
@@ -214,6 +215,15 @@ local MENU_ITEMS = {
         data_key = "keepstaying",
         default_value = false,
     },
+    {
+        type = "toggle",
+        id = "debug_toggle",
+        title = "debug_toggle_title",
+        desc = "debug_toggle_desc",
+        callback = "callback_debug_toggle",
+        data_key = "debug",
+        default_value = false,
+    },
 }
 
 local function is_feature_flag_enabled(flag_name)
@@ -297,6 +307,7 @@ Hooks:Add("MenuManagerInitialize", "BB_MenuManager_Initialize", function(menu_ma
         "coop",
         "proactive",
         "keepstaying",
+        "debug",
     }
 
     local toggle_keys = {

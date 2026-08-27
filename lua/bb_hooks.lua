@@ -12,6 +12,7 @@ local MarkingSystem = BB.MarkingSystem
 local RescueCoordinator = BB.RescueCoordinator
 local ProactiveAttack = BB.ProactiveAttack
 local StatusIcons = BB.StatusIcons
+local DebugOverlay = BB.DebugOverlay
 
 local install_method_patch = Utils.install_method_patch
 local game_time = Utils.game_time
@@ -1871,6 +1872,7 @@ if RequiredScript == "lib/setups/gamesetup" then
             "BB_GameSetup_update_StatusIcons",
             function(self, t, dt, ...)
                 StatusIcons:update(t, dt)
+                DebugOverlay:update(t, dt)
             end
     )
 

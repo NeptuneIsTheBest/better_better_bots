@@ -282,6 +282,14 @@ function StatusIcons:_display_role(character_name)
     return nil
 end
 
+function StatusIcons:get_display_role(character_name)
+    if not character_name then
+        return nil
+    end
+
+    return self:_display_role(character_name)
+end
+
 function StatusIcons:_reconcile_character(character_name)
     local role = self:_display_role(character_name)
     local cache = self._rendered[character_name] or {}
