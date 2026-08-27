@@ -16,14 +16,14 @@ function Utils.install_method_patch(target, method_name, handler)
         error(string.format("Invalid method patch registration for %s", tostring(method_name)), 2)
     end
 
-    local current = target[method_name]
+    local current = Hooks:GetFunction(target, method_name)
     if type(current) ~= "function" then
         error(string.format("Method patch could not find %s", method_name), 2)
     end
 
-    target[method_name] = function(...)
+    Hooks:OverrideFunction(target, method_name, function(...)
         return handler(current, ...)
-    end
+    end)
 
     return true
 end

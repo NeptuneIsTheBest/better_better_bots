@@ -369,7 +369,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             return original(self, ...)
         end)
 
-        function GroupAIStateBase:_get_balancing_multiplier(balance_multipliers, ...)
+        Hooks:OverrideFunction(GroupAIStateBase, "_get_balancing_multiplier", function(self, balance_multipliers, ...)
             if not balance_multipliers then return 1 end
             local nr_crim = 0
             for _, u_data in pairs(self:all_char_criminals()) do
@@ -380,7 +380,7 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
 
             nr_crim = math.clamp(nr_crim, 1, #balance_multipliers)
             return balance_multipliers[nr_crim]
-        end
+        end)
     end
 end
 
@@ -510,9 +510,9 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
                 return result
         end)
 
-        function TeamAIDamage:friendly_fire_hit()
+        Hooks:OverrideFunction(TeamAIDamage, "friendly_fire_hit", function(self)
             return
-        end
+        end)
 
         install_method_patch(
                 TeamAIDamage,
@@ -694,9 +694,9 @@ if RequiredScript == "lib/managers/criminalsmanager" then
 end
 
 if RequiredScript == "lib/tweak_data/playertweakdata" then
-    function PlayerTweakData:_set_singleplayer(...)
+    Hooks:OverrideFunction(PlayerTweakData, "_set_singleplayer", function(self, ...)
         return
-    end
+    end)
 end
 
 local friendly_weapon_user_mask
