@@ -453,14 +453,29 @@ local function create_debug_panel(parent)
     return panel, text
 end
 
-local function position_debug_panel(panel, parent, name_text)
+local function resize_debug_panel(panel, text)
+    local _, _, text_width, text_height = text:text_rect()
+    text_width = math.ceil(text_width)
+    text_height = math.ceil(text_height)
+
+    local panel_width = text_width + PANEL_PADDING * 2
+    local panel_height = text_height + PANEL_PADDING * 2
+    local background = panel:child(BACKGROUND_NAME)
+
+    text:set_size(text_width, text_height)
+    panel:set_size(panel_width, panel_height)
+
+    if background then
+        background:set_size(panel_width, panel_height)
+    end
+end
+
+local function position_debug_panel(panel, name_text)
     local _, _, text_width = name_text:text_rect()
     local center_x = name_text:left() + text_width * 0.5
-    local action_text = parent:child("action")
-    local top = math.max(parent:h(), action_text and action_text:bottom() or 0) + 2
 
     panel:set_center_x(center_x)
-    panel:set_top(top)
+    panel:set_bottom(name_text:top() - 2)
 end
 
 function DebugOverlay:is_enabled()
@@ -521,8 +536,9 @@ function DebugOverlay:_render_unit(unit, bot_key, character_name, t)
         panel, text = create_debug_panel(parent)
     end
 
-    position_debug_panel(panel, parent, name_text)
     text:set_text(build_debug_text(unit, bot_key, character_name, t))
+    resize_debug_panel(panel, text)
+    position_debug_panel(panel, name_text)
     panel:set_visible(true)
 
     self._rendered[bot_key] = {
