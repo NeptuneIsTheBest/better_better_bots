@@ -899,7 +899,12 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                     TeamAILogicIdle,
                     "_get_priority_attention",
                     function(original, data, attention_objects, reaction_func)
-                return CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
+                return CombatBehavior.find_priority_attention(
+                        data,
+                        attention_objects,
+                        reaction_func,
+                        original
+                )
             end)
 
             install_method_patch(
@@ -1124,7 +1129,17 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
 if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
         if Network:is_server() then
             TeamAILogicAssault.check_smart_reload = CombatBehavior.check_smart_reload
-            TeamAILogicAssault._get_priority_attention = CombatBehavior.find_priority_attention
+            TeamAILogicAssault._get_priority_attention = function(
+                    data,
+                    attention_objects,
+                    reaction_func
+            )
+                return TeamAILogicIdle._get_priority_attention(
+                        data,
+                        attention_objects,
+                        reaction_func
+                )
+            end
 
             Hooks:OverrideFunction(TeamAILogicAssault, "find_enemy_to_mark", function()
                 return nil

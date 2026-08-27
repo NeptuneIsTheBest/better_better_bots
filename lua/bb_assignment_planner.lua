@@ -116,7 +116,7 @@ local function _build_jobs(targets, n_workers, initial_load)
         end
     end
 
-    return jobs
+    return jobs, next_slot
 end
 
 local function _edge_utility(edge, job, previous_target)
@@ -134,6 +134,74 @@ local function _edge_utility(edge, job, previous_target)
             + coverage_band
             + previous_bonus
             + score * job.factor
+end
+
+local function _solve_jobs(bots, edges, previous_by_bot, jobs)
+    local max_utility = 0
+    local utilities = {}
+
+    for i, bot in ipairs(bots) do
+        utilities[i] = {}
+        local bot_key = tostring(bot.key)
+        local bot_edges = edges[bot_key] or {}
+
+        for j, job in ipairs(jobs) do
+            local utility = 0
+            if not job.dummy then
+                local edge = bot_edges[job.target_key]
+                if edge then
+                    utility = _edge_utility(edge, job, previous_by_bot[bot_key])
+                else
+                    utility = false
+                end
+            end
+
+            utilities[i][j] = utility
+            if utility and utility > max_utility then
+                max_utility = utility
+            end
+        end
+    end
+
+    local cost_matrix = {}
+    for i = 1, #bots do
+        cost_matrix[i] = {}
+        for j = 1, #jobs do
+            local utility = utilities[i][j]
+            cost_matrix[i][j] = utility == false and FORBIDDEN_COST or max_utility - utility
+        end
+    end
+
+    return Hungarian.solve(cost_matrix, #bots, #jobs)
+end
+
+local function _append_sparse_jobs(jobs, next_slot, targets, bots, edges, assignment)
+    local appended = false
+
+    for bot_index, bot in ipairs(bots) do
+        local bot_key = tostring(bot.key)
+        local bot_edges = edges[bot_key] or {}
+        local job_index = assignment[bot_index]
+        local job = job_index and jobs[job_index]
+        local has_reachable_job = job
+                and not job.dummy
+                and bot_edges[job.target_key]
+
+        if not has_reachable_job then
+            for _, target in ipairs(targets) do
+                local target_key = tostring(target.key)
+                if bot_edges[target_key] then
+                    local slot_index = next_slot[target_key] or 1
+                    local preferred = target.focus ~= nil and slot_index == 2
+                    _append_job(jobs, target, slot_index, preferred)
+                    next_slot[target_key] = slot_index + 1
+                    appended = true
+                end
+            end
+        end
+    end
+
+    return appended
 end
 
 function AssignmentPlanner.utility_for_load(edge, target_key, current_load, focus, previous_target)
@@ -181,7 +249,7 @@ function AssignmentPlanner.solve(params)
         end
     end
 
-    local jobs = _build_jobs(targets, #bots, target_load)
+    local jobs, next_slot = _build_jobs(targets, #bots, target_load)
     for _ = 1, #bots do
         table.insert(jobs, { dummy = true })
     end
@@ -194,47 +262,18 @@ function AssignmentPlanner.solve(params)
         }
     end
 
-    local max_utility = 0
-    local utilities = {}
-
-    for i, bot in ipairs(bots) do
-        utilities[i] = {}
-        local bot_key = tostring(bot.key)
-        local bot_edges = edges[bot_key] or {}
-
-        for j, job in ipairs(jobs) do
-            local utility = 0
-            if not job.dummy then
-                local edge = bot_edges[job.target_key]
-                if edge then
-                    utility = _edge_utility(edge, job, previous_by_bot[bot_key])
-                else
-                    utility = false
-                end
-            end
-
-            utilities[i][j] = utility
-            if utility and utility > max_utility then
-                max_utility = utility
-            end
-        end
+    local assignment = _solve_jobs(bots, edges, previous_by_bot, jobs)
+    -- A globally large enough job pool can still violate the matching condition for
+    -- sparse edges. Give every reachable dummy worker its own alternatives, then retry.
+    if _append_sparse_jobs(jobs, next_slot, targets, bots, edges, assignment) then
+        assignment = _solve_jobs(bots, edges, previous_by_bot, jobs)
     end
-
-    local cost_matrix = {}
-    for i = 1, #bots do
-        cost_matrix[i] = {}
-        for j = 1, #jobs do
-            local utility = utilities[i][j]
-            cost_matrix[i][j] = utility == false and FORBIDDEN_COST or max_utility - utility
-        end
-    end
-
-    local assignment = Hungarian.solve(cost_matrix, #bots, #jobs)
 
     for bot_index, job_index in pairs(assignment) do
         local bot_key = tostring(bots[bot_index].key)
         local job = jobs[job_index]
-        if job and not job.dummy then
+        local bot_edges = edges[bot_key] or {}
+        if job and not job.dummy and bot_edges[job.target_key] then
             local target_key = job.target_key
             by_bot[bot_key] = target_key
             owners_by_target[target_key] = owners_by_target[target_key] or {}

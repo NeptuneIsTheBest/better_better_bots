@@ -19,6 +19,7 @@ local get_unit_health_ratio = UnitOps.health_ratio
 local CombatHelper = BB.CombatHelper
 
 local CombatBehavior = {}
+local NIL_REACTION = {}
 
 local function _update_target_lock(data, new_u_key, old_u_key, t)
     data._last_target_u_key = tostring(new_u_key)
@@ -52,6 +53,23 @@ local function _resolve_reaction(data, attention_data, reaction_func)
     reaction_func = reaction_func or TeamAILogicBase._chk_reaction_to_attention_object
 
     return reaction_func(data, attention_data, not CopLogicAttack._can_move(data))
+end
+
+local function _snapshot_attention_selection(attention_objects, t)
+    local selectable_attention = {}
+
+    for _, attention_data in pairs(attention_objects) do
+        -- Vanilla skips paused attention for the whole tick, even when the pause expires now.
+        local selectable = attention_data.identified
+                and not attention_data.pause_expire_t
+                and not (attention_data.stare_expire_t and t > attention_data.stare_expire_t)
+
+        if selectable then
+            selectable_attention[attention_data] = true
+        end
+    end
+
+    return selectable_attention
 end
 
 local function _get_coop_visibility(attention_data, t)
@@ -185,7 +203,9 @@ local function _filter_potential_targets(
         attention_objects,
         reaction_func,
         t,
-        coop_active
+        coop_active,
+        selectable_attention,
+        resolved_reactions
 )
     local ThreatAssessment = BB.ThreatAssessment
     local IntimidationSystem = BB.IntimidationSystem
@@ -199,11 +219,25 @@ local function _filter_potential_targets(
 
     for u_key, attention_data in pairs(attention_objects) do
         local u_key_str = tostring(u_key)
-        if attention_data.identified
-                and alive(attention_data.unit)
-                and _attention_is_selectable(attention_data, t)
-        then
-            local reaction = _resolve_reaction(data, attention_data, reaction_func)
+        local selectable
+        if selectable_attention then
+            selectable = selectable_attention[attention_data] == true
+        else
+            selectable = attention_data.identified
+                    and alive(attention_data.unit)
+                    and _attention_is_selectable(attention_data, t)
+        end
+
+        if selectable and alive(attention_data.unit) then
+            local reaction
+            local resolved = resolved_reactions and resolved_reactions[attention_data]
+            if resolved ~= nil then
+                if resolved ~= NIL_REACTION then
+                    reaction = resolved
+                end
+            else
+                reaction = _resolve_reaction(data, attention_data, reaction_func)
+            end
             local coop_assignable, coop_trackable, valid_until, target_pos =
                     _get_coop_visibility(attention_data, t)
             target_pos = target_pos
@@ -418,9 +452,44 @@ local function _select_coop_target(data, potential_targets_map, old_target_u_key
     return nil, nil, nil
 end
 
-function CombatBehavior.find_priority_attention(data, attention_objects, reaction_func)
+function CombatBehavior.find_priority_attention(
+        data,
+        attention_objects,
+        reaction_func,
+        native_selector
+)
     local unit = data.unit
     local t = data.t or game_time()
+    local selectable_attention
+    local resolved_reactions
+    local native_attention
+    local native_prio_slot
+    local native_reaction
+
+    if type(native_selector) == "function" then
+        -- Snapshot before vanilla mutates pause/stare state, then let it preserve native
+        -- selection side effects such as attention_data.aimed_at.
+        selectable_attention = _snapshot_attention_selection(attention_objects, t)
+        resolved_reactions = {}
+        reaction_func = reaction_func or TeamAILogicBase._chk_reaction_to_attention_object
+
+        local function record_reaction(reaction_data, attention_data, stationary)
+            local reaction = reaction_func(reaction_data, attention_data, stationary)
+            resolved_reactions[attention_data] = reaction == nil and NIL_REACTION or reaction
+            return reaction
+        end
+
+        native_attention, native_prio_slot, native_reaction = native_selector(
+                data,
+                attention_objects,
+                record_reaction
+        )
+    end
+
+    local native_low_reaction = native_attention
+            and type(native_prio_slot) == "number"
+            and type(native_reaction) == "number"
+            and native_reaction < AIAttentionObject.REACT_SHOOT
     local is_team_ai_unit = BB.UnitOps.is_team_ai(unit)
     local coop_requested = BB:get("coop", false) and is_team_ai_unit
     local coop_active = coop_requested
@@ -436,7 +505,9 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
             attention_objects,
             reaction_func,
             t,
-            coop_active
+            coop_active,
+            selectable_attention,
+            resolved_reactions
     )
 
     local role_candidates = potential_targets_map
@@ -470,6 +541,10 @@ function CombatBehavior.find_priority_attention(data, attention_objects, reactio
                     and tostring(role_target.data.u_key or role_target.data.unit:key())
                     or nil,
         })
+    end
+
+    if native_low_reaction then
+        return native_attention, native_prio_slot, native_reaction
     end
 
     local selected_role_target = role_target or role_tracking_target
