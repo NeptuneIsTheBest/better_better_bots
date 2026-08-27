@@ -103,7 +103,6 @@ local function _get_ai_criminals()
     local group_ai = managers.groupai
     local group_state = group_ai and group_ai:state()
 
-    -- Membership comes from the game-owned roster; caches only hold derived fields.
     return group_state
             and group_state.all_AI_criminals
             and group_state:all_AI_criminals()
@@ -145,7 +144,6 @@ local function _get_teammate_status(bot_key, record)
         needs_cover = health_ratio < 0.15,
         is_reloading = anim_data and anim_data.reload or false,
         is_downed = combat_status.is_downed,
-        -- The criminal record is coarse; UnitOps also catches tase/arrest/down states.
         can_fight = record.status == nil and combat_status.can_fight,
     }
 
@@ -258,14 +256,23 @@ function CoopSystem.get_reloading_teammates_count(exclude_key)
     end
 
     local count = 0
+    local t = game_time()
     local exclude_key_str = exclude_key and tostring(exclude_key)
     for raw_key, record in pairs(_get_ai_criminals()) do
         local bot_key = tostring(raw_key)
         local status = _get_teammate_status(bot_key, record)
+        local brain = status and status.unit and status.unit:brain()
+        local logic_data = brain and brain._logic_data
+        local reload_intent_t = logic_data and logic_data._bb_reload_intent_t
+        if reload_intent_t and reload_intent_t <= t then
+            logic_data._bb_reload_intent_t = nil
+            reload_intent_t = nil
+        end
+
         if bot_key ~= exclude_key_str
                 and status
                 and status.can_fight
-                and status.is_reloading
+                and (status.is_reloading or reload_intent_t and reload_intent_t > t)
         then
             count = count + 1
         end

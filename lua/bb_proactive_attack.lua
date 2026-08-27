@@ -327,7 +327,6 @@ local function get_active_recalled_guard(all_units)
     local guard_key = state.guard_key
     local recall = guard_key and state.recall_holds[guard_key]
 
-    -- A recalled current guard still fills the guard slot while returning.
     if not recall_objective_is_current(recall)
             or all_units[guard_key] ~= recall.unit
     then

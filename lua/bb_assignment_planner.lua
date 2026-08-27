@@ -263,8 +263,6 @@ function AssignmentPlanner.solve(params)
     end
 
     local assignment = _solve_jobs(bots, edges, previous_by_bot, jobs)
-    -- A globally large enough job pool can still violate the matching condition for
-    -- sparse edges. Give every reachable dummy worker its own alternatives, then retry.
     if _append_sparse_jobs(jobs, next_slot, targets, bots, edges, assignment) then
         assignment = _solve_jobs(bots, edges, previous_by_bot, jobs)
     end

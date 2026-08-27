@@ -15,6 +15,7 @@ local are_units_foes = UnitOps.are_foes
 local play_net_redirect = UnitOps.play_redirect
 local is_surrendering = UnitOps.is_surrendering
 local get_unit_health_ratio = UnitOps.health_ratio
+local get_combat_status = UnitOps.combat_status
 
 local CombatHelper = BB.CombatHelper
 
@@ -59,7 +60,6 @@ local function _snapshot_attention_selection(attention_objects, t)
     local selectable_attention = {}
 
     for _, attention_data in pairs(attention_objects) do
-        -- Vanilla skips paused attention for the whole tick, even when the pause expires now.
         local selectable = attention_data.identified
                 and not attention_data.pause_expire_t
                 and not (attention_data.stare_expire_t and t > attention_data.stare_expire_t)
@@ -253,7 +253,6 @@ local function _filter_potential_targets(
             coop_assignable = coop_foe and coop_assignable or false
             coop_trackable = coop_foe and coop_trackable or false
 
-            -- Vanilla caps stationary person targets at REACT_SHOOT so they can fight in place.
             if reaction
                     and reaction >= AIAttentionObject.REACT_SHOOT
                     and dist
@@ -467,8 +466,6 @@ function CombatBehavior.find_priority_attention(
     local native_reaction
 
     if type(native_selector) == "function" then
-        -- Snapshot before vanilla mutates pause/stare state, then let it preserve native
-        -- selection side effects such as attention_data.aimed_at.
         selectable_attention = _snapshot_attention_selection(attention_objects, t)
         resolved_reactions = {}
         reaction_func = reaction_func or TeamAILogicBase._chk_reaction_to_attention_object
@@ -613,7 +610,10 @@ local function _is_enemy_actively_firing(enemy_unit, my_unit)
     end
 
     local internal_data = logic_data.internal_data
-    local is_firing = internal_data and (internal_data.firing or internal_data.shooting)
+    local anim_data = enemy_unit:anim_data()
+    local is_firing = internal_data and internal_data.firing == true
+            or anim_data and anim_data.fire == true
+            or false
 
     local is_targeting_me = false
     if is_firing and logic_data.attention_obj then
@@ -621,10 +621,10 @@ local function _is_enemy_actively_firing(enemy_unit, my_unit)
         if att_obj.unit and alive(att_obj.unit) then
             if att_obj.unit == my_unit then
                 is_targeting_me = true
-            elseif alive(my_unit) and my_unit:movement() then
+            else
                 local my_pos = my_unit:movement():m_head_pos()
                 local att_pos = att_obj.m_head_pos or (att_obj.unit:movement() and att_obj.unit:movement():m_head_pos())
-                if my_pos and att_pos and mvector3.distance(my_pos, att_pos) < 500 then
+                if att_pos and mvector3.distance(my_pos, att_pos) < 500 then
                     is_targeting_me = true
                 end
             end
@@ -637,31 +637,36 @@ end
 local function _scan_nearby_threats(data, unit)
     local result = {
         nearby = 0,
-        active = 0,
+        firing = 0,
         closest_dis = math.huge,
-        closest_active_dis = math.huge,
-        active_enemy = nil,
+        closest_firing_dis = math.huge,
+        closest_targeting_dis = math.huge,
+        closest_dangerous_firing_dis = math.huge,
     }
-
-    local unit_movement = unit:movement()
-    local attention = unit_movement:attention()
-    if attention and attention.unit then
-        result.active_enemy = attention.unit
-    end
 
     for _, u_char in pairs(data.detected_attention_objects) do
         if u_char.identified and u_char.verified and alive(u_char.unit) and are_units_foes(unit, u_char.unit) then
             result.nearby = result.nearby + 1
-            local dis = u_char.verified_dis or math.huge
+            local dis = u_char.verified_dis
             if dis < result.closest_dis then
                 result.closest_dis = dis
             end
 
             local is_firing, is_targeting_me = _is_enemy_actively_firing(u_char.unit, unit)
             if is_firing then
-                result.active = result.active + 1
-                if is_targeting_me and dis < result.closest_active_dis then
-                    result.closest_active_dis = dis
+                result.firing = result.firing + 1
+                if dis < result.closest_firing_dis then
+                    result.closest_firing_dis = dis
+                end
+                if is_targeting_me and dis < result.closest_targeting_dis then
+                    result.closest_targeting_dis = dis
+                end
+                if (EnemyClassifier.is_dozer(u_char.unit)
+                        or EnemyClassifier.is_taser(u_char.unit)
+                        or EnemyClassifier.is_cloaker(u_char.unit))
+                        and dis < result.closest_dangerous_firing_dis
+                then
+                    result.closest_dangerous_firing_dis = dis
                 end
             end
         end
@@ -670,44 +675,40 @@ local function _scan_nearby_threats(data, unit)
     return result
 end
 
-local function _should_suppress_reload(clip_ammo, threats, pressure, active_enemy, unit, anim)
-    if clip_ammo <= 0 then
+local function _is_in_cover(data)
+    return data.internal_data.in_cover ~= nil
+end
+
+local function _should_suppress_reload(is_empty, threats, pressure, in_cover)
+    if is_empty then
         return false
     end
 
-    if threats.active > 0 and threats.closest_active_dis < CONSTANTS.RELOAD_ACTIVE_CLOSE_DIST then
+    if threats.closest_targeting_dis < CONSTANTS.RELOAD_FIRING_AT_ME_DIST then
         return true
     end
     if threats.closest_dis < CONSTANTS.RELOAD_THREAT_CLOSE_DIST then
         return true
     end
-    if pressure > CONSTANTS.RELOAD_HIGH_PRESSURE then
+    if threats.closest_dangerous_firing_dis < CONSTANTS.RELOAD_DANGEROUS_SPECIAL_DIST then
         return true
     end
-
-    if active_enemy and alive(active_enemy) then
-        local is_dangerous = EnemyClassifier.is_dozer(active_enemy)
-                or EnemyClassifier.is_taser(active_enemy)
-                or EnemyClassifier.is_cloaker(active_enemy)
-        local is_firing, is_targeting_me = _is_enemy_actively_firing(active_enemy, unit)
-
-        if is_dangerous and is_firing and threats.closest_dis < CONSTANTS.RELOAD_DANGEROUS_SPECIAL_DIST then
-            return true
-        end
-        if anim and anim.fire and is_targeting_me and threats.closest_dis < CONSTANTS.RELOAD_FIRING_AT_ME_DIST then
-            return true
-        end
+    if not in_cover
+            and (threats.closest_firing_dis < CONSTANTS.RELOAD_NOT_IN_COVER_DIST
+            or pressure > CONSTANTS.RELOAD_HIGH_PRESSURE)
+    then
+        return true
     end
 
     return false
 end
 
-local function _calculate_reload_threshold(threats, unit, data)
+local function _calculate_reload_threshold(threats, unit, data, weapon_profile)
     local threshold = CONSTANTS.RELOAD_BASE
 
     if threats.nearby == 0 then
         threshold = CONSTANTS.RELOAD_NO_THREATS
-    elseif threats.active == 0 then
+    elseif threats.firing == 0 then
         threshold = CONSTANTS.RELOAD_NO_ACTIVE
     elseif threats.closest_dis > 2000 then
         threshold = CONSTANTS.RELOAD_FAR
@@ -721,71 +722,182 @@ local function _calculate_reload_threshold(threats, unit, data)
         threshold = BB.CoopSystem.get_pressure_adjusted_reload_threshold(unit, data, threshold)
     end
 
-    return threshold
+    local tactical_max = CONSTANTS.RELOAD_DEFAULT_TACTICAL_MAX
+    if weapon_profile.is_looped then
+        tactical_max = CONSTANTS.RELOAD_LOOPED_TACTICAL_MAX
+    elseif weapon_profile.is_low_capacity then
+        tactical_max = CONSTANTS.RELOAD_LOW_CAP_TACTICAL_MAX
+    elseif weapon_profile.is_high_capacity then
+        tactical_max = CONSTANTS.RELOAD_HIGH_CAP_TACTICAL_MAX
+    end
+
+    return math.min(threshold, tactical_max)
+end
+
+local function _get_weapon_profile(unit, unit_movement)
+    local current_wep = unit:inventory():equipped_unit()
+    if not alive(current_wep) then
+        return nil
+    end
+
+    local wep_base = current_wep:base()
+    local clip_max, clip_ammo, total_ammo = wep_base:ammo_info()
+    if clip_max <= 0 then
+        return nil
+    end
+
+    local is_looped = unit_movement:get_looped_reload_time() ~= nil
+    local has_reserve = not wep_base._setup.expend_ammo or total_ammo > clip_ammo
+
+    return {
+        clip_max = clip_max,
+        clip_ammo = clip_ammo,
+        has_reserve = has_reserve,
+        is_looped = is_looped,
+        is_low_capacity = clip_max <= CONSTANTS.RELOAD_LOW_CAP_THRESHOLD,
+        is_high_capacity = clip_max >= CONSTANTS.RELOAD_HIGH_CAP_THRESHOLD,
+    }
+end
+
+local function _is_urgent_objective(data)
+    local objective = data.objective
+    return objective
+            and (objective.type == "revive"
+            or objective.type == "act"
+            or objective.type == "throw_bag")
+end
+
+local function _get_upper_action(unit_movement)
+    local action = unit_movement:get_action(3)
+    return action, action and action:type() or nil
+end
+
+local function _is_currently_firing(data, anim, upper_action, upper_action_type)
+    return data.internal_data.firing == true
+            or anim.fire == true
+            or upper_action_type == "shoot" and upper_action._autofiring ~= nil
+end
+
+local function _start_reload(data, upper_action, upper_action_type, is_empty)
+    local unit = data.unit
+    local anim = unit:anim_data()
+
+    if upper_action_type == "reload" then
+        return "pending"
+    elseif upper_action_type == "shoot" then
+        if is_empty then
+            return "native"
+        end
+        if anim.base_no_reload then
+            return nil
+        end
+
+        return CopActionReload._play_reload(upper_action, game_time()) and "started" or nil
+    elseif upper_action and upper_action_type ~= "idle" then
+        return nil
+    end
+
+    return data.brain:action_request({ type = "reload", body_part = 3 }) and "started" or nil
 end
 
 function CombatBehavior.check_smart_reload(data)
     local unit = data.unit
-    if not alive(unit) then return end
-
-    local unit_movement = unit:movement()
-    local anim = unit:anim_data()
-    if unit_movement:chk_action_forbidden("action") or (anim and anim.reload) then
-        return
+    local my_data = data.internal_data
+    if not alive(unit)
+            or my_data.exiting
+    then
+        return false
     end
 
-    local current_wep = unit:inventory():equipped_unit()
-    local wep_base = current_wep and current_wep:base()
-    if not wep_base then return end
+    local unit_movement = unit:movement()
+    local combat_status = get_combat_status(unit)
+    local anim = unit:anim_data()
+    if not combat_status.can_fight
+            or unit_movement:cool()
+            or unit_movement:chk_action_forbidden("action")
+            or my_data.acting
+            or my_data.reviving
+            or anim.reload
+            or anim.equip
+            or anim.melee
+    then
+        return false
+    end
 
-    local clip_max, clip_ammo, reserve_total, _ = wep_base:ammo_info()
-    if not (clip_max and clip_max > 0) then return end
-    if clip_ammo >= clip_max then return end
-    if (reserve_total or 0) <= 0 then return end
+    local profile = _get_weapon_profile(unit, unit_movement)
+    if not profile
+            or profile.clip_ammo >= profile.clip_max
+            or not profile.has_reserve
+    then
+        return false
+    end
 
-    if clip_ammo > 0 and BB:get("coop", false) then
-        local teammates_reloading = BB.CoopSystem.get_reloading_teammates_count(unit:key())
-        if teammates_reloading >= CONSTANTS.MAX_RELOADING_TEAMMATES then
-            return
-        end
+    local is_empty = profile.clip_ammo <= 0
+    local t = game_time()
+    if not is_empty and data._bb_reload_retry_t and t < data._bb_reload_retry_t then
+        return false
+    end
+
+    local upper_action, upper_action_type = _get_upper_action(unit_movement)
+    if not is_empty and _is_currently_firing(data, anim, upper_action, upper_action_type) then
+        return false
+    end
+    if not is_empty and _is_urgent_objective(data) then
+        return false
     end
 
     local pressure = BB:get("coop", false) and BB.CoopSystem.calculate_team_pressure(unit, data) or 0
     local threats = _scan_nearby_threats(data, unit)
+    local in_cover = _is_in_cover(data)
 
-    if _should_suppress_reload(clip_ammo, threats, pressure, threats.active_enemy, unit, anim) then
-        return
+    if _should_suppress_reload(is_empty, threats, pressure, in_cover) then
+        return false
     end
 
-    local reload_threshold = _calculate_reload_threshold(threats, unit, data)
-
-    local is_empty = clip_ammo == 0
-    local is_low_capacity = clip_max <= CONSTANTS.RELOAD_LOW_CAP_THRESHOLD
-
-    if is_low_capacity and reload_threshold > CONSTANTS.RELOAD_LOW_CAP_TACTICAL_MAX then
-        reload_threshold = reload_threshold * CONSTANTS.RELOAD_LOW_CAP_MUL
+    if not is_empty
+            and profile.is_looped
+            and (threats.firing > 0
+            or not in_cover and threats.closest_dis < CONSTANTS.RELOAD_LOOPED_SAFE_DIST)
+    then
+        return false
     end
 
-    local threshold_ammo = clip_max * reload_threshold
-    local threshold_val = is_low_capacity and math.floor(threshold_ammo) or math.ceil(threshold_ammo)
-    local want_tactical_reload = clip_ammo <= threshold_val
+    local reload_threshold = _calculate_reload_threshold(threats, unit, data, profile)
+    local threshold_val = math.floor(profile.clip_max * reload_threshold)
+    local want_tactical_reload = profile.clip_ammo <= threshold_val
 
     if not is_empty and not want_tactical_reload then
-        return
+        return false
     end
 
-    local brain = unit:brain()
-    if not is_empty and threats.active > 0 then
-        local objective = data.objective
-        local in_cover = objective and objective.in_place
-        if not in_cover and threats.closest_active_dis < CONSTANTS.RELOAD_NOT_IN_COVER_DIST then
-            return
+    local reserved_intent
+    if not is_empty and threats.nearby > 0 and BB:get("coop", false) then
+        local teammates_reloading = BB.CoopSystem.get_reloading_teammates_count(unit:key())
+        if teammates_reloading >= CONSTANTS.MAX_TACTICAL_RELOADING_TEAMMATES then
+            return false
         end
+
+        reserved_intent = t + CONSTANTS.RELOAD_INTENT_TTL
+        data._bb_reload_intent_t = reserved_intent
     end
 
+    local result = _start_reload(data, upper_action, upper_action_type, is_empty)
+    if result ~= "started" then
+        if reserved_intent and data._bb_reload_intent_t == reserved_intent then
+            data._bb_reload_intent_t = nil
+        end
+        if not is_empty and result ~= "pending" then
+            data._bb_reload_retry_t = t + CONSTANTS.RELOAD_FAILED_RETRY_DELAY
+        end
+        return result == "native" or result == "pending"
+    end
+
+    if not is_empty then
+        data._bb_reload_retry_t = t + CONSTANTS.RELOAD_TACTICAL_RETRY_DELAY
+    end
     HoldPosition:prepare_reload_pose(data)
 
-    brain:action_request({ type = "reload", body_part = 3 })
+    return true
 end
 
 local function _get_melee_retry_delay(data, weapon_base)

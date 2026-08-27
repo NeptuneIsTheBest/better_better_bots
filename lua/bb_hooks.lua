@@ -920,6 +920,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                 local result = original(data, ...)
 
                 RescueCoordinator.maybe_interrupt_rescue(data)
+                if data.name == "idle" then
+                    CombatBehavior.check_smart_reload(data)
+                end
 
                 return result
             end)
@@ -928,9 +931,13 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                     TeamAILogicIdle,
                     "_upd_enemy_detection",
                     function(original, data, ...)
+                local my_data = data.internal_data
                 local result = original(data, ...)
 
                 RescueCoordinator.maybe_interrupt_rescue(data)
+                if data.name == "idle" and data.internal_data == my_data then
+                    CombatBehavior.check_smart_reload(data)
+                end
 
                 return result
             end)
@@ -973,6 +980,20 @@ if RequiredScript == "lib/units/player_team/logics/teamailogictravel" then
                 end
 
                 return original(data, objective, ...)
+            end)
+
+            install_method_patch(
+                    TeamAILogicTravel,
+                    "_upd_enemy_detection",
+                    function(original, data, ...)
+                local my_data = data.internal_data
+                local result = original(data, ...)
+
+                if data.name == "travel" and data.internal_data == my_data then
+                    CombatBehavior.check_smart_reload(data)
+                end
+
+                return result
             end)
     end
 end
@@ -1203,8 +1224,8 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     end
                 end
 
-                if (not my_data.reload_t) or (my_data.reload_t + CONSTANTS.RELOAD_CHECK_INTERVAL < t) then
-                    my_data.reload_t = t
+                if t >= (my_data._bb_next_reload_check_t or 0) then
+                    my_data._bb_next_reload_check_t = t + CONSTANTS.RELOAD_CHECK_INTERVAL
                     CombatBehavior.check_smart_reload(data)
                 end
 
@@ -1228,9 +1249,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     end
             )
 
-            Hooks:PostHook(TeamAILogicAssault, "exit", "BB_TeamAILogicAssault_exit_SmartReload", function(data, ...)
-                CombatBehavior.check_smart_reload(data)
-            end)
         end
     end
 
@@ -1246,6 +1264,19 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
             )
         end
     end
+
+if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionreload" then
+    install_method_patch(
+            CopActionReload,
+            "init",
+            function(original, self, action_desc, common_data, ...)
+        if is_team_ai(common_data.unit) then
+            self._looped_expire_time = common_data.ext_movement:get_looped_reload_time()
+        end
+
+        return original(self, action_desc, common_data, ...)
+    end)
+end
 
 if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" then
     install_method_patch(
@@ -1825,12 +1856,6 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
 
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
         if Network:is_server() then
-            Hooks:PostHook(CopLogicIdle, "enter", "BB_CopLogicIdle_enter_CheckSmartReload", function(data, ...)
-                if data.is_converted then
-                    CombatBehavior.check_smart_reload(data)
-                end
-            end)
-
             install_method_patch(
                     CopLogicIdle,
                     "on_intimidated",
