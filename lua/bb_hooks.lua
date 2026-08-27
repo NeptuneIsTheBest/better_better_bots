@@ -1281,17 +1281,17 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                 end
 
                 local ext_base = self._ext_base
-                local original_lod_stage = ext_base.lod_stage
+                local original_lod_stage = rawget(ext_base, "lod_stage")
 
-                ext_base.lod_stage = function()
+                rawset(ext_base, "lod_stage", function()
                     return forced_lod
-                end
+                end)
 
                 local ok, err = pcall(function()
                     return original(self, t)
                 end)
 
-                ext_base.lod_stage = original_lod_stage
+                rawset(ext_base, "lod_stage", original_lod_stage)
 
                 if not ok then
                     error(err, 0)
