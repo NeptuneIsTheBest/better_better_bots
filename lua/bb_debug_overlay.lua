@@ -429,6 +429,7 @@ local function create_debug_panel(parent)
         h = PANEL_HEIGHT,
         layer = 0,
         name = BACKGROUND_NAME,
+        rotation = 360,
         w = PANEL_WIDTH,
     })
 
@@ -440,6 +441,7 @@ local function create_debug_panel(parent)
         h = PANEL_HEIGHT - PANEL_PADDING * 2,
         layer = 1,
         name = TEXT_NAME,
+        rotation = 360,
         vertical = "top",
         w = PANEL_WIDTH - PANEL_PADDING * 2,
         word_wrap = false,
