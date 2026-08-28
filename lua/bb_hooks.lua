@@ -22,6 +22,9 @@ local safe_say = UnitOps.say
 local move_shoot_watch_vec = Vector3()
 local move_shoot_walk_vec = Vector3()
 local DEFAULT_TEAM_AI_FIRE_RANGE = 500
+local AIM_ATTENTION_POS_EPSILON = CONSTANTS.AIM_ATTENTION_POS_EPSILON
+local AIM_ATTENTION_POS_EPSILON_SQ = AIM_ATTENTION_POS_EPSILON
+        * AIM_ATTENTION_POS_EPSILON
 
 local function is_bot_weapons_active()
     return rawget(_G, "BotWeapons") ~= nil
@@ -154,11 +157,11 @@ end
 local function set_team_ai_attention_on_pos(data, my_data, focus_enemy, attention_pos)
     local attention_key = get_team_ai_attention_key(focus_enemy)
     local cached_pos = my_data._bb_aim_attention_pos
-    local epsilon = CONSTANTS.AIM_ATTENTION_POS_EPSILON or 25
     local needs_update = my_data._bb_aim_attention_kind ~= "pos"
             or my_data._bb_aim_attention_key ~= attention_key
             or not cached_pos
-            or mvector3.distance_sq(cached_pos, attention_pos) >= epsilon * epsilon
+            or mvector3.distance_sq(cached_pos, attention_pos)
+            >= AIM_ATTENTION_POS_EPSILON_SQ
 
     if needs_update then
         cached_pos = mvector3.copy(attention_pos)
@@ -187,6 +190,50 @@ local function clear_team_ai_attention_cache(my_data)
     my_data._bb_aim_attention_key = nil
     my_data._bb_aim_attention_pos = nil
     my_data._bb_aim_stop_requested = nil
+end
+
+local function reconcile_team_ai_combat_runtime(movement, my_data)
+    local runtime_attention = movement:attention()
+
+    if not runtime_attention then
+        my_data.attention_unit = nil
+        clear_team_ai_attention_cache(my_data)
+    elseif runtime_attention.unit then
+        local runtime_key = runtime_attention.u_key or runtime_attention.unit:key()
+
+        my_data.attention_unit = runtime_key
+
+        if my_data._bb_aim_attention_kind
+                and (my_data._bb_aim_attention_kind ~= "unit"
+                or my_data._bb_aim_attention_key ~= runtime_key)
+        then
+            clear_team_ai_attention_cache(my_data)
+        end
+    else
+        local runtime_pos = runtime_attention.pos
+        local cached_pos = my_data._bb_aim_attention_pos
+
+        my_data.attention_unit = runtime_pos
+
+        if my_data._bb_aim_attention_kind
+                and (my_data._bb_aim_attention_kind ~= "pos"
+                or not cached_pos
+                or mvector3.distance_sq(cached_pos, runtime_pos)
+                >= AIM_ATTENTION_POS_EPSILON_SQ)
+        then
+            clear_team_ai_attention_cache(my_data)
+        end
+    end
+
+    local upper_action = movement:get_action(3)
+    local upper_action_type = upper_action and upper_action:type()
+
+    my_data.shooting = upper_action_type == "shoot" and true or nil
+    if not my_data.shooting then
+        my_data._bb_aim_stop_requested = nil
+    end
+
+    my_data.firing = movement._allow_fire or nil
 end
 
 local function apply_team_ai_weapon_responsiveness(char_tweak)
@@ -1022,6 +1069,10 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                     return original(data, my_data)
                 end
 
+                local movement = unit:movement()
+
+                reconcile_team_ai_combat_runtime(movement, my_data)
+
                 if not is_team_ai_running(unit, my_data) then
                     clear_team_ai_attention_cache(my_data)
 
@@ -1032,7 +1083,6 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                 local reaction = focus_enemy and focus_enemy.reaction
                 local focus_unit = focus_enemy and focus_enemy.unit
                 local focus_alive = alive(focus_unit)
-                local movement = unit:movement()
                 local brain = unit:brain()
                 local anim_data = unit:anim_data()
                 local shoot = false
