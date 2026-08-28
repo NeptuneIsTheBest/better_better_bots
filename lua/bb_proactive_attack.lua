@@ -270,11 +270,14 @@ local function collect_known_targets(group_state, players, max_distance, t)
             if flags.tasing or flags.spooc_attack then
                 target.urgency = 3
                 target.focus = "urgent"
-            elseif flags.special or flags.dozer or flags.turret then
+            elseif flags.special or flags.dozer then
                 target.urgency = 2
-                if flags.dozer or flags.turret then
+                if flags.dozer then
                     target.focus = "durable"
                 end
+            elseif flags.turret then
+                target.urgency = 1
+                target.focus = "durable"
             else
                 target.urgency = 1
             end

@@ -65,9 +65,15 @@ local CONSTANTS = {
     HOLD_POSITION_RETRY_INTERVAL = 1,
 
     TASING_THREAT_MUL = 3.0,
-    SPOOC_THREAT_MUL = 3.5,
+    SPOOC_THREAT_MUL = 3.25,
     SPOOC_CLOSE_RANGE = 1500,
-    SPOOC_CLOSE_MUL = 1.5,
+    SPOOC_CLOSE_MUL = 1.25,
+    CLOAKER_CLOSE_RANGE = 1200,
+    CLOAKER_CLOSE_MUL = 1.5,
+    ACTIVE_FIRE_THREAT_MUL = 1.2,
+    TARGETING_TEAM_THREAT_MUL = 1.15,
+    TARGETING_ME_THREAT_MUL = 1.35,
+    TACTICAL_THREAT_MUL_MAX = 1.75,
     TARGET_STICKINESS_MUL = 1.3,
 
     RESCUE_COORD_UPDATE_INTERVAL = 0.2,
@@ -102,7 +108,9 @@ local CONSTANTS = {
     SNIPER_FAR_MUL = 1.1,
 
     LOW_HEALTH_RATIO = 0.3,
-    DOZER_LOW_HEALTH_MUL = 1.3,
+    LOW_HEALTH_THREAT_MUL = 1.15,
+    DURABLE_LOW_HEALTH_THREAT_MUL = 1.3,
+    DURABLE_HEALTH_REFERENCE_MUL = 4,
 
     ACC_MUL_DEFAULT = 1.25,
     ACC_MUL_SNIPER = 1.75,
@@ -163,36 +171,58 @@ local ARCHETYPE_DAMAGE_MULTIPLIERS = {
     shotgun = 2.5,
 }
 
+local ROLE_THREAT_MULTIPLIERS = {
+    NORMAL = 1.0,
+    TURRET = 0.1,
+    SHIELD = 4.0,
+    SPECIAL = 6.0,
+    DOZER = 6.5,
+    CLOAKER = 8.0,
+    BOSS = 8.0,
+    SNIPER = 8.5,
+    TASER = 9.0,
+    MEDIC = 10.0,
+    DOZER_MEDIC = 11.0,
+}
+
+local TWEAK_THREAT_MULTIPLIERS = {
+    tank_medic = 11.0,
+    phalanx_minion = 11.0,
+    tank_mini = 9.5,
+    marshal_marksman = 9.5,
+    marshal_shield_break = 9.0,
+    tank_hw = 8.5,
+    marshal_shield = 5.0,
+    snowman_boss = 10.0,
+    piggydozer = 10.0,
+    phalanx_vip = 8.0,
+    phalanx_vip_test = 8.0,
+}
+
 local THREAT_WEIGHTS = {
     DISTANCE_BASE = 1000,
-    CLOAKER = 100,
-    TASER = 90,
-    SHIELD = 60,
-    DOZER = 80,
-    MEDIC = 70,
-    SNIPER = 75,
-    SPECIAL = 65,
-    TURRET = 20,
-    LOW_HEALTH_BONUS = 50,
-    TARGETING_ME_BONUS = 60,
+    ROLE_MULTIPLIERS = ROLE_THREAT_MULTIPLIERS,
+    TWEAK_MULTIPLIERS = TWEAK_THREAT_MULTIPLIERS,
+    HEALTH_LOG_WEIGHT = 0.04,
+    HEALTH_MUL_MIN = 0.9,
+    HEALTH_MUL_MAX = 1.25,
+    DAMAGE_LOG_WEIGHT = 0.08,
+    DAMAGE_MUL_MIN = 0.85,
+    DAMAGE_MUL_MAX = 1.25,
+    ADAPTIVE_MUL_MIN = 0.8,
+    ADAPTIVE_MUL_MAX = 1.35,
     DIRECTION_BONUS = 30,
-    CAPTAIN_MINION = 110,
-    CAPTAIN_VIP_SUPPRESSED = 5,
-    DOZER_MEDIC_SYNERGY = 25,
+    CAPTAIN_VIP_SUPPRESSED = 0.5,
     SHIELD_BLOCKED_PENALTY = 0.2,
-    COOP_TURRET_PRIO = 8,
-    COOP_DOZER_PRIO = 13,
+    COOP_ROLE_SCALE = 2.25,
     COOP_DOZER_FACING_BONUS = 20,
-    COOP_TASER_PRIO = 14,
-    COOP_CLOAKER_PRIO = 12,
-    COOP_CLOAKER_CLOSE_PRIO = 18,
-    COOP_SNIPER_PRIO = 15,
-    COOP_SNIPER_FAR_BONUS = 20,
-    COOP_MEDIC_PRIO = 20,
+    COOP_CLOAKER_CLOSE_RANGE = 1400,
+    COOP_CLOAKER_CLOSE_BONUS = 6,
+    COOP_SNIPER_FAR_RANGE = 2500,
+    COOP_SNIPER_FAR_BONUS = 10,
     COOP_TASING_PRIO = 30,
     COOP_SPOOC_PRIO = 28,
-    COOP_SHIELD_BLOCKED_PRIO = 2,
-    COOP_SHIELD_CLEAR_PRIO = 9,
+    COOP_SHIELD_BLOCKED_MUL = 0.25,
     COOP_CLUSTER_BONUS = 5,
     COOP_VERIFIED_BONUS = 2,
 }
@@ -228,6 +258,7 @@ local INFER_FLAGS_PATTERNS = {
     sniper = "sniper",
     phalanx = "captain",
     captain = "captain",
+    boss = "boss",
 }
 
 local CLASSIFY_TAG_MAP = {
@@ -239,6 +270,8 @@ local CLASSIFY_TAG_MAP = {
     sniper = "sniper",
     medic = "medic",
     phalanx = "captain",
+    eventboss = "boss",
+    boss = "boss",
 }
 
 BB.FEATURE_FLAGS = FEATURE_FLAGS

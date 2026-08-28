@@ -14,7 +14,6 @@ local game_time = Utils.game_time
 local are_units_foes = UnitOps.are_foes
 local play_net_redirect = UnitOps.play_redirect
 local is_surrendering = UnitOps.is_surrendering
-local get_unit_health_ratio = UnitOps.health_ratio
 local get_combat_status = UnitOps.combat_status
 
 local CombatHelper = BB.CombatHelper
@@ -281,15 +280,10 @@ local function _filter_potential_targets(
                     local flags = BB.classify_enemy(attention_data.unit, attention_data)
                     local urgency = 1
                     if flags.tasing then
-                        threat = threat * CONSTANTS.TASING_THREAT_MUL
                         force_unlock = true
                         urgency = 3
                     end
                     if flags.spooc_attack then
-                        threat = threat * CONSTANTS.SPOOC_THREAT_MUL
-                        if attention_data.verified_dis and attention_data.verified_dis < CONSTANTS.SPOOC_CLOSE_RANGE then
-                            threat = threat * CONSTANTS.SPOOC_CLOSE_MUL
-                        end
                         force_unlock = true
                         urgency = 3
                     end
@@ -351,8 +345,11 @@ local function _filter_potential_targets(
                                 * _weapon_range_factor(data, unit, dist)
                     end
 
-                    local durable = flags.turret
-                            or flags.dozer and get_unit_health_ratio(attention_data.unit) > 0.3
+                    local durable = ThreatAssessment.is_durable_target(
+                            attention_data.unit,
+                            attention_data,
+                            flags
+                    )
                     local focus = urgency >= 3 and "urgent"
                             or durable and "durable"
                             or nil

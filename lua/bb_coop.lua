@@ -700,16 +700,35 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data, target_pos,
 
     local enemy = att_obj.unit
     local flags = BB.classify_enemy(enemy, att_obj)
+    local enemy_movement = enemy.movement and enemy:movement()
     local pos = target_pos
             or att_obj.m_head_pos
-            or (enemy:movement() and enemy:movement():m_head_pos())
-    local my_head = my_unit:movement() and my_unit:movement():m_head_pos()
+            or (enemy_movement
+            and enemy_movement.m_head_pos
+            and enemy_movement:m_head_pos())
+    local my_movement = my_unit:movement()
+    local my_head = my_movement and my_movement:m_head_pos()
     local dis = target_distance
             or att_obj.verified_dis
             or ((my_head and pos) and mvector3.distance(my_head, pos))
             or 2000
 
-    local prio = 0
+    local role_multiplier = ThreatAssessment.get_role_multiplier(
+            enemy,
+            att_obj,
+            flags
+    )
+    local role_priority = math.max(role_multiplier - 1, 0)
+            * THREAT_WEIGHTS.COOP_ROLE_SCALE
+    if flags.shield then
+        local has_ap = CombatHelper.has_ap_ammo(my_unit)
+        local blocked = pos and CombatHelper.shield_blocks_default(my_unit, pos)
+        if blocked and not has_ap and dis > CONSTANTS.MELEE_DISTANCE then
+            role_priority = role_priority * THREAT_WEIGHTS.COOP_SHIELD_BLOCKED_MUL
+        end
+    end
+
+    local prio = role_priority
     local state = "normal"
 
     local ally_dist
@@ -729,15 +748,11 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data, target_pos,
         end
     end
 
-    if flags.turret then
-        prio = prio + THREAT_WEIGHTS.COOP_TURRET_PRIO
-    end
     if flags.dozer then
-        prio = prio + THREAT_WEIGHTS.COOP_DOZER_PRIO
-
         if pos and my_head then
-            local e_mov = enemy:movement()
-            local e_fwd = e_mov and e_mov:m_head_fwd()
+            local e_fwd = enemy_movement
+                    and enemy_movement.m_head_fwd
+                    and enemy_movement:m_head_fwd()
             if e_fwd then
                 local to_me = my_head - pos
                 mvector3.normalize(to_me)
@@ -748,20 +763,11 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data, target_pos,
             end
         end
     end
-    if flags.taser then
-        prio = prio + THREAT_WEIGHTS.COOP_TASER_PRIO
+    if flags.cloaker and dis < THREAT_WEIGHTS.COOP_CLOAKER_CLOSE_RANGE then
+        prio = prio + THREAT_WEIGHTS.COOP_CLOAKER_CLOSE_BONUS
     end
-    if flags.cloaker then
-        prio = prio + (dis < 1400 and THREAT_WEIGHTS.COOP_CLOAKER_CLOSE_PRIO or THREAT_WEIGHTS.COOP_CLOAKER_PRIO)
-    end
-    if flags.sniper then
-        prio = prio + THREAT_WEIGHTS.COOP_SNIPER_PRIO
-        if dis > 2500 then
-            prio = prio + THREAT_WEIGHTS.COOP_SNIPER_FAR_BONUS
-        end
-    end
-    if flags.medic then
-        prio = prio + THREAT_WEIGHTS.COOP_MEDIC_PRIO
+    if flags.sniper and dis > THREAT_WEIGHTS.COOP_SNIPER_FAR_RANGE then
+        prio = prio + THREAT_WEIGHTS.COOP_SNIPER_FAR_BONUS
     end
 
     if flags.tasing then
@@ -772,17 +778,6 @@ function CoopSystem.compute_dynamic_priority(my_unit, att_obj, data, target_pos,
     if flags.spooc_attack then
         prio = prio + THREAT_WEIGHTS.COOP_SPOOC_PRIO
         state = "spooc_attacking"
-    end
-
-    if flags.shield then
-        local has_ap = CombatHelper.has_ap_ammo(my_unit)
-        local blocked = pos and CombatHelper.shield_blocks_default(my_unit, pos)
-
-        if blocked and not has_ap and dis > CONSTANTS.MELEE_DISTANCE then
-            prio = prio + THREAT_WEIGHTS.COOP_SHIELD_BLOCKED_PRIO
-        else
-            prio = prio + THREAT_WEIGHTS.COOP_SHIELD_CLEAR_PRIO
-        end
     end
 
     if pos then

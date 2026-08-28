@@ -28,7 +28,7 @@ local function has_tag(tags, tag)
 end
 
 local function update_dynamic_flags(flags, unit)
-    local brain = unit:brain()
+    local brain = unit.brain and unit:brain()
     local logic_data = brain and brain._logic_data
     local internal_data = logic_data and logic_data.internal_data
 
@@ -105,6 +105,7 @@ function EnemyClassifier.classify(unit, att_obj)
         medic = false,
         sniper = false,
         captain = false,
+        boss = false,
         special = false,
         tasing = false,
         spooc_attack = false,
@@ -161,6 +162,7 @@ function EnemyClassifier.classify(unit, att_obj)
             or flags.sniper
             or flags.medic
             or flags.captain
+            or flags.boss
     then
         flags.special = true
     end
@@ -187,6 +189,7 @@ EnemyClassifier.is_sniper = create_classifier_method("sniper")
 EnemyClassifier.is_taser = create_classifier_method("taser")
 EnemyClassifier.is_cloaker = create_classifier_method("cloaker")
 EnemyClassifier.is_medic = create_classifier_method("medic")
+EnemyClassifier.is_boss = create_classifier_method("boss")
 
 BB.EnemyClassifier = EnemyClassifier
 BB.classify_enemy = EnemyClassifier.classify
