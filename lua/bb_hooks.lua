@@ -1000,6 +1000,18 @@ end
 
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
         if Network:is_server() then
+            Hooks:PreHook(
+                    CopLogicAttack,
+                    "aim_allow_fire",
+                    "BB_CopLogicAttack_aimAllowFire_DebugOverlay",
+                    function(shoot, aim, data, my_data)
+                if DebugOverlay:is_enabled()
+                        and is_team_ai_move_shoot_unit(data.unit)
+                then
+                    DebugOverlay:record_fire_decision(shoot, aim, my_data)
+                end
+            end)
+
             install_method_patch(
                     CopLogicAttack,
                     "_upd_aim",

@@ -55,6 +55,16 @@ local function count_entries(value)
     return count
 end
 
+local function format_boolean(value)
+    if value == true then
+        return "T"
+    elseif value == false then
+        return "F"
+    end
+
+    return "-"
+end
+
 local function format_number(value, format)
     if type(value) ~= "number" then
         return "-"
@@ -190,6 +200,59 @@ local function actions_descriptor(movement)
     end
 
     return table.concat(actions, ",")
+end
+
+local function attention_kind_descriptor(movement)
+    local attention = movement:attention()
+    if not attention then
+        return "-"
+    elseif attention.unit then
+        return "unit"
+    elseif attention.pos then
+        return "pos"
+    end
+
+    return "-"
+end
+
+local function weapon_range_descriptor(internal_data)
+    local weapon_range = internal_data and internal_data.weapon_range
+    if type(weapon_range) == "number" then
+        return string.format("%.1fm", weapon_range / 100)
+    elseif type(weapon_range) ~= "table" then
+        return "-"
+    end
+
+    local has_range = false
+    local values = {}
+    for _, key in ipairs({"close", "optimal", "far"}) do
+        local value = weapon_range[key]
+        if type(value) == "number" then
+            has_range = true
+            table.insert(values, string.format("%.1f", value / 100))
+        else
+            table.insert(values, "-")
+        end
+    end
+
+    return has_range and table.concat(values, "/") .. "m" or "-"
+end
+
+local function fire_state_data(movement, logic_data)
+    local internal_data = logic_data and logic_data.internal_data
+    local decision = internal_data and internal_data._bb_debug_fire_decision
+    local common_data = movement._action_common_data
+
+    return {
+        aim = format_boolean(decision and decision.aim),
+        allow_fire = format_boolean(movement._allow_fire),
+        attention = attention_kind_descriptor(movement),
+        firing = format_boolean(internal_data and internal_data.firing),
+        shoot = format_boolean(decision and decision.shoot),
+        shooting = format_boolean(internal_data and internal_data.shooting),
+        suppressed = format_boolean(common_data.is_suppressed),
+        weapon_range = weapon_range_descriptor(internal_data),
+    }
 end
 
 local function path_descriptor(logic_data, objective, t)
@@ -379,6 +442,7 @@ local function build_debug_text(unit, bot_key, character_name, t)
     local role = StatusIcons:get_display_role(character_name) or "-"
     local current = current_target_data(unit, logic_data, t)
     local assignment = assignment_data(bot_key, logic_data, t)
+    local fire = fire_state_data(movement, logic_data)
 
     return table.concat({
         string.format(
@@ -403,6 +467,20 @@ local function build_debug_text(unit, bot_key, character_name, t)
                 current.distance,
                 current.reaction,
                 current.lock
+        ),
+        string.format(
+                "FIRE AIM:%s SHOOT:%s ALLOW_FIRE:%s FIRING:%s SHOOTING:%s",
+                fire.aim,
+                fire.shoot,
+                fire.allow_fire,
+                fire.firing,
+                fire.shooting
+        ),
+        string.format(
+                "AIM_ATT:%s SUP:%s WR(C/O/F):%s",
+                fire.attention,
+                fire.suppressed,
+                fire.weapon_range
         ),
         string.format(
                 "ASG:%s SC:%s C:%s LD:%s P:%s AGE:%s",
@@ -480,6 +558,14 @@ end
 
 function DebugOverlay:is_enabled()
     return Network:is_server() and BB:get("debug", false) or false
+end
+
+function DebugOverlay:record_fire_decision(shoot, aim, my_data)
+    local decision = my_data._bb_debug_fire_decision or {}
+    my_data._bb_debug_fire_decision = decision
+
+    decision.aim = aim
+    decision.shoot = shoot
 end
 
 function DebugOverlay:apply_setting()
