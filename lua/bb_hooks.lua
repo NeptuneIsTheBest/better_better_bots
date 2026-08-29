@@ -1351,13 +1351,33 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
                         and BB:get("reflex", false)
                         and is_team_ai_move_shoot_unit(self._unit)
                 then
-                    self._mod_enable_t = 0
                     self._aim_transition = nil
                     self._get_target_pos = nil
                 end
 
                 return result
             end)
+
+    local function install_reflex_ik_update_patch(method_name)
+        install_method_patch(
+                CopActionShoot,
+                method_name,
+                function(original, self, target_vec, fwd_dot, t, ...)
+                    local updated_target_vec = original(self, target_vec, fwd_dot, t, ...)
+
+                    if updated_target_vec
+                            and BB:get("reflex", false)
+                            and is_team_ai_move_shoot_unit(self._unit)
+                    then
+                        self._mod_enable_t = 0
+                    end
+
+                    return updated_target_vec
+                end)
+    end
+
+    install_reflex_ik_update_patch("_upd_ik_spine")
+    install_reflex_ik_update_patch("_upd_ik_r_arm")
 
     install_method_patch(
             CopActionShoot,
@@ -1549,11 +1569,14 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
             local mvec3_dis_sq = mvector3.distance_sq
             local mvec3_set = mvector3.set
 
-            local function get_reflex_reaction(settings, attention_info, my_team)
+            local function get_reflex_reaction(settings, attention_info, my_team, max_reaction)
                 local reaction = settings.reaction or REACT_IDLE
 
-                if reaction < REACT_COMBAT then
-                    local their_team = attention_info.team
+                if reaction < REACT_COMBAT
+                        and (max_reaction == nil or max_reaction >= REACT_COMBAT)
+                then
+                    local their_team = settings.team
+                            or UnitOps.team(attention_info and attention_info.unit)
                     local foes = my_team and my_team.foes
 
                     if their_team and foes and foes[their_team.id] then
@@ -1803,8 +1826,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 local focus_key = data.attention_obj and data.attention_obj.u_key
                 local chk_vis_func = my_tracker.check_visibility
                 local all_attention_objects = gstate:get_AI_attention_objects_by_filter(
-                        data.SO_access_str,
-                        my_team
+                        data.SO_access_str
                 )
 
                 if not all_attention_objects then
@@ -1834,7 +1856,12 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                                             my_team
                                     )
                                     local reaction = settings
-                                            and get_reflex_reaction(settings, attention_info, my_team)
+                                            and get_reflex_reaction(
+                                                    settings,
+                                                    attention_info,
+                                                    my_team,
+                                                    max_reaction
+                                            )
 
                                     if reaction and reaction >= REACT_COMBAT then
                                         local attention_pos = att_handler:get_detection_m_pos()
