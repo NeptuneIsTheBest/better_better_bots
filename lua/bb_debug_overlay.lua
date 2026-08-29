@@ -1,9 +1,12 @@
 local BB = _G.BB
 
 local CONSTANTS = BB.CONSTANTS
+local Utils = BB.Utils
 local UnitOps = BB.UnitOps
 local CoopSystem = BB.CoopSystem
 local StatusIcons = BB.StatusIcons
+
+local game_time = Utils.game_time
 
 local DebugOverlay = BB.DebugOverlay or {}
 BB.DebugOverlay = DebugOverlay
@@ -16,20 +19,28 @@ local PANEL_HEIGHT = 64
 local PANEL_PADDING = 3
 local FONT_SIZE = 12
 local UPDATE_INTERVAL = 0.2
+local PATH_FAILURE_WINDOW = 6
+local SCREEN_PADDING = 2
+
+local reaction_names
+
+local SEARCH_TYPES = {
+    {"cover_path_search_id", "cover"},
+    {"advance_path_search_id", "advance"},
+    {"coarse_path_search_id", "coarse"},
+    {"charge_path_search_id", "charge"},
+    {"expected_pos_path_search_id", "expected"},
+    {"stare_path_search_id", "stare"},
+}
 
 DebugOverlay._rendered = DebugOverlay._rendered or {}
+DebugOverlay._last_shot_t = DebugOverlay._last_shot_t or {}
 DebugOverlay._next_update_t = DebugOverlay._next_update_t or 0
 
 local function clear_table(value)
-    if type(value) ~= "table" then
-        return {}
-    end
-
     for key in pairs(value) do
         value[key] = nil
     end
-
-    return value
 end
 
 local function remove_named_child(parent, name)
@@ -48,7 +59,7 @@ end
 
 local function count_entries(value)
     local count = 0
-    for _ in pairs(type(value) == "table" and value or {}) do
+    for _ in pairs(value) do
         count = count + 1
     end
 
@@ -76,6 +87,14 @@ end
 local function format_metric(value, format, suffix)
     local formatted = format_number(value, format)
     return formatted == "-" and formatted or formatted .. suffix
+end
+
+local function format_age(timestamp, t, missing)
+    if type(timestamp) ~= "number" then
+        return missing or "-"
+    end
+
+    return string.format("%.1fs", math.max(t - timestamp, 0))
 end
 
 local function find_name_label(unit)
@@ -152,6 +171,22 @@ local function objective_descriptor(objective)
         descriptor = descriptor .. "/evade"
     end
 
+    if alive(objective.follow_unit) then
+        descriptor = string.format(
+                "%s(%s)",
+                descriptor,
+                target_descriptor(objective.follow_unit)
+        )
+    end
+
+    if objective.in_place then
+        descriptor = descriptor .. "/in_place"
+    end
+
+    if objective.forced then
+        descriptor = descriptor .. "/forced"
+    end
+
     return descriptor
 end
 
@@ -170,15 +205,22 @@ local function combat_state_descriptor(combat_status)
 end
 
 local function action_descriptor(action)
-    if not action or type(action.type) ~= "function" then
+    if not action then
         return "-"
     end
 
     local action_type = action:type()
-    if action_type == "walk" and type(action.haste) == "function" then
+    if action_type == "walk" then
+        local details = {}
         local haste = action:haste()
         if haste then
-            action_type = string.format("walk(%s)", tostring(haste))
+            table.insert(details, tostring(haste))
+        end
+        if action:stopping() then
+            table.insert(details, "stop")
+        end
+        if #details > 0 then
+            action_type = string.format("walk(%s)", table.concat(details, ","))
         end
     end
 
@@ -186,33 +228,73 @@ local function action_descriptor(action)
 end
 
 local function actions_descriptor(movement)
-    if not (movement and movement.get_action) then
-        return "-"
-    end
-
     local actions = {}
-    for body_part = 1, 3 do
-        actions[body_part] = string.format(
-                "%d:%s",
-                body_part,
+    local labels = {"F", "L", "U", "P"}
+    for body_part = 1, 4 do
+        table.insert(actions, string.format(
+                "%s:%s",
+                labels[body_part],
                 action_descriptor(movement:get_action(body_part))
-        )
+        ))
     end
 
-    return table.concat(actions, ",")
+    return table.concat(actions, " ")
 end
 
-local function attention_kind_descriptor(movement)
+local function attention_key(attention)
+    if not attention then
+        return nil
+    end
+
+    local key = attention.u_key
+    local unit = attention.unit
+    if key == nil and alive(unit) then
+        key = unit:key()
+    end
+
+    return key ~= nil and tostring(key) or nil
+end
+
+local function reaction_descriptor(reaction)
+    if not reaction_names then
+        reaction_names = {
+            [AIAttentionObject.REACT_IDLE] = "idle",
+            [AIAttentionObject.REACT_CURIOUS] = "curious",
+            [AIAttentionObject.REACT_CHECK] = "check",
+            [AIAttentionObject.REACT_SUSPICIOUS] = "suspicious",
+            [AIAttentionObject.REACT_SURPRISED] = "surprised",
+            [AIAttentionObject.REACT_SCARED] = "scared",
+            [AIAttentionObject.REACT_AIM] = "aim",
+            [AIAttentionObject.REACT_ARREST] = "arrest",
+            [AIAttentionObject.REACT_DISARM] = "disarm",
+            [AIAttentionObject.REACT_SHOOT] = "shoot",
+            [AIAttentionObject.REACT_MELEE] = "melee",
+            [AIAttentionObject.REACT_COMBAT] = "combat",
+            [AIAttentionObject.REACT_SPECIAL_ATTACK] = "special",
+        }
+    end
+
+    return reaction_names[reaction] or string.format("unknown(%d)", reaction)
+end
+
+local function runtime_attention_descriptor(movement, current_key)
     local attention = movement:attention()
     if not attention then
-        return "-"
+        return "none"
     elseif attention.unit then
-        return "unit"
+        local runtime_key = attention_key(attention)
+        if current_key == nil or runtime_key == nil then
+            return "unit"
+        end
+
+        return runtime_key == current_key
+                and "unit=same"
+                or "unit=other"
     elseif attention.pos then
         return "pos"
     end
 
-    return "-"
+    return "other"
 end
 
 local function weapon_range_descriptor(internal_data)
@@ -238,74 +320,213 @@ local function weapon_range_descriptor(internal_data)
     return has_range and table.concat(values, "/") .. "m" or "-"
 end
 
-local function fire_state_data(movement, logic_data)
+local function weapon_ammo_descriptor(unit)
+    local weapon_unit = unit:inventory():equipped_unit()
+    if not alive(weapon_unit) then
+        return "-"
+    end
+
+    local clip_max, clip_ammo = weapon_unit:base():ammo_info()
+    return string.format("%.0f/%.0f", clip_ammo, clip_max)
+end
+
+local function fire_state_data(bot_key, movement, logic_data, current_key, t)
     local internal_data = logic_data and logic_data.internal_data
     local decision = internal_data and internal_data._bb_debug_fire_decision
-    local common_data = movement._action_common_data
+    local decision_descriptor = "-"
+    local decision_target = "-"
+
+    if decision then
+        decision_descriptor = string.format(
+                "%s/%s@%s",
+                format_boolean(decision.aim),
+                format_boolean(decision.shoot),
+                format_age(decision.t, t)
+        )
+
+        if decision.target_key == nil then
+            decision_target = "none"
+        elseif current_key ~= nil and decision.target_key == current_key then
+            decision_target = "same"
+        else
+            decision_target = "other"
+        end
+    end
 
     return {
-        aim = format_boolean(decision and decision.aim),
         allow_fire = format_boolean(movement._allow_fire),
-        attention = attention_kind_descriptor(movement),
-        firing = format_boolean(internal_data and internal_data.firing),
-        shoot = format_boolean(decision and decision.shoot),
-        shooting = format_boolean(internal_data and internal_data.shooting),
-        suppressed = format_boolean(common_data.is_suppressed),
-        weapon_range = weapon_range_descriptor(internal_data),
+        attention = runtime_attention_descriptor(movement, current_key),
+        decision = decision_descriptor,
+        decision_target = decision_target,
+        shot_age = format_age(DebugOverlay._last_shot_t[bot_key], t, "never"),
     }
 end
 
-local function cover_tactics_data(logic_data)
-    local internal_data = logic_data and logic_data.internal_data
-    local state = internal_data and internal_data._bb_cover_tactics
-    local in_cover = internal_data and internal_data.in_cover
-    local cover_data = in_cover
-    local cover = "open"
-
-    if in_cover == true then
-        cover_data = internal_data.best_cover
+local function cover_location_descriptor(internal_data)
+    if not internal_data then
+        return "-"
     end
 
-    if cover_data then
-        cover = cover_data[4] and "high" or "low"
+    local in_cover = internal_data.in_cover
+    local cover_data = in_cover
+    if in_cover == true then
+        cover_data = internal_data.best_cover
+        if type(cover_data) ~= "table" then
+            return "cover"
+        end
+    end
+
+    if type(cover_data) == "table" then
+        return cover_data[4] and "high" or "low"
+    end
+
+    return "open"
+end
+
+local function cover_timer_descriptor(state, t)
+    if not state then
+        return "-"
+    end
+
+    local phase = state.phase
+    local label
+    local deadline
+    if phase == "exposed" then
+        label = "expose"
+        deadline = state.expose_until_t
+    elseif phase == "returning" or phase == "repositioning" then
+        label = "path"
+        deadline = state.path_deadline_t
+    elseif state.next_probe_t > t then
+        label = "probe"
+        deadline = state.next_probe_t
+    end
+
+    if not deadline then
+        return "-"
+    end
+
+    return string.format("%s@%.1fs", label, math.max(deadline - t, 0))
+end
+
+local function cover_tactics_data(logic_data, t)
+    local internal_data = logic_data and logic_data.internal_data
+    local state = internal_data and internal_data._bb_cover_tactics
+    local wants = "-"
+    if state or internal_data and internal_data.want_to_take_cover ~= nil then
+        wants = format_boolean(internal_data.want_to_take_cover == true)
     end
 
     return {
         attitude = internal_data and tostring(internal_data.attitude or "-") or "-",
-        cover = cover,
-        phase = state and tostring(state.phase) or "-",
-        tries = state and tostring(state.peek_attempts) or "-",
-        wants = format_boolean(internal_data and internal_data.want_to_take_cover),
+        cover = cover_location_descriptor(internal_data),
+        force = state and format_boolean(state.force_cover == true) or "-",
+        phase = state and state.phase or "-",
+        timer = cover_timer_descriptor(state, t),
+        tries = state and string.format(
+                "%d/%d",
+                state.peek_attempts,
+                CONSTANTS.COVER_TACTICS_MAX_PEEK_ATTEMPTS
+        ) or "-",
+        wants = wants,
     }
 end
 
-local function path_descriptor(logic_data, objective, t)
-    if not logic_data then
+local function classify_search(search_id, internal_data)
+    for _, entry in ipairs(SEARCH_TYPES) do
+        if internal_data and internal_data[entry[1]] == search_id then
+            return entry[2]
+        end
+    end
+
+    local id = string.lower(tostring(search_id))
+    if string.find(id, "expected", 1, true) then
+        return "expected"
+    elseif string.find(id, "charge", 1, true) then
+        return "charge"
+    elseif string.find(id, "cover", 1, true) then
+        return "cover"
+    elseif string.find(id, "coarse", 1, true) then
+        return "coarse"
+    elseif string.find(id, "detailed", 1, true)
+            or string.find(id, "advance", 1, true)
+    then
+        return "advance"
+    elseif string.find(id, "hunt", 1, true) then
+        return "hunt"
+    elseif string.find(id, "stare", 1, true) then
+        return "stare"
+    end
+
+    return "other"
+end
+
+local function active_searches_descriptor(logic_data)
+    local active_searches = logic_data and logic_data.active_searches
+    if not logic_data or not next(active_searches) then
         return "-"
     end
 
-    local states = {}
     local internal_data = logic_data.internal_data
-    if internal_data and internal_data.advancing then
-        table.insert(states, "adv")
+    local seen = {}
+    local search_types = {}
+    for search_id in pairs(active_searches) do
+        local search_type = classify_search(search_id, internal_data)
+        if not seen[search_type] then
+            seen[search_type] = true
+            table.insert(search_types, search_type)
+        end
     end
 
-    local search_count = count_entries(logic_data.active_searches)
-    if search_count > 0 then
-        table.insert(states, "search" .. tostring(search_count))
+    table.sort(search_types)
+    return table.concat(search_types, ",")
+end
+
+local function movement_descriptor(logic_data, objective)
+    local internal_data = logic_data and logic_data.internal_data
+    if not internal_data then
+        return "-"
+    elseif internal_data.moving_to_cover then
+        return "to_cover"
+    elseif internal_data.walking_to_cover_shoot_pos then
+        return "to_shoot_pos"
+    elseif internal_data.advancing then
+        return "advancing"
+    elseif internal_data.starting_advance_action then
+        return "starting"
+    elseif objective and objective.in_place then
+        return "in_place"
     end
 
-    if type(logic_data.path_fail_t) == "number"
-            and t - logic_data.path_fail_t <= 6
-    then
-        table.insert(states, string.format("fail%.1f", math.max(t - logic_data.path_fail_t, 0)))
+    return "idle"
+end
+
+local function path_failure_descriptor(logic_data, t)
+    local internal_data = logic_data and logic_data.internal_data
+    local failures = {
+        {"path", logic_data and logic_data.path_fail_t},
+        {"cover", internal_data and internal_data.cover_path_failed_t},
+        {"charge", internal_data and internal_data.charge_path_failed_t},
+    }
+    local latest_name
+    local latest_t
+
+    for _, failure in ipairs(failures) do
+        local failure_t = failure[2]
+        if type(failure_t) == "number"
+                and t - failure_t <= PATH_FAILURE_WINDOW
+                and (not latest_t or failure_t > latest_t)
+        then
+            latest_name = failure[1]
+            latest_t = failure_t
+        end
     end
 
-    if #states == 0 and objective and objective.in_place then
-        table.insert(states, "in_place")
-    end
-
-    return #states > 0 and table.concat(states, "+") or "idle"
+    return latest_name and string.format(
+            "%s@%s",
+            latest_name,
+            format_age(latest_t, t)
+    ) or "-"
 end
 
 local function flags_descriptor(movement, anim_data)
@@ -329,17 +550,18 @@ local function visibility_descriptor(attention, t)
         return "-"
     elseif attention.verified then
         return "verified"
-    elseif attention.nearly_visible then
-        return "near"
     end
 
     local verified_t = attention.verified_t
-    local grace = CONSTANTS.COOP_RECENT_VERIFY_GRACE or 1
-    if type(verified_t) == "number" and t - verified_t <= grace then
-        return "recent"
+    local age = format_age(verified_t, t)
+    if attention.nearly_visible then
+        return verified_t and "near@" .. age or "near"
+    elseif type(verified_t) ~= "number" then
+        return "never"
     end
 
-    return "stale"
+    local grace = CONSTANTS.COOP_RECENT_VERIFY_GRACE
+    return t - verified_t <= grace and "recent@" .. age or "stale@" .. age
 end
 
 local function attention_distance(unit, attention)
@@ -369,6 +591,7 @@ local function current_target_data(unit, logic_data, t)
         return {
             descriptor = "-",
             distance = "-",
+            key = nil,
             lock = "-",
             reaction = "-",
             visibility = "-",
@@ -376,20 +599,19 @@ local function current_target_data(unit, logic_data, t)
     end
 
     local attention_unit = attention.unit
-    local attention_key = attention.u_key
-            or alive(attention_unit) and attention_unit:key()
+    local current_key = attention_key(attention)
     local reaction = attention.reaction
-            or attention.settings and attention.settings.reaction
     local lock_until = logic_data._target_lock_until
-    local lock_remaining = type(lock_until) == "number"
-            and math.max(lock_until - t, 0)
+    local lock_remaining = type(lock_until) == "number" and lock_until > t
+            and lock_until - t
             or nil
 
     return {
-        descriptor = target_descriptor(attention_unit, attention_key),
+        descriptor = target_descriptor(attention_unit, current_key),
         distance = format_metric(attention_distance(unit, attention), "%.1f", "m"),
+        key = current_key,
         lock = format_metric(lock_remaining, "%.1f", "s"),
-        reaction = type(reaction) == "number" and tostring(reaction) or "-",
+        reaction = reaction_descriptor(reaction),
         visibility = visibility_descriptor(attention, t),
     }
 end
@@ -399,65 +621,102 @@ local function find_observed_target_unit(logic_data, target_key)
         return nil
     end
 
-    local attention = logic_data.detected_attention_objects
-            and logic_data.detected_attention_objects[target_key]
-    if not attention then
-        attention = logic_data.detected_attention_objects
-                and logic_data.detected_attention_objects[tonumber(target_key)]
-    end
+    local attention = logic_data.detected_attention_objects[tonumber(target_key)]
 
     return attention and attention.unit or nil
 end
 
-local function assignment_data(bot_key, logic_data, t)
-    if not BB:get("coop", false) then
-        return {
-            age = "-",
-            candidates = "-",
-            descriptor = "-",
-            load = "-",
-            pressure = "-",
-            score = "-",
-        }
+local function assignment_tag(observation)
+    if not observation then
+        return "-"
     end
 
-    local data = CoopSystem.data or {}
-    local assignment = data.assignment_snapshot or {}
-    local assigned_key = assignment.by_bot and assignment.by_bot[bot_key]
-    local observation = data.bot_observations and data.bot_observations[bot_key]
-    local targets = observation and observation.targets or {}
-    local assigned_observation = assigned_key and targets[tostring(assigned_key)]
+    local tags = {}
+    if observation.urgency >= 3 then
+        table.insert(tags, "urgent")
+    elseif observation.urgency >= 2 then
+        table.insert(tags, "high")
+    end
+    if observation.durable then
+        table.insert(tags, "durable")
+    end
+
+    return #tags > 0 and table.concat(tags, "+") or "normal"
+end
+
+local function assignment_data(bot_key, logic_data, current_key, t)
+    if not BB:get("coop", false) then
+        return { enabled = false }
+    end
+
+    local data = CoopSystem.data
+    local assignment = data.assignment_snapshot
+    local assigned_key = assignment.by_bot[bot_key]
+    local observation = data.bot_observations[bot_key]
+    local assigned_observation = observation
+            and assigned_key
+            and observation.targets[assigned_key]
     local assigned_unit = assigned_observation and assigned_observation.unit
             or find_observed_target_unit(logic_data, assigned_key)
-    local pressure_entry = data.team_pressure_cache and data.team_pressure_cache[bot_key]
-    local pressure = pressure_entry and pressure_entry.pressure
-    local pressure_age = pressure_entry
-            and type(pressure_entry.last_update) == "number"
-            and math.max(t - pressure_entry.last_update, 0)
-            or nil
-    local snapshot_age = observation
-            and type(observation.last_update) == "number"
-            and math.max(t - observation.last_update, 0)
-            or nil
+    local pressure_entry = data.team_pressure_cache[bot_key]
+    local mode = "waiting"
+    if observation then
+        if observation.restricted then
+            mode = observation.fixed_target and "fixed" or "restricted"
+        else
+            mode = "free"
+        end
+    end
+
+    local pressure_descriptor = "-"
+    if pressure_entry then
+        pressure_descriptor = string.format(
+                "%.2f@%s",
+                pressure_entry.pressure,
+                format_age(pressure_entry.last_update, t)
+        )
+    end
 
     return {
-        age = format_metric(snapshot_age, "%.1f", "s"),
-        candidates = observation and tostring(count_entries(targets)) or "-",
-        descriptor = target_descriptor(assigned_unit, assigned_key),
-        load = assigned_key
-                and assignment.target_load
-                and tostring(assignment.target_load[tostring(assigned_key)] or "-")
+        age = format_age(observation and observation.last_update, t),
+        candidates = observation
+                and tostring(count_entries(observation.targets))
                 or "-",
-        pressure = type(pressure) == "number" and (pressure_age
-                and string.format("%.2f@%.1fs", pressure, pressure_age)
-                or string.format("%.2f", pressure)) or "-",
-        score = assigned_observation and format_number(assigned_observation.score, "%.0f") or "-",
+        descriptor = target_descriptor(assigned_unit, assigned_key),
+        enabled = true,
+        load = assigned_key
+                and string.format("%d", assignment.target_load[assigned_key])
+                or "-",
+        match = assigned_key and format_boolean(
+                current_key ~= nil and assigned_key == current_key
+        ) or "-",
+        mode = mode,
+        pressure = pressure_descriptor,
+        score = assigned_observation
+                and string.format("%.0f", assigned_observation.score)
+                or "-",
+        tag = assignment_tag(assigned_observation),
     }
+end
+
+local function build_section_ranges(lines)
+    local ranges = {}
+    local offset = 0
+    for _, line in ipairs(lines) do
+        local section_end = string.find(line, "]", 1, true)
+        table.insert(ranges, {offset, offset + section_end})
+
+        local line_length = utf8.len(line)
+        offset = offset + line_length + 1
+    end
+
+    return ranges
 end
 
 local function build_debug_text(unit, bot_key, character_name, t)
     local brain = unit:brain()
     local logic_data = brain and brain._logic_data
+    local internal_data = logic_data and logic_data.internal_data
     local objective = logic_data and logic_data.objective
     local movement = unit:movement()
     local anim_data = unit:anim_data()
@@ -465,28 +724,38 @@ local function build_debug_text(unit, bot_key, character_name, t)
     local health = math.floor(UnitOps.health_ratio(unit) * 100 + 0.5)
     local role = StatusIcons:get_display_role(character_name) or "-"
     local current = current_target_data(unit, logic_data, t)
-    local assignment = assignment_data(bot_key, logic_data, t)
-    local fire = fire_state_data(movement, logic_data)
-    local cover = cover_tactics_data(logic_data)
-
-    return table.concat({
+    local assignment = assignment_data(bot_key, logic_data, current.key, t)
+    local fire = fire_state_data(bot_key, movement, logic_data, current.key, t)
+    local cover = cover_tactics_data(logic_data, t)
+    local common_data = movement._action_common_data
+    local suppressed = logic_data and logic_data.is_suppressed == true
+            or common_data.is_suppressed == true
+            or false
+    local lines = {
         string.format(
-                "K:%s L:%s O:%s R:%s",
+                "[AI] KEY:%s LOGIC:%s OBJ:%s ROLE:%s",
                 bot_key,
-                tostring(logic_data and logic_data.name or brain and brain._current_logic_name or "-"),
+                tostring(logic_data and logic_data.name
+                        or brain and brain._current_logic_name
+                        or "-"),
                 objective_descriptor(objective),
                 role
         ),
         string.format(
-                "HP:%d%% ST:%s ACT:%s PATH:%s F:%s",
+                "[STATE] HP:%d%% STATUS:%s ACT:%s FLAGS:%s",
                 health,
                 combat_state_descriptor(combat_status),
                 actions_descriptor(movement),
-                path_descriptor(logic_data, objective, t),
                 flags_descriptor(movement, anim_data)
         ),
         string.format(
-                "CUR:%s V:%s D:%s RE:%s LK:%s",
+                "[MOVE] STATE:%s SEARCH:%s FAIL:%s",
+                movement_descriptor(logic_data, objective),
+                active_searches_descriptor(logic_data),
+                path_failure_descriptor(logic_data, t)
+        ),
+        string.format(
+                "[TARGET] CUR:%s VIS:%s DIST:%s REACT:%s LOCK:%s",
                 current.descriptor,
                 current.visibility,
                 current.distance,
@@ -494,37 +763,50 @@ local function build_debug_text(unit, bot_key, character_name, t)
                 current.lock
         ),
         string.format(
-                "FIRE AIM:%s SHOOT:%s ALLOW_FIRE:%s FIRING:%s SHOOTING:%s",
-                fire.aim,
-                fire.shoot,
-                fire.allow_fire,
-                fire.firing,
-                fire.shooting
-        ),
-        string.format(
-                "AIM_ATT:%s SUP:%s WR(C/O/F):%s",
+                "[FIRE] DEC(A/S):%s DEC_TGT:%s ATT:%s ALLOW:%s SHOT:%s",
+                fire.decision,
+                fire.decision_target,
                 fire.attention,
-                fire.suppressed,
-                fire.weapon_range
+                fire.allow_fire,
+                fire.shot_age
         ),
         string.format(
-                "CVR:%s/%s TRY:%s ATT:%s WANT:%s",
+                "[WEAPON] AMMO:%s RANGE(C/O/F):%s RELOAD:%s SUP:%s",
+                weapon_ammo_descriptor(unit),
+                weapon_range_descriptor(internal_data),
+                format_boolean(anim_data and anim_data.reload == true),
+                format_boolean(suppressed)
+        ),
+        string.format(
+                "[COVER] PHASE:%s POS:%s WANT:%s FORCE:%s ATT:%s TRY:%s TIMER:%s",
                 cover.phase,
                 cover.cover,
-                cover.tries,
+                cover.wants,
+                cover.force,
                 cover.attitude,
-                cover.wants
+                cover.tries,
+                cover.timer
         ),
-        string.format(
-                "ASG:%s SC:%s C:%s LD:%s P:%s AGE:%s",
+    }
+
+    if assignment.enabled then
+        table.insert(lines, string.format(
+                "[COOP] MODE:%s ASG:%s MATCH:%s SCORE:%s CAND:%s LOAD:%s TAG:%s AGE:%s PRESS:%s",
+                assignment.mode,
                 assignment.descriptor,
+                assignment.match,
                 assignment.score,
                 assignment.candidates,
                 assignment.load,
-                assignment.pressure,
-                assignment.age
-        ),
-    }, "\n")
+                assignment.tag,
+                assignment.age,
+                assignment.pressure
+        ))
+    else
+        table.insert(lines, "[COOP] off")
+    end
+
+    return table.concat(lines, "\n"), build_section_ranges(lines)
 end
 
 local function create_debug_panel(parent)
@@ -581,24 +863,79 @@ local function resize_debug_panel(panel, text)
     end
 end
 
+local function apply_section_colors(text, ranges)
+    text:set_color(Color.white)
+
+    local value = text:text()
+    local value_length = utf8.len(value)
+    text:clear_range_color(0, value_length)
+
+    for _, range in ipairs(ranges) do
+        text:set_range_color(range[1], range[2], tweak_data.screen_colors.button_stage_2)
+    end
+end
+
 local function position_debug_panel(panel, name_text)
     local _, _, text_width = name_text:text_rect()
     local center_x = name_text:left() + text_width * 0.5
 
     panel:set_center_x(center_x)
     panel:set_bottom(name_text:top() - 2)
+
+    local root = panel:parent():parent()
+
+    local min_x = root:world_left() + SCREEN_PADDING
+    local max_x = root:world_right() - SCREEN_PADDING
+    if panel:world_left() < min_x then
+        panel:set_world_left(min_x)
+    end
+    if panel:world_right() > max_x then
+        panel:set_world_right(max_x)
+    end
+
+    local min_y = root:world_top() + SCREEN_PADDING
+    local max_y = root:world_bottom() - SCREEN_PADDING
+    if panel:world_top() < min_y then
+        panel:set_world_top(name_text:world_bottom() + 2)
+    end
+    if panel:world_bottom() > max_y then
+        panel:set_world_bottom(max_y)
+    end
 end
 
 function DebugOverlay:is_enabled()
     return Network:is_server() and BB:get("debug", false) or false
 end
 
-function DebugOverlay:record_fire_decision(shoot, aim, my_data)
+function DebugOverlay:record_fire_decision(shoot, aim, data, my_data)
     local decision = my_data._bb_debug_fire_decision or {}
     my_data._bb_debug_fire_decision = decision
 
     decision.aim = aim
     decision.shoot = shoot
+    decision.t = game_time()
+    decision.target_key = attention_key(data.attention_obj)
+end
+
+function DebugOverlay:record_weapon_shot(user_unit)
+    self._last_shot_t[tostring(user_unit:key())] = game_time()
+end
+
+function DebugOverlay:_clear_diagnostics()
+    clear_table(self._last_shot_t)
+
+    local group_state = managers.groupai and managers.groupai:state()
+    local ai_criminals = group_state and group_state:all_AI_criminals() or {}
+    for _, unit_data in pairs(ai_criminals) do
+        local unit = unit_data.unit
+        if alive(unit) then
+            local logic_data = unit:brain()._logic_data
+            local internal_data = logic_data and logic_data.internal_data
+            if internal_data then
+                internal_data._bb_debug_fire_decision = nil
+            end
+        end
+    end
 end
 
 function DebugOverlay:apply_setting()
@@ -607,6 +944,7 @@ function DebugOverlay:apply_setting()
 
     if not self:is_enabled() then
         self:_clear_rendered()
+        self:_clear_diagnostics()
     end
 
     return true
@@ -655,7 +993,14 @@ function DebugOverlay:_render_unit(unit, bot_key, character_name, t)
         panel, text = create_debug_panel(parent)
     end
 
-    text:set_text(build_debug_text(unit, bot_key, character_name, t))
+    local debug_text, section_ranges = build_debug_text(
+            unit,
+            bot_key,
+            character_name,
+            t
+    )
+    text:set_text(debug_text)
+    apply_section_colors(text, section_ranges)
     resize_debug_panel(panel, text)
     position_debug_panel(panel, name_text)
     panel:set_visible(true)
@@ -674,6 +1019,7 @@ function DebugOverlay:_reconcile(t)
     local criminals = managers.criminals
     if not (group_state and criminals) then
         self:_clear_rendered()
+        self:_clear_diagnostics()
         return false
     end
 
@@ -693,6 +1039,11 @@ function DebugOverlay:_reconcile(t)
             self:_remove_rendered(bot_key)
         end
     end
+    for bot_key in pairs(self._last_shot_t) do
+        if not seen[bot_key] then
+            self._last_shot_t[bot_key] = nil
+        end
+    end
 
     return true
 end
@@ -700,8 +1051,12 @@ end
 function DebugOverlay:update(t, dt)
     local enabled = self:is_enabled()
     if not enabled then
-        if self._setting_active or next(self._rendered) then
+        if self._setting_active
+                or next(self._rendered)
+                or next(self._last_shot_t)
+        then
             self:_clear_rendered()
+            self:_clear_diagnostics()
         end
 
         self._setting_active = false
@@ -724,6 +1079,7 @@ end
 
 function DebugOverlay:reset_level_state()
     self:_clear_rendered()
+    self:_clear_diagnostics()
     self._setting_active = nil
     self._next_update_t = 0
 

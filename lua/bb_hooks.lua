@@ -797,12 +797,36 @@ local function remove_friendly_characters_from_bullet_mask(self)
     end
 end
 
+local function record_team_ai_weapon_shot(self)
+    local fired = Hooks:GetReturn()
+    if not (fired and DebugOverlay:is_enabled()) then
+        return
+    end
+
+    local user_unit = self._setup.user_unit
+    if is_team_ai_move_shoot_unit(user_unit) then
+        DebugOverlay:record_weapon_shot(user_unit)
+    end
+end
+
 if RequiredScript == "lib/units/weapons/newnpcraycastweaponbase" then
     Hooks:PostHook(
             NewNPCRaycastWeaponBase,
             "setup",
             "BB_NewNPCRaycastWeaponBase_setup_RemoveFriendlyMask",
             remove_friendly_characters_from_bullet_mask
+    )
+    Hooks:PostHook(
+            NewNPCRaycastWeaponBase,
+            "singleshot",
+            "BB_NewNPCRaycastWeaponBase_singleshot_DebugOverlay",
+            record_team_ai_weapon_shot
+    )
+    Hooks:PostHook(
+            NewNPCRaycastWeaponBase,
+            "trigger_held",
+            "BB_NewNPCRaycastWeaponBase_triggerHeld_DebugOverlay",
+            record_team_ai_weapon_shot
     )
 end
 
@@ -812,6 +836,18 @@ if RequiredScript == "lib/units/weapons/npcraycastweaponbase" then
             "setup",
             "BB_NPCRaycastWeaponBase_setup_RemoveFriendlyMask",
             remove_friendly_characters_from_bullet_mask
+    )
+    Hooks:PostHook(
+            NPCRaycastWeaponBase,
+            "singleshot",
+            "BB_NPCRaycastWeaponBase_singleshot_DebugOverlay",
+            record_team_ai_weapon_shot
+    )
+    Hooks:PostHook(
+            NPCRaycastWeaponBase,
+            "trigger_held",
+            "BB_NPCRaycastWeaponBase_triggerHeld_DebugOverlay",
+            record_team_ai_weapon_shot
     )
 end
 
@@ -1085,7 +1121,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                 if DebugOverlay:is_enabled()
                         and is_team_ai_move_shoot_unit(data.unit)
                 then
-                    DebugOverlay:record_fire_decision(shoot, aim, my_data)
+                    DebugOverlay:record_fire_decision(shoot, aim, data, my_data)
                 end
             end)
 
