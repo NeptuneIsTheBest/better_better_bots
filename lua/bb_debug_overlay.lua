@@ -259,10 +259,15 @@ local function cover_tactics_data(logic_data)
     local internal_data = logic_data and logic_data.internal_data
     local state = internal_data and internal_data._bb_cover_tactics
     local in_cover = internal_data and internal_data.in_cover
+    local cover_data = in_cover
     local cover = "open"
 
-    if in_cover then
-        cover = in_cover[4] and "high" or "low"
+    if in_cover == true then
+        cover_data = internal_data.best_cover
+    end
+
+    if cover_data then
+        cover = cover_data[4] and "high" or "low"
     end
 
     return {
