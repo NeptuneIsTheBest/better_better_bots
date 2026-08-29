@@ -1488,37 +1488,78 @@ if RequiredScript == "lib/units/enemies/cop/actions/upper_body/copactionshoot" t
     install_reflex_ik_update_patch("_upd_ik_spine")
     install_reflex_ik_update_patch("_upd_ik_r_arm")
 
+    local function prepare_team_ai_continuous_autofire(action)
+        if not action._automatic_weap
+                or not action._w_usage_tweak.autofire_rounds
+        then
+            return false
+        end
+
+        if action._falloff ~= action._bb_continuous_autofire_falloff then
+            local continuous_falloff = deep_clone(action._falloff)
+
+            for _, range_data in ipairs(continuous_falloff) do
+                range_data.mode = { 0, 0, 0, 1 }
+            end
+
+            action._bb_continuous_autofire_falloff = continuous_falloff
+            action._falloff = continuous_falloff
+        end
+
+        return true
+    end
+
+    local function update_team_ai_shoot_action(original, action, t, forced_lod)
+        if not forced_lod then
+            return original(action, t)
+        end
+
+        local ext_base = action._ext_base
+        local original_lod_stage = rawget(ext_base, "lod_stage")
+
+        rawset(ext_base, "lod_stage", function()
+            return forced_lod
+        end)
+
+        local ok, result = pcall(original, action, t)
+
+        rawset(ext_base, "lod_stage", original_lod_stage)
+
+        if not ok then
+            error(result, 0)
+        end
+
+        return result
+    end
+
     install_method_patch(
             CopActionShoot,
             "update",
             function(original, self, t)
-                if not is_team_ai_move_shoot_unit(self._unit)
-                        or not is_team_ai_running(self._unit)
+                if not is_team_ai_move_shoot_unit(self._unit) then
+                    return original(self, t)
+                end
+
+                local continuous_autofire = prepare_team_ai_continuous_autofire(self)
+                local was_autofiring = self._autofiring ~= nil
+                local forced_lod = is_team_ai_running(self._unit)
+                        and CONSTANTS.TEAMAI_SHOOT_LOD_FORCE
+                        or nil
+                local result = update_team_ai_shoot_action(
+                        original,
+                        self,
+                        t,
+                        forced_lod
+                )
+
+                if continuous_autofire
+                        and not was_autofiring
+                        and self._autofiring ~= nil
                 then
-                    return original(self, t)
+                    self._autofiring = math.huge
                 end
 
-                local forced_lod = CONSTANTS.TEAMAI_SHOOT_LOD_FORCE
-                if not forced_lod then
-                    return original(self, t)
-                end
-
-                local ext_base = self._ext_base
-                local original_lod_stage = rawget(ext_base, "lod_stage")
-
-                rawset(ext_base, "lod_stage", function()
-                    return forced_lod
-                end)
-
-                local ok, err = pcall(function()
-                    return original(self, t)
-                end)
-
-                rawset(ext_base, "lod_stage", original_lod_stage)
-
-                if not ok then
-                    error(err, 0)
-                end
+                return result
             end)
 
     install_method_patch(
