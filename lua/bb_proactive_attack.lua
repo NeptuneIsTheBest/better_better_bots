@@ -159,7 +159,7 @@ local function get_target_position(attention_data)
             or attention_data.m_pos
 end
 
-local function target_has_navigation(unit)
+local function target_has_navigation(observer, unit)
     local movement = alive(unit) and unit:movement()
     local tracker = movement and movement:nav_tracker()
     local nav_seg = tracker and tracker:nav_segment()
@@ -169,7 +169,12 @@ local function target_has_navigation(unit)
 
     local nav_seg_data = managers.navigation._nav_segments[nav_seg]
 
-    return nav_seg_data ~= nil and not nav_seg_data.disabled
+    return nav_seg_data ~= nil
+            and not nav_seg_data.disabled
+            and not managers.navigation._quad_field:is_nav_segment_blocked(
+                    nav_seg,
+                    observer:brain():SO_access()
+            )
 end
 
 local function make_target_observation(observer, attention_data, t)
@@ -182,7 +187,7 @@ local function make_target_observation(observer, attention_data, t)
             and not is_unit_dead(target_unit)
             and UnitOps.are_foes(observer, target_unit)
             and not UnitOps.is_surrendering(target_unit)
-            and target_has_navigation(target_unit))
+            and target_has_navigation(observer, target_unit))
     then
         return nil
     end
