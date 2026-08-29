@@ -34,6 +34,24 @@ local function is_team_ai_move_shoot_unit(unit)
     return alive(unit) and is_team_ai(unit)
 end
 
+local function request_team_ai_detection_update(data, t)
+    local my_data = data.internal_data
+    local task_key = my_data.detection_task_key
+
+    if not task_key then
+        return
+    end
+
+    managers.enemy:update_queue_task(
+            task_key,
+            nil,
+            nil,
+            t or game_time(),
+            nil,
+            true
+    )
+end
+
 local function get_valid_weapon_range(value)
     return type(value) == "number" and value > 0 and value or nil
 end
@@ -1563,6 +1581,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
         if Network:is_server() then
             local REACT_COMBAT = AIAttentionObject.REACT_COMBAT
             local REACT_IDLE = AIAttentionObject.REACT_IDLE
+            local REACT_SURPRISED = AIAttentionObject.REACT_SURPRISED
             local REFLEX_DETECTION_DELAY = CONSTANTS.REFLEX_DETECTION_DELAY
             local mvec3_copy = mvector3.copy
             local mvec3_dis = mvector3.distance
@@ -1608,6 +1627,8 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
             end
 
             local function clear_reflex_state(data)
+                local changed = false
+
                 data._bb_reflex_active = nil
                 data._bb_reflex_next_scan_t = nil
 
@@ -1619,14 +1640,17 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                             and override_settings
                             and att_obj.settings == override_settings
                     then
+                        changed = true
                         att_obj.settings = source_settings
-                        att_obj.reaction = source_settings.reaction or REACT_IDLE
+                        att_obj.reaction = source_settings.reaction
                     end
 
                     att_obj._bb_reflex_settings_source = nil
                     att_obj._bb_reflex_settings_override = nil
                     att_obj._bb_reflex_next_focus_verify_t = nil
                 end
+
+                return changed
             end
 
             local function is_reflex_observer(data, unit)
@@ -1674,8 +1698,10 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
 
             local function set_reflex_unverified(att_obj, vis_ray, t, is_focus)
                 if not att_obj then
-                    return
+                    return false
                 end
+
+                local changed = att_obj.verified == true
 
                 att_obj.verified = false
                 att_obj.vis_ray = vis_ray and (vis_ray.dis or vis_ray.distance) or nil
@@ -1683,6 +1709,8 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 if is_focus then
                     att_obj._bb_reflex_next_focus_verify_t = t + REFLEX_DETECTION_DELAY
                 end
+
+                return changed
             end
 
             local function set_reflex_verified(
@@ -1709,15 +1737,20 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                             detected_settings
                     )
 
-                    if not att_obj then
-                        return
-                    end
-
                     detected_obj[u_key] = att_obj
-                else
-                    att_obj.settings = detected_settings
-                    att_obj.reaction = reaction
                 end
+
+                local was_identified = att_obj.identified
+                local was_verified = att_obj.verified
+                local previous_reaction = att_obj.reaction
+                local previous_settings = att_obj.settings
+                local changed = not was_identified
+                        or not was_verified
+                        or previous_reaction ~= reaction
+                        or previous_settings ~= detected_settings
+
+                att_obj.settings = detected_settings
+                att_obj.reaction = reaction
 
                 if detected_settings ~= settings then
                     att_obj._bb_reflex_settings_source = settings
@@ -1727,7 +1760,6 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                     att_obj._bb_reflex_settings_override = nil
                 end
 
-                local was_identified = att_obj.identified
                 local target_pos = att_obj.m_pos
                 local distance = data.m_pos and target_pos
                         and mvec3_dis(data.m_pos, target_pos)
@@ -1780,39 +1812,47 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                         notice_clbk(data.unit, true)
                     end
                 end
+
+                return changed
             end
 
-            local function update_reflex_detection(data, min_reaction, max_reaction)
-                local unit = data and data.unit
+            local function update_reflex_detection(data, min_reaction, max_reaction, t)
+                local unit = data.unit
 
                 if not BB:get("reflex", false) then
-                    if data and data._bb_reflex_active then
-                        clear_reflex_state(data)
+                    local changed = false
+
+                    if data._bb_reflex_active then
+                        changed = clear_reflex_state(data)
                     end
 
-                    return false
+                    return false, changed
                 end
 
                 if not alive(unit) or not is_reflex_observer(data, unit) then
-                    return false
+                    return false, false
                 end
 
-                local t = data.t or game_time()
                 local next_scan_t = data._bb_reflex_next_scan_t
 
                 if next_scan_t and t < next_scan_t then
-                    return true
+                    return true, false
                 end
 
                 local unit_mov = unit:movement()
                 local my_tracker = unit_mov:nav_tracker()
-                local gstate = managers.groupai:state()
                 if not my_tracker then
-                    return false
+                    return false, false
                 end
 
                 data._bb_reflex_active = true
                 data._bb_reflex_next_scan_t = t + REFLEX_DETECTION_DELAY
+
+                if max_reaction and max_reaction < REACT_COMBAT then
+                    return true, false
+                end
+
+                local gstate = managers.groupai:state()
 
                 local my_key = data.key
                 local detected_obj = data.detected_attention_objects or {}
@@ -1828,9 +1868,10 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 local all_attention_objects = gstate:get_AI_attention_objects_by_filter(
                         data.SO_access_str
                 )
+                local state_changed = false
 
                 if not all_attention_objects then
-                    return true
+                    return true, false
                 end
 
                 for u_key, attention_info in pairs(all_attention_objects) do
@@ -1887,7 +1928,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                                                     or vis_ray.unit and vis_ray.unit:key() == u_key
 
                                             if visible then
-                                                set_reflex_verified(
+                                                if set_reflex_verified(
                                                         data,
                                                         detected_obj,
                                                         u_key,
@@ -1898,17 +1939,23 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                                                         my_pos,
                                                         t,
                                                         is_focus
-                                                )
+                                                ) then
+                                                    state_changed = true
+                                                end
                                             else
-                                                set_reflex_unverified(
+                                                if set_reflex_unverified(
                                                         att_obj,
                                                         vis_ray,
                                                         t,
                                                         is_focus
-                                                )
+                                                ) then
+                                                    state_changed = true
+                                                end
                                             end
                                         elseif att_obj then
-                                            set_reflex_unverified(att_obj, nil, t, is_focus)
+                                            if set_reflex_unverified(att_obj, nil, t, is_focus) then
+                                                state_changed = true
+                                            end
                                         end
                                     end
                                 end
@@ -1916,26 +1963,124 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                                     and type(att_obj.reaction) == "number"
                                     and att_obj.reaction >= REACT_COMBAT
                             then
-                                set_reflex_unverified(att_obj, nil, t, is_focus)
+                                if set_reflex_unverified(att_obj, nil, t, is_focus) then
+                                    state_changed = true
+                                end
                             end
                         end
                     end
                 end
 
-                return true
+                return true, state_changed
+            end
+
+            local update_reflex_task
+
+            local function cancel_reflex_task(my_data)
+                local task_key = my_data._bb_reflex_task_key
+                if task_key then
+                    CopLogicBase.chk_unqueue_task(my_data, task_key)
+                end
+
+                my_data._bb_reflex_task_key = nil
+                my_data._bb_reflex_min_reaction = nil
+                my_data._bb_reflex_max_reaction = nil
+            end
+
+            local function queue_reflex_task(data, my_data, execute_t)
+                local task_key = my_data._bb_reflex_task_key
+
+                if my_data.queued_tasks and my_data.queued_tasks[task_key] then
+                    return
+                end
+
+                CopLogicBase.queue_task(
+                        my_data,
+                        task_key,
+                        update_reflex_task,
+                        data,
+                        execute_t
+                )
+            end
+
+            local function ensure_reflex_task(data, my_data, min_reaction, max_reaction)
+                if not my_data._bb_reflex_task_key then
+                    my_data._bb_reflex_task_key = "BB_ReflexDetection"
+                            .. tostring(data.key)
+                end
+
+                my_data._bb_reflex_min_reaction = min_reaction
+                -- Cool logic supplies a temporary surprised cap. Keep the last combat cap
+                -- so the independent task can react immediately when the unit leaves cool.
+                if not data.cool then
+                    my_data._bb_reflex_max_reaction = max_reaction
+                end
+
+                queue_reflex_task(
+                        data,
+                        my_data,
+                        data._bb_reflex_next_scan_t
+                )
+            end
+
+            update_reflex_task = function(data)
+                local my_data = data.internal_data
+                local t = game_time()
+                local max_reaction = data.cool
+                        and REACT_SURPRISED
+                        or my_data._bb_reflex_max_reaction
+                local active, state_changed = update_reflex_detection(
+                        data,
+                        my_data._bb_reflex_min_reaction,
+                        max_reaction,
+                        t
+                )
+
+                if data.internal_data ~= my_data then
+                    return
+                end
+
+                if state_changed then
+                    request_team_ai_detection_update(data, t)
+                end
+
+                if not active then
+                    cancel_reflex_task(my_data)
+                    return
+                end
+
+                queue_reflex_task(
+                        data,
+                        my_data,
+                        data._bb_reflex_next_scan_t
+                )
             end
 
             install_method_patch(
                     CopLogicBase,
                     "_upd_attention_obj_detection",
                     function(original, data, min_reaction, max_reaction, ...)
-                local reflex_active = update_reflex_detection(data, min_reaction, max_reaction)
+                local t = data.t
+                local my_data = data.internal_data
+                local reflex_active = update_reflex_detection(
+                        data,
+                        min_reaction,
+                        max_reaction,
+                        t
+                )
                 local delay = original(data, min_reaction, max_reaction, ...)
 
-                if reflex_active
-                        and (type(delay) ~= "number" or delay > REFLEX_DETECTION_DELAY)
-                then
-                    return REFLEX_DETECTION_DELAY
+                if data.internal_data == my_data then
+                    if reflex_active then
+                        ensure_reflex_task(
+                                data,
+                                my_data,
+                                min_reaction,
+                                max_reaction
+                        )
+                    else
+                        cancel_reflex_task(my_data)
+                    end
                 end
 
                 return delay
@@ -2046,27 +2191,7 @@ if RequiredScript == "lib/units/player_team/teamaibrain" then
                             return
                         end
 
-                        local data = self._logic_data
-                        local my_data = data and data.internal_data
-                        local task_key = my_data and my_data.detection_task_key
-                        if not (task_key
-                                and my_data.queued_tasks
-                                and my_data.queued_tasks[task_key])
-                        then
-                            return
-                        end
-
-                        local enemy_manager = managers.enemy
-                        if enemy_manager and enemy_manager.update_queue_task then
-                            enemy_manager:update_queue_task(
-                                    task_key,
-                                    nil,
-                                    nil,
-                                    game_time(),
-                                    nil,
-                                    true
-                            )
-                        end
+                        request_team_ai_detection_update(self._logic_data)
                     end
             )
 
