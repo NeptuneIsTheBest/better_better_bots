@@ -255,6 +255,25 @@ local function fire_state_data(movement, logic_data)
     }
 end
 
+local function cover_tactics_data(logic_data)
+    local internal_data = logic_data and logic_data.internal_data
+    local state = internal_data and internal_data._bb_cover_tactics
+    local in_cover = internal_data and internal_data.in_cover
+    local cover = "open"
+
+    if in_cover then
+        cover = in_cover[4] and "high" or "low"
+    end
+
+    return {
+        attitude = internal_data and tostring(internal_data.attitude or "-") or "-",
+        cover = cover,
+        phase = state and tostring(state.phase) or "-",
+        tries = state and tostring(state.peek_attempts) or "-",
+        wants = format_boolean(internal_data and internal_data.want_to_take_cover),
+    }
+end
+
 local function path_descriptor(logic_data, objective, t)
     if not logic_data then
         return "-"
@@ -443,6 +462,7 @@ local function build_debug_text(unit, bot_key, character_name, t)
     local current = current_target_data(unit, logic_data, t)
     local assignment = assignment_data(bot_key, logic_data, t)
     local fire = fire_state_data(movement, logic_data)
+    local cover = cover_tactics_data(logic_data)
 
     return table.concat({
         string.format(
@@ -481,6 +501,14 @@ local function build_debug_text(unit, bot_key, character_name, t)
                 fire.attention,
                 fire.suppressed,
                 fire.weapon_range
+        ),
+        string.format(
+                "CVR:%s/%s TRY:%s ATT:%s WANT:%s",
+                cover.phase,
+                cover.cover,
+                cover.tries,
+                cover.attitude,
+                cover.wants
         ),
         string.format(
                 "ASG:%s SC:%s C:%s LD:%s P:%s AGE:%s",

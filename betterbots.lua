@@ -14,6 +14,7 @@ dofile(ModPath .. "lua/bb_marking_system.lua")
 
 dofile(ModPath .. "lua/bb_state.lua")
 dofile(ModPath .. "lua/bb_hold_position.lua")
+dofile(ModPath .. "lua/bb_cover_tactics.lua")
 dofile(ModPath .. "lua/bb_runtime_settings.lua")
 dofile(ModPath .. "lua/bb_hungarian.lua")
 dofile(ModPath .. "lua/bb_assignment_planner.lua")

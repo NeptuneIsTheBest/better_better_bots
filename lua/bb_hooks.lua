@@ -8,6 +8,7 @@ local CoopCacheManager = BB.CoopCacheManager
 local EnemyClassifier = BB.EnemyClassifier
 local RuntimeSettings = BB.RuntimeSettings
 local HoldPosition = BB.HoldPosition
+local CoverTactics = BB.CoverTactics
 local MarkingSystem = BB.MarkingSystem
 local RescueCoordinator = BB.RescueCoordinator
 local ProactiveAttack = BB.ProactiveAttack
@@ -1065,6 +1066,17 @@ end
 
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
         if Network:is_server() then
+            install_method_patch(
+                    CopLogicAttack,
+                    "_chk_wants_to_take_cover",
+                    function(original, data, my_data, ...)
+                if CoverTactics:should_force_cover(my_data) then
+                    return true
+                end
+
+                return original(data, my_data, ...)
+            end)
+
             Hooks:PreHook(
                     CopLogicAttack,
                     "aim_allow_fire",
@@ -1237,6 +1249,24 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
         if Network:is_server() then
             TeamAILogicAssault.check_smart_reload = CombatBehavior.check_smart_reload
 
+            Hooks:PostHook(
+                    TeamAILogicAssault,
+                    "enter",
+                    "BB_TeamAILogicAssault_enter_CoverTactics",
+                    function(data, ...)
+                        CoverTactics:on_enter(data)
+                    end
+            )
+
+            Hooks:PreHook(
+                    TeamAILogicAssault,
+                    "exit",
+                    "BB_TeamAILogicAssault_exit_CoverTactics",
+                    function(data, ...)
+                        CoverTactics:on_exit(data)
+                    end
+            )
+
             Hooks:OverrideFunction(TeamAILogicAssault, "find_enemy_to_mark", function()
                 return nil
             end)
@@ -1263,21 +1293,46 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
             install_method_patch(
                     TeamAILogicAssault,
+                    "action_complete_clbk",
+                    function(original, data, action, ...)
+                local my_data = data.internal_data
+                local tactics = my_data._bb_cover_tactics
+                local previous_phase = tactics.phase
+                local was_cover_move = my_data.moving_to_cover ~= nil
+                local result = original(data, action, ...)
+
+                if my_data == data.internal_data and data.name == "assault" then
+                    CoverTactics:on_action_complete(
+                            data,
+                            action,
+                            previous_phase,
+                            was_cover_move
+                    )
+                end
+
+                return result
+            end)
+
+            install_method_patch(
+                    TeamAILogicAssault,
                     "update",
                     function(original, data, ...)
                 if RescueCoordinator.update_solo_fallback(data) then
                     return
                 end
 
-                local my_data = data and data.internal_data
+                local my_data = data.internal_data
+                CoverTactics:update(data)
+
                 local result = original(data, ...)
 
-                if not my_data
-                        or my_data ~= data.internal_data
+                if my_data ~= data.internal_data
                         or data.name ~= "assault"
                 then
                     return result
                 end
+
+                CoverTactics:after_update(data)
 
                 local t = game_time()
                 local unit = data.unit
@@ -2179,6 +2234,14 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 
 if RequiredScript == "lib/units/player_team/teamaibrain" then
         if Network:is_server() then
+            install_method_patch(
+                    TeamAIBrain,
+                    "set_objective",
+                    function(original, self, new_objective, ...)
+                CoverTactics:normalize_objective(new_objective)
+                return original(self, new_objective, ...)
+            end)
+
             Hooks:PostHook(
                     TeamAIBrain,
                     "on_cop_neutralized",
