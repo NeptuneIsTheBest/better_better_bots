@@ -1007,12 +1007,21 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicidle" then
                     TeamAILogicIdle,
                     "_get_priority_attention",
                     function(data, attention_objects, reaction_func)
-                return CombatBehavior.find_priority_attention(
+                local attention, priority_slot, reaction = CombatBehavior.find_priority_attention(
                         data,
                         attention_objects,
                         reaction_func,
                         native_priority_attention
                 )
+
+                if data.name == "assault"
+                        and attention == nil
+                        and priority_slot == nil
+                then
+                    priority_slot = 0
+                end
+
+                return attention, priority_slot, reaction
             end)
 
             install_method_patch(
@@ -2142,8 +2151,6 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicbase" then
                 end
 
                 my_data._bb_reflex_min_reaction = min_reaction
-                -- Cool logic supplies a temporary surprised cap. Keep the last combat cap
-                -- so the independent task can react immediately when the unit leaves cool.
                 if not data.cool then
                     my_data._bb_reflex_max_reaction = max_reaction
                 end
