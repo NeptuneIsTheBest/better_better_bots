@@ -37,8 +37,9 @@ local function ensure_loadout_slots(limit)
     end
 end
 
-local function get_concussion_unit_path()
-    return tweak_data.blackmarket.projectiles.concussion.unit
+local function get_concussion_unit_paths()
+    local concussion = tweak_data.blackmarket.projectiles.concussion
+    return concussion.unit, concussion.sprint_unit
 end
 
 function RuntimeSettings:apply_team_ai_movement()
@@ -138,17 +139,21 @@ function RuntimeSettings:apply_big_lobby()
 end
 
 function RuntimeSettings:release_concussion_resource()
-    local unit_path = self._concussion_resource_path or get_concussion_unit_path()
-    if not unit_path then
-        return true
-    end
+    local unit_path, sprint_unit_path = get_concussion_unit_paths()
+    unit_path = self._concussion_resource_path or unit_path
+    sprint_unit_path = self._concussion_sprint_resource_path or sprint_unit_path
 
-    local released = CombatHelper.release_dyn_unit(unit_path)
-    if released then
+    local unit_released = CombatHelper.release_dyn_unit(unit_path)
+    local sprint_unit_released = CombatHelper.release_dyn_unit(sprint_unit_path)
+
+    if unit_released then
         self._concussion_resource_path = nil
     end
+    if sprint_unit_released then
+        self._concussion_sprint_resource_path = nil
+    end
 
-    return released
+    return unit_released and sprint_unit_released
 end
 
 function RuntimeSettings:apply_concussion(allow_acquire)
@@ -160,23 +165,28 @@ function RuntimeSettings:apply_concussion(allow_acquire)
         return false
     end
 
-    local unit_path = get_concussion_unit_path()
-    if not unit_path then
-        return false
-    end
+    local unit_path, sprint_unit_path = get_concussion_unit_paths()
 
-    if self._concussion_resource_path and self._concussion_resource_path ~= unit_path then
+    if (self._concussion_resource_path and self._concussion_resource_path ~= unit_path)
+            or (self._concussion_sprint_resource_path
+                and self._concussion_sprint_resource_path ~= sprint_unit_path)
+    then
         if not self:release_concussion_resource() then
             return false
         end
     end
 
-    local acquired = CombatHelper.acquire_dyn_unit(unit_path)
-    if acquired then
+    local unit_acquired = CombatHelper.acquire_dyn_unit(unit_path)
+    local sprint_unit_acquired = CombatHelper.acquire_dyn_unit(sprint_unit_path)
+
+    if unit_acquired then
         self._concussion_resource_path = unit_path
     end
+    if sprint_unit_acquired then
+        self._concussion_sprint_resource_path = sprint_unit_path
+    end
 
-    return acquired
+    return unit_acquired and sprint_unit_acquired
 end
 
 function RuntimeSettings:apply_hold_position()

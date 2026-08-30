@@ -27,13 +27,20 @@ function ConcussionSystem.throw(data, criminal)
     end
 
     local conc_tweak = tweak_data.blackmarket.projectiles[CONCUSSION_PROJECTILE_ENTRY]
+    local dyn_resource = managers.dyn_resource
+    local resource_type = Idstring("unit")
+    local package_name = dyn_resource.DYN_RESOURCES_PACKAGE
 
-    local pkg_ready = managers.dyn_resource:is_resource_ready(
-            Idstring("unit"),
+    local resources_ready = dyn_resource:is_resource_ready(
+            resource_type,
             Idstring(conc_tweak.unit),
-            managers.dyn_resource.DYN_RESOURCES_PACKAGE
+            package_name
+    ) and dyn_resource:is_resource_ready(
+            resource_type,
+            Idstring(conc_tweak.sprint_unit),
+            package_name
     )
-    if not pkg_ready then
+    if not resources_ready then
         return false
     end
 
