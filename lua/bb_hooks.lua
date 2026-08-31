@@ -1341,12 +1341,20 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     "action_complete_clbk",
                     function(original, data, action, ...)
                 local my_data = data.internal_data
-                local tactics = my_data._bb_cover_tactics
+                local tactics = data.name == "assault"
+                        and my_data._bb_cover_tactics
+                if not tactics then
+                    return original(data, action, ...)
+                end
+
                 local previous_phase = tactics.phase
                 local was_cover_move = my_data.moving_to_cover ~= nil
                 local result = original(data, action, ...)
 
-                if my_data == data.internal_data and data.name == "assault" then
+                if my_data == data.internal_data
+                        and data.name == "assault"
+                        and my_data._bb_cover_tactics == tactics
+                then
                     CoverTactics:on_action_complete(
                             data,
                             action,
