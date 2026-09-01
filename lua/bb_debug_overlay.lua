@@ -383,51 +383,53 @@ local function cover_location_descriptor(internal_data)
     return "open"
 end
 
-local function cover_timer_descriptor(state, t)
-    if not state then
+local function cover_phase_descriptor(internal_data)
+    if not internal_data
+            or internal_data._bb_next_cover_tactics_t == nil
+    then
         return "-"
     end
 
-    local phase = state.phase
-    local label
-    local deadline
-    if phase == "exposed" then
-        label = "expose"
-        deadline = state.expose_until_t
-    elseif phase == "returning" or phase == "repositioning" then
-        label = "path"
-        deadline = state.path_deadline_t
-    elseif state.next_probe_t > t then
-        label = "probe"
-        deadline = state.next_probe_t
+    if internal_data.moving_to_cover then
+        return "to_cover"
+    elseif internal_data.walking_to_cover_shoot_pos then
+        return "peek"
+    elseif internal_data.processing_cover_path or internal_data.cover_path then
+        return "path"
+    elseif internal_data.at_cover_shoot_pos then
+        return "exposed"
+    elseif internal_data.in_cover then
+        return "in_cover"
     end
 
-    if not deadline then
+    return "open"
+end
+
+local function cover_timer_descriptor(internal_data, t)
+    local next_update_t = internal_data
+            and internal_data._bb_next_cover_tactics_t
+    if type(next_update_t) ~= "number" then
         return "-"
     end
 
-    return string.format("%s@%.1fs", label, math.max(deadline - t, 0))
+    return string.format("update@%.1fs", math.max(next_update_t - t, 0))
 end
 
 local function cover_tactics_data(logic_data, t)
     local internal_data = logic_data and logic_data.internal_data
-    local state = internal_data and internal_data._bb_cover_tactics
+    local enabled = internal_data
+            and internal_data._bb_next_cover_tactics_t ~= nil
     local wants = "-"
-    if state or internal_data and internal_data.want_to_take_cover ~= nil then
+    if enabled or internal_data and internal_data.want_to_take_cover ~= nil then
         wants = format_boolean(internal_data.want_to_take_cover == true)
     end
 
     return {
         attitude = internal_data and tostring(internal_data.attitude or "-") or "-",
         cover = cover_location_descriptor(internal_data),
-        force = state and format_boolean(state.force_cover == true) or "-",
-        phase = state and state.phase or "-",
-        timer = cover_timer_descriptor(state, t),
-        tries = state and string.format(
-                "%d/%d",
-                state.peek_attempts,
-                CONSTANTS.COVER_TACTICS_MAX_PEEK_ATTEMPTS
-        ) or "-",
+        phase = cover_phase_descriptor(internal_data),
+        step = enabled and tostring(internal_data.cover_test_step or "-") or "-",
+        timer = cover_timer_descriptor(internal_data, t),
         wants = wants,
     }
 end
@@ -778,13 +780,12 @@ local function build_debug_text(unit, bot_key, character_name, t)
                 format_boolean(suppressed)
         ),
         string.format(
-                "[COVER] PHASE:%s POS:%s WANT:%s FORCE:%s ATT:%s TRY:%s TIMER:%s",
+                "[COVER] PHASE:%s POS:%s WANT:%s ATT:%s STEP:%s TIMER:%s",
                 cover.phase,
                 cover.cover,
                 cover.wants,
-                cover.force,
                 cover.attitude,
-                cover.tries,
+                cover.step,
                 cover.timer
         ),
     }

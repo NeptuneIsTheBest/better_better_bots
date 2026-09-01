@@ -1111,17 +1111,6 @@ end
 
 if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
         if Network:is_server() then
-            install_method_patch(
-                    CopLogicAttack,
-                    "_chk_wants_to_take_cover",
-                    function(original, data, my_data, ...)
-                if CoverTactics:should_force_cover(my_data) then
-                    return true
-                end
-
-                return original(data, my_data, ...)
-            end)
-
             Hooks:PreHook(
                     CopLogicAttack,
                     "aim_allow_fire",
@@ -1303,15 +1292,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                     end
             )
 
-            Hooks:PreHook(
-                    TeamAILogicAssault,
-                    "exit",
-                    "BB_TeamAILogicAssault_exit_CoverTactics",
-                    function(data, ...)
-                        CoverTactics:on_exit(data)
-                    end
-            )
-
             Hooks:OverrideFunction(TeamAILogicAssault, "find_enemy_to_mark", function()
                 return nil
             end)
@@ -1336,35 +1316,14 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 return original(data, my_data, ...)
             end)
 
-            install_method_patch(
+            Hooks:PreHook(
                     TeamAILogicAssault,
                     "action_complete_clbk",
-                    function(original, data, action, ...)
-                local my_data = data.internal_data
-                local tactics = data.name == "assault"
-                        and my_data._bb_cover_tactics
-                if not tactics then
-                    return original(data, action, ...)
-                end
-
-                local previous_phase = tactics.phase
-                local was_cover_move = my_data.moving_to_cover ~= nil
-                local result = original(data, action, ...)
-
-                if my_data == data.internal_data
-                        and data.name == "assault"
-                        and my_data._bb_cover_tactics == tactics
-                then
-                    CoverTactics:on_action_complete(
-                            data,
-                            action,
-                            previous_phase,
-                            was_cover_move
-                    )
-                end
-
-                return result
-            end)
+                    "BB_TeamAILogicAssault_actionComplete_CoverTactics",
+                    function(data, action, ...)
+                        CoverTactics:before_action_complete(data, action)
+                    end
+            )
 
             install_method_patch(
                     TeamAILogicAssault,
@@ -1375,8 +1334,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 end
 
                 local my_data = data.internal_data
-                CoverTactics:update(data)
-
                 local result = original(data, ...)
 
                 if my_data ~= data.internal_data
@@ -1384,8 +1341,6 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 then
                     return result
                 end
-
-                CoverTactics:after_update(data)
 
                 local t = game_time()
                 local unit = data.unit
@@ -1421,6 +1376,15 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
 
                 return result
             end)
+
+            Hooks:PostHook(
+                    TeamAILogicAssault,
+                    "update",
+                    "BB_TeamAILogicAssault_update_CoverTactics",
+                    function(data, ...)
+                        CoverTactics:update(data)
+                    end
+            )
 
             Hooks:PostHook(
                     TeamAILogicAssault,
@@ -2326,14 +2290,6 @@ if RequiredScript == "lib/managers/mission/elementmissionend" then
 
 if RequiredScript == "lib/units/player_team/teamaibrain" then
         if Network:is_server() then
-            install_method_patch(
-                    TeamAIBrain,
-                    "set_objective",
-                    function(original, self, new_objective, ...)
-                CoverTactics:normalize_objective(new_objective)
-                return original(self, new_objective, ...)
-            end)
-
             Hooks:PostHook(
                     TeamAIBrain,
                     "on_cop_neutralized",
