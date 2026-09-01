@@ -392,7 +392,12 @@ local function _find_reposition_cover(data, state, attention)
             or data.internal_data.best_cover
     local follow_cover = data.objective and data.objective.type == "follow"
     local first_sign = state.reposition_sign
-            or (data.key % 2 == 0 and 1 or -1)
+    if not first_sign then
+        local reservation_id = data.pos_rsrv_id
+        first_sign = type(reservation_id) == "number"
+                and (reservation_id % 2 == 0 and 1 or -1)
+                or 1
+    end
     state.reposition_sign = -first_sign
 
     for _, sign in ipairs({ first_sign, -first_sign }) do
