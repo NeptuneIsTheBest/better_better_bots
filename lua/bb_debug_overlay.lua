@@ -403,6 +403,11 @@ local function cover_timer_descriptor(internal_data, t)
                 "path@%.1fs",
                 math.max(state.path_deadline_t - t, 0)
         )
+    elseif type(state.expose_until_t) == "number" then
+        return string.format(
+                "return@%.1fs",
+                math.max(state.expose_until_t - t, 0)
+        )
     elseif type(state.blocked_since_t) == "number" then
         local deadline = state.blocked_since_t
                 + CONSTANTS.COVER_TACTICS_BLOCKED_TIMEOUT
@@ -437,7 +442,9 @@ local function cover_tactics_data(logic_data, t)
         attitude = internal_data and tostring(internal_data.attitude or "-") or "-",
         blocked = state and format_age(state.blocked_since_t, t) or "-",
         cover = cover_location_descriptor(internal_data),
-        force = state and format_boolean(state.force_cover == true) or "-",
+        force = state and format_boolean(
+                state.force_cover == true or state.phase == "acquiring"
+        ) or "-",
         lane = state and tostring(state.lane or "-") or "-",
         phase = cover_phase_descriptor(internal_data),
         step = enabled and tostring(internal_data.cover_test_step or "-") or "-",

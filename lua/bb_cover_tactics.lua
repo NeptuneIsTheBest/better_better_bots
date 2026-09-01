@@ -63,7 +63,7 @@ local function _is_current_assault(data, my_data)
             and data.internal_data == my_data
 end
 
-local function _new_state(data, t)
+local function _new_state(data, t, initial_cover_pending)
     local parity_key = type(data.pos_rsrv_id) == "number"
             and data.pos_rsrv_id
             or data.key
@@ -76,6 +76,9 @@ local function _new_state(data, t)
         next_lane_check_t = t,
         next_reposition_t = t,
         peek_attempted = nil,
+        initial_cover_pending = initial_cover_pending == true,
+        expose_until_t = nil,
+        return_failed = nil,
         force_cover = false,
         reposition_sign = type(parity_key) == "number"
                 and (parity_key % 2 == 0 and 1 or -1)
@@ -99,6 +102,16 @@ local function _clear_transfer(state)
     state.fallback_cover = nil
     state.left_fallback = nil
     state.path_deadline_t = nil
+    state.expose_until_t = nil
+    state.return_failed = nil
+end
+
+local function _enter_exposed(state, t, duration)
+    state.phase = "exposed"
+    state.blocked_since_t = nil
+    state.next_lane_check_t = t
+    state.expose_until_t = t + (duration or 0)
+    state.lane = "-"
 end
 
 local function _clear_lane_tracking(state, t)
@@ -432,12 +445,24 @@ local function _fail_transfer(data, state, t)
     state.path_deadline_t = nil
     state.next_reposition_t = t + CONSTANTS.COVER_TACTICS_RETRY_DELAY
 
+    if failed_phase == "returning" then
+        state.fallback_cover = nil
+        state.left_fallback = nil
+        state.return_failed = true
+        state.phase = state.return_cover and "exposed" or "blocked"
+        state.expose_until_t = state.return_cover and t or nil
+        state.lane = "blocked"
+        return
+    end
+
     if failed_phase == "repositioning" and fallback then
         if not left_fallback then
             _restore_fallback_cover(data, state)
             state.phase = "blocked"
             state.fallback_cover = nil
             state.left_fallback = nil
+            state.expose_until_t = nil
+            state.return_failed = nil
             return
         end
 
@@ -445,6 +470,8 @@ local function _fail_transfer(data, state, t)
         state.fallback_cover = nil
         state.left_fallback = nil
         state.phase = "exposed"
+        state.expose_until_t = t
+        state.return_failed = nil
         _begin_return(data, state, t)
         return
     end
@@ -458,7 +485,12 @@ local function _fail_transfer(data, state, t)
 
     state.fallback_cover = nil
     state.left_fallback = nil
+    state.expose_until_t = nil
+    state.return_failed = nil
     state.phase = state.return_cover and "exposed" or "blocked"
+    if state.phase == "exposed" then
+        state.expose_until_t = t
+    end
 end
 
 local function _update_transfer(data, state, t)
@@ -521,6 +553,8 @@ _begin_return = function(data, state, t)
     state.fallback_cover = nil
     state.left_fallback = true
     state.path_deadline_t = t + CONSTANTS.COVER_TACTICS_PATH_TIMEOUT
+    state.expose_until_t = nil
+    state.return_failed = nil
     state.blocked_since_t = nil
     state.lane = "-"
     my_data.want_to_take_cover = true
@@ -546,6 +580,8 @@ local function _abort_active_state(data, state, t)
     state.return_cover = nil
     state.blocked_since_t = nil
     state.peek_attempted = nil
+    state.expose_until_t = nil
+    state.return_failed = nil
     state.next_reposition_t = t + CONSTANTS.COVER_TACTICS_RETRY_DELAY
     state.phase = "clear"
     state.lane = "-"
@@ -629,6 +665,8 @@ local function _try_lateral_peek(data, state, attention, target_pos)
                 state.return_cover = in_cover
                 state.phase = "peeking"
                 state.blocked_since_t = nil
+                state.expose_until_t = nil
+                state.return_failed = nil
 
                 local path = {
                     mvector3.copy(tracker:position()),
@@ -701,6 +739,8 @@ local function _begin_reposition(data, state, attention, target_pos, t)
     state.fallback_cover = fallback
     state.left_fallback = my_data.in_cover == nil and fallback ~= nil or false
     state.path_deadline_t = t + CONSTANTS.COVER_TACTICS_PATH_TIMEOUT
+    state.expose_until_t = nil
+    state.return_failed = nil
     state.blocked_since_t = nil
     state.peek_attempted = true
     state.lane = "blocked"
@@ -715,7 +755,8 @@ function CoverTactics:on_enter(data)
         return false
     end
 
-    if _is_ordinary_player_follow(data.objective) then
+    local ordinary_player_follow = _is_ordinary_player_follow(data.objective)
+    if ordinary_player_follow then
         my_data.attitude = "engage"
     end
 
@@ -726,7 +767,11 @@ function CoverTactics:on_enter(data)
     local t = data.t or game_time()
     my_data.cover_test_step = 3
     my_data._bb_next_cover_tactics_t = nil
-    my_data._bb_cover_tactics = _new_state(data, t)
+    my_data._bb_cover_tactics = _new_state(
+            data,
+            t,
+            ordinary_player_follow and my_data.in_cover == nil
+    )
 
     return true
 end
@@ -739,14 +784,39 @@ function CoverTactics:on_exit(data)
     end
 
     state.force_cover = false
+    state.initial_cover_pending = false
+    state.expose_until_t = nil
+    state.return_failed = nil
     state._walk_completion = nil
     state.phase = "clear"
     return true
 end
 
-function CoverTactics:should_force_cover(my_data)
+function CoverTactics:should_force_cover(data, my_data)
     local state = my_data and my_data._bb_cover_tactics
-    return state and state.force_cover == true or false
+    if not _is_current_assault(data, my_data)
+            or not state
+            or my_data.attitude ~= "engage"
+    then
+        return false
+    end
+
+    local movement = alive(data.unit) and data.unit:movement()
+    if not movement
+            or _movement_is_hard_blocked(data, my_data, movement)
+            or movement:chk_action_forbidden("walk")
+    then
+        return false
+    end
+
+    if state.force_cover == true then
+        return true
+    end
+
+    return state.initial_cover_pending == true
+            and my_data.in_cover == nil
+            and _is_ordinary_player_follow(data.objective)
+            and _is_combat_attention(data.attention_obj)
 end
 
 function CoverTactics:before_action_complete(data, action)
@@ -794,12 +864,13 @@ function CoverTactics:after_action_complete(data, action)
     local t = data.t or game_time()
     if completion.was_peek and completion.phase == "peeking" then
         if completion.expired then
-            state.phase = "exposed"
-            state.blocked_since_t = nil
-            state.next_lane_check_t = t
-            state.lane = "-"
+            _enter_exposed(
+                    state,
+                    t,
+                    CONSTANTS.COVER_TACTICS_PEEK_DURATION
+            )
         elseif not _begin_return(data, state, t) then
-            state.phase = "exposed"
+            _enter_exposed(state, t, 0)
         end
         return true
     end
@@ -843,6 +914,30 @@ function CoverTactics:update(data)
         return false
     end
 
+    if state.initial_cover_pending then
+        if my_data.in_cover then
+            state.initial_cover_pending = false
+            state.phase = "clear"
+            state.lane = "-"
+            state.blocked_since_t = nil
+            state.peek_attempted = nil
+            state.next_lane_check_t = t
+        elseif not _is_ordinary_player_follow(data.objective) then
+            state.initial_cover_pending = false
+            state.phase = "clear"
+            state.lane = "-"
+        elseif _is_combat_attention(data.attention_obj) then
+            state.phase = "acquiring"
+            state.lane = "cover"
+            state.blocked_since_t = nil
+            state.peek_attempted = nil
+            return true
+        elseif state.phase == "acquiring" then
+            state.phase = "clear"
+            state.lane = "-"
+        end
+    end
+
     if state.phase == "repositioning" or state.phase == "returning" then
         return _update_transfer(data, state, t)
     end
@@ -852,8 +947,11 @@ function CoverTactics:update(data)
             return true
         end
 
-        state.phase = "exposed"
-        state.next_lane_check_t = t
+        _enter_exposed(
+                state,
+                t,
+                CONSTANTS.COVER_TACTICS_PEEK_DURATION
+        )
     end
 
     local attention = data.attention_obj
@@ -883,6 +981,9 @@ function CoverTactics:update(data)
         state.peek_attempted = nil
         state.next_reposition_t = t
         state.lane = "-"
+        if state.phase == "exposed" then
+            state.expose_until_t = t
+        end
         if state.phase == "blocked" or state.phase == "standing" then
             state.phase = "clear"
         end
@@ -897,6 +998,30 @@ function CoverTactics:update(data)
             state.phase = "clear"
         end
         return false
+    end
+
+    if state.phase == "exposed"
+            and type(state.expose_until_t) == "number"
+            and t >= state.expose_until_t
+    then
+        if state.return_failed
+                and t >= (state.next_reposition_t or 0)
+                and _can_start_movement(data, my_data, state, movement)
+        then
+            return _begin_reposition(
+                    data,
+                    state,
+                    attention,
+                    target_pos,
+                    t
+            )
+        end
+
+        if _begin_return(data, state, t) then
+            return true
+        end
+
+        return true
     end
 
     if t < state.next_lane_check_t then

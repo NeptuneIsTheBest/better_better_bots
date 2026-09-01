@@ -1115,7 +1115,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicattack" then
                     CopLogicAttack,
                     "_chk_wants_to_take_cover",
                     function(original, data, my_data, ...)
-                if CoverTactics:should_force_cover(my_data) then
+                if CoverTactics:should_force_cover(data, my_data) then
                     return true
                 end
 
