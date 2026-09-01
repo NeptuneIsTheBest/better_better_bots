@@ -384,41 +384,50 @@ local function cover_location_descriptor(internal_data)
 end
 
 local function cover_phase_descriptor(internal_data)
-    if not internal_data
-            or internal_data._bb_next_cover_tactics_t == nil
-    then
+    local state = internal_data and internal_data._bb_cover_tactics
+    if not state then
         return "-"
     end
 
-    if internal_data.moving_to_cover then
-        return "to_cover"
-    elseif internal_data.walking_to_cover_shoot_pos then
-        return "peek"
-    elseif internal_data.processing_cover_path or internal_data.cover_path then
-        return "path"
-    elseif internal_data.at_cover_shoot_pos then
-        return "exposed"
-    elseif internal_data.in_cover then
-        return "in_cover"
-    end
-
-    return "open"
+    return tostring(state.phase or "-")
 end
 
 local function cover_timer_descriptor(internal_data, t)
-    local next_update_t = internal_data
-            and internal_data._bb_next_cover_tactics_t
-    if type(next_update_t) ~= "number" then
+    local state = internal_data and internal_data._bb_cover_tactics
+    if not state then
         return "-"
     end
 
-    return string.format("update@%.1fs", math.max(next_update_t - t, 0))
+    if type(state.path_deadline_t) == "number" then
+        return string.format(
+                "path@%.1fs",
+                math.max(state.path_deadline_t - t, 0)
+        )
+    elseif type(state.blocked_since_t) == "number" then
+        local deadline = state.blocked_since_t
+                + CONSTANTS.COVER_TACTICS_BLOCKED_TIMEOUT
+        return string.format("act@%.1fs", math.max(deadline - t, 0))
+    elseif type(state.next_reposition_t) == "number"
+            and state.next_reposition_t > t
+    then
+        return string.format(
+                "retry@%.1fs",
+                state.next_reposition_t - t
+        )
+    elseif type(state.next_lane_check_t) == "number" then
+        return string.format(
+                "check@%.1fs",
+                math.max(state.next_lane_check_t - t, 0)
+        )
+    end
+
+    return "-"
 end
 
 local function cover_tactics_data(logic_data, t)
     local internal_data = logic_data and logic_data.internal_data
-    local enabled = internal_data
-            and internal_data._bb_next_cover_tactics_t ~= nil
+    local state = internal_data and internal_data._bb_cover_tactics
+    local enabled = state ~= nil
     local wants = "-"
     if enabled or internal_data and internal_data.want_to_take_cover ~= nil then
         wants = format_boolean(internal_data.want_to_take_cover == true)
@@ -426,7 +435,10 @@ local function cover_tactics_data(logic_data, t)
 
     return {
         attitude = internal_data and tostring(internal_data.attitude or "-") or "-",
+        blocked = state and format_age(state.blocked_since_t, t) or "-",
         cover = cover_location_descriptor(internal_data),
+        force = state and format_boolean(state.force_cover == true) or "-",
+        lane = state and tostring(state.lane or "-") or "-",
         phase = cover_phase_descriptor(internal_data),
         step = enabled and tostring(internal_data.cover_test_step or "-") or "-",
         timer = cover_timer_descriptor(internal_data, t),
@@ -780,10 +792,13 @@ local function build_debug_text(unit, bot_key, character_name, t)
                 format_boolean(suppressed)
         ),
         string.format(
-                "[COVER] PHASE:%s POS:%s WANT:%s ATT:%s STEP:%s TIMER:%s",
+                "[COVER] PHASE:%s POS:%s LANE:%s BLOCK:%s WANT:%s FORCE:%s ATT:%s STEP:%s TIMER:%s",
                 cover.phase,
                 cover.cover,
+                cover.lane,
+                cover.blocked,
                 cover.wants,
+                cover.force,
                 cover.attitude,
                 cover.step,
                 cover.timer
