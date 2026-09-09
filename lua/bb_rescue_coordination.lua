@@ -41,7 +41,7 @@ local function _navigation_position(unit)
 
     local movement = unit:movement()
     local tracker = movement and movement:nav_tracker()
-    if not tracker then
+    if not alive(tracker) then
         return nil, nil
     end
 
@@ -400,17 +400,19 @@ local function _nearest_threat_position(session, rescue_pos)
     local nearest_dis_sq
 
     for _, threat in pairs(session and session.threats or {}) do
-        local attention_data = threat.attention
-        local tracker = attention_data and attention_data.nav_tracker
-        local threat_pos = tracker and tracker:field_position()
-                or select(1, _navigation_position(threat.unit))
-                or _attention_position(attention_data)
+        if not _is_dead(threat.unit) then
+            local attention_data = threat.attention
+            local tracker = attention_data and attention_data.nav_tracker
+            local threat_pos = alive(tracker) and tracker:field_position()
+                    or select(1, _navigation_position(threat.unit))
+                    or _attention_position(attention_data)
 
-        if threat_pos then
-            local dis_sq = mvector3.distance_sq(rescue_pos, threat_pos)
-            if not nearest_dis_sq or dis_sq < nearest_dis_sq then
-                nearest_dis_sq = dis_sq
-                nearest_pos = threat_pos
+            if threat_pos then
+                local dis_sq = mvector3.distance_sq(rescue_pos, threat_pos)
+                if not nearest_dis_sq or dis_sq < nearest_dis_sq then
+                    nearest_dis_sq = dis_sq
+                    nearest_pos = threat_pos
+                end
             end
         end
     end

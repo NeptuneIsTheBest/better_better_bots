@@ -841,7 +841,6 @@ function CoverTactics:before_action_complete(data, action)
     }
 
     if was_peek then
-        -- TeamAILogicAssault omits the marker used by the native cover flow.
         my_data.at_cover_shoot_pos = true
     end
 

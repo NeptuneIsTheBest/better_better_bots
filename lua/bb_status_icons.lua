@@ -56,6 +56,7 @@ local SNAPSHOT_MAX_ATTEMPTS = 3
 StatusIcons._roles = StatusIcons._roles or {}
 StatusIcons._local_holds = StatusIcons._local_holds or {}
 StatusIcons._pending_panel_holds = StatusIcons._pending_panel_holds or {}
+StatusIcons._pending_snapshot_requests = StatusIcons._pending_snapshot_requests or {}
 StatusIcons._rendered = StatusIcons._rendered or {}
 StatusIcons._next_state_t = StatusIcons._next_state_t or 0
 StatusIcons._next_hud_t = StatusIcons._next_hud_t or 0
@@ -398,12 +399,12 @@ function StatusIcons:_resolve_pending_holds()
 end
 
 function StatusIcons:_collect_authoritative_roles()
-    local group_state = managers.groupai:state()
-    if not group_state then
+    local group_state = managers.groupai and managers.groupai:state()
+    local criminals = managers.criminals
+    if not group_state or not criminals then
         return nil
     end
 
-    local criminals = managers.criminals
     local desired = {}
 
     for _, unit_data in pairs(group_state:all_AI_criminals()) do
@@ -512,11 +513,23 @@ function StatusIcons:_on_network_request(data, sender)
         return
     end
 
-    if not self._authoritative_ready then
-        self:_apply_authoritative_roles(self:_collect_authoritative_roles())
+    self._pending_snapshot_requests[peer_id] = {
+        peer = peer,
+        session = session,
+    }
+end
+
+function StatusIcons:_flush_snapshot_requests()
+    local pending_requests = self._pending_snapshot_requests
+    if not next(pending_requests) then
+        return
     end
 
-    LuaNetworking:SendToPeer(peer_id, MESSAGE_RESET, "1")
+    local session = managers.network and managers.network:session()
+    if not session then
+        clear_table(pending_requests)
+        return
+    end
 
     local character_names = {}
     for character_name in pairs(self._roles) do
@@ -524,12 +537,20 @@ function StatusIcons:_on_network_request(data, sender)
     end
     table.sort(character_names)
 
-    for _, character_name in ipairs(character_names) do
-        LuaNetworking:SendToPeer(
-                peer_id,
-                MESSAGE_SET,
-                encode_role(character_name, self._roles[character_name])
-        )
+    for peer_id, request in pairs(pending_requests) do
+        pending_requests[peer_id] = nil
+
+        if request.session == session and session:peer(peer_id) == request.peer then
+            LuaNetworking:SendToPeer(peer_id, MESSAGE_RESET, "1")
+
+            for _, character_name in ipairs(character_names) do
+                LuaNetworking:SendToPeer(
+                        peer_id,
+                        MESSAGE_SET,
+                        encode_role(character_name, self._roles[character_name])
+                )
+            end
+        end
     end
 end
 
@@ -609,7 +630,9 @@ function StatusIcons:update(t, dt)
 
     if network_is_server() and t >= self._next_state_t then
         self._next_state_t = t + STATE_UPDATE_INTERVAL
-        self:_apply_authoritative_roles(self:_collect_authoritative_roles())
+        if self:_apply_authoritative_roles(self:_collect_authoritative_roles()) then
+            self:_flush_snapshot_requests()
+        end
     elseif network_is_client() then
         self:_request_snapshot(t)
     end
@@ -629,6 +652,7 @@ function StatusIcons:reset_level_state()
     clear_table(self._roles)
     clear_table(self._local_holds)
     clear_table(self._pending_panel_holds)
+    clear_table(self._pending_snapshot_requests)
     clear_table(self._rendered)
     self._authoritative_ready = nil
     self._snapshot_received = nil
