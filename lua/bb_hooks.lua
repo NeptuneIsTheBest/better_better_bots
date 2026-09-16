@@ -376,6 +376,14 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
                 BB:reset_level_state()
             end)
 
+    Hooks:PostHook(
+            GroupAIStateBase,
+            "on_criminal_recovered",
+            "BB_GroupAIStateBase_onCriminalRecovered_RescueInteraction",
+            function(self, unit, ...)
+                RescueCoordinator.on_criminal_recovered(unit)
+            end)
+
     if Network:is_server() then
         Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_PreloadConcussion", function(self, ...)
             RuntimeSettings:apply_concussion(true)
@@ -603,6 +611,96 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
     end
 end
 
+if RequiredScript == "lib/network/handlers/unitnetworkhandler" then
+    local function notify_rescue_interaction(self, unit, sender, active, gamestate)
+        if not Network:is_server()
+                or not self._verify_gamestate(self._gamestate_filter[gamestate])
+        then
+            return
+        end
+
+        local peer = self._verify_sender(sender)
+        if not peer then
+            return
+        end
+
+        -- The downed/arrested RPCs address the receiving player without a unit argument.
+        if gamestate ~= "any_ingame" then
+            unit = managers.player and managers.player:player_unit()
+        end
+
+        if self._verify_character(unit) then
+            RescueCoordinator.on_network_rescue_interaction(unit, peer, active)
+        end
+    end
+
+    for _, method in ipairs({
+        { "pause_bleed_out", true },
+        { "unpause_bleed_out", false },
+        { "pause_arrested_timer", true },
+        { "unpause_arrested_timer", false },
+    }) do
+        local method_name, active = method[1], method[2]
+        Hooks:PostHook(
+                UnitNetworkHandler,
+                method_name,
+                "BB_UnitNetworkHandler_" .. method_name .. "_RescueInteraction",
+                function(self, unit, sender)
+                    if is_team_ai(unit) then
+                        notify_rescue_interaction(self, unit, sender, active, "any_ingame")
+                    end
+                end)
+    end
+
+    Hooks:PostHook(
+            UnitNetworkHandler,
+            "start_revive_player",
+            "BB_UnitNetworkHandler_startRevivePlayer_RescueInteraction",
+            function(self, timer, sender)
+                notify_rescue_interaction(
+                        self, nil, sender, true, "downed"
+                )
+            end)
+
+    for _, method in ipairs({
+        { "interupt_revive_player", false, "downed" },
+        { "start_free_player", true, "arrested" },
+        { "interupt_free_player", false, "arrested" },
+    }) do
+        local method_name, active, gamestate = method[1], method[2], method[3]
+        Hooks:PostHook(
+                UnitNetworkHandler,
+                method_name,
+                "BB_UnitNetworkHandler_" .. method_name .. "_RescueInteraction",
+                function(self, sender)
+                    notify_rescue_interaction(
+                            self, nil, sender, active, gamestate
+                    )
+                end)
+    end
+
+    Hooks:PostHook(
+            UnitNetworkHandler,
+            "interaction_set_waypoint_paused",
+            "BB_UnitNetworkHandler_setWaypointPaused_RescueInteraction",
+            function(self, unit, paused, sender)
+                if not (Network:is_server() and alive(unit)) then
+                    return
+                end
+
+                local base = unit:base()
+                local interaction = unit:interaction()
+                -- AI and the local player use the timer RPCs above.
+                if base and base.is_husk_player and interaction
+                        and (not paused
+                        or interaction.tweak_data == "revive"
+                        or interaction.tweak_data == "free")
+                then
+                    notify_rescue_interaction(self, unit, sender, paused, "any_ingame")
+                end
+            end)
+end
+
 if RequiredScript == "lib/units/interactions/interactionext" then
     if Network:is_server() then
         local function pack_results(...)
@@ -612,42 +710,13 @@ if RequiredScript == "lib/units/interactions/interactionext" then
             return results
         end
 
-        local function cancel_other_rescue_objectives(revive_unit, rescuer)
-            if not (alive(revive_unit) and alive(rescuer)) then
-                return
-            end
-
-            local gstate = managers.groupai:state()
-
-            local revive_key = revive_unit:key()
-            local rescuer_key = rescuer:key()
-
-            for u_key, u_data in pairs(gstate:all_AI_criminals()) do
-                if u_key ~= rescuer_key and u_data.unit and alive(u_data.unit) then
-                    local brain = u_data.unit:brain()
-                    if brain and brain._logic_data then
-                        local obj = brain._logic_data.objective
-                        if obj
-                                and obj.type == "revive"
-                                and obj.follow_unit
-                                and alive(obj.follow_unit)
-                                and obj.follow_unit:key() == revive_key
-                        then
-                            brain:set_objective(nil)
-                        end
-                    end
-                end
-            end
-        end
         Hooks:PostHook(
                 ReviveInteractionExt,
                 "_at_interact_start",
                 "BB_ReviveInteractionExt_atInteractStart_CancelOthers",
                 function(self, player, ...)
                     if self.tweak_data == "revive" or self.tweak_data == "free" then
-                        cancel_other_rescue_objectives(self._unit, player)
-
-                        RescueCoordinator.on_rescue_interaction(self._unit, player, false)
+                        RescueCoordinator.on_rescue_interaction_started(self._unit, player)
                     end
                 end
         )
@@ -657,14 +726,15 @@ if RequiredScript == "lib/units/interactions/interactionext" then
                 "_at_interact_interupt",
                 "BB_ReviveInteractionExt_atInteractInterrupt_RescueGuard",
                 function(self, player, complete, ...)
-                    if (self.tweak_data == "revive" or self.tweak_data == "free")
-                            and complete ~= true
-                    then
-                        RescueCoordinator.on_rescue_interaction(
-                                self._unit,
-                                player,
-                                false
-                        )
+                    if complete ~= true then
+                        RescueCoordinator.on_rescue_interaction_interrupted(self._unit, player)
+                        if self.tweak_data == "revive" or self.tweak_data == "free" then
+                            RescueCoordinator.on_rescue_interaction(
+                                    self._unit,
+                                    player,
+                                    false
+                            )
+                        end
                     end
                 end
         )
@@ -689,6 +759,7 @@ if RequiredScript == "lib/units/interactions/interactionext" then
                 function(original, self, player, ...)
             local is_rescue = self.tweak_data == "revive" or self.tweak_data == "free"
             if not is_rescue then
+                RescueCoordinator.on_rescue_interaction_interrupted(self._unit, player)
                 return original(self, player, ...)
             end
 
@@ -699,6 +770,10 @@ if RequiredScript == "lib/units/interactions/interactionext" then
             local results = pack_results(pcall(original, self, player, ...))
 
             self._bb_rescue_interact_attempt = previous_attempt
+
+            if not results[1] or not attempt.completed then
+                RescueCoordinator.on_rescue_interaction_interrupted(self._unit, player)
+            end
 
             if not results[1] then
                 error(results[2], 0)
@@ -719,6 +794,14 @@ if RequiredScript == "lib/units/interactions/interactionext" then
 end
 
 if RequiredScript == "lib/managers/criminalsmanager" then
+    Hooks:PostHook(
+            CriminalsManager,
+            "on_peer_left",
+            "BB_CriminalsManager_onPeerLeft_RescueInteraction",
+            function(self, peer_id, ...)
+                RescueCoordinator.on_peer_left(peer_id)
+            end)
+
     install_method_patch(
             CriminalsManager,
             "character_color_id_by_unit",

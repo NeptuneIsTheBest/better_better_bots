@@ -330,6 +330,10 @@ function IntimidationSystem.intimidate_law_enforcement(data, intim_unit, play_ac
 end
 
 function IntimidationSystem.perform_interaction_check(data)
+    if data.cool then
+        return
+    end
+
     local unit = data.unit
     if not alive(unit) then
         return

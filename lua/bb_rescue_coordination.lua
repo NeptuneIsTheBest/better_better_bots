@@ -11,6 +11,8 @@ local is_team_ai = UnitOps.is_team_ai
 
 local RescueCoordinator = BB.RescueCoordinator or {}
 RescueCoordinator._sessions = RescueCoordinator._sessions or {}
+RescueCoordinator._local_interactions = RescueCoordinator._local_interactions or {}
+RescueCoordinator._network_interactions = RescueCoordinator._network_interactions or {}
 RescueCoordinator._next_update_t = RescueCoordinator._next_update_t or 0
 
 local function _unit_key(unit)
@@ -121,13 +123,6 @@ local function _is_rescue_special_objective(group_state, so_id, objective_data)
             and _is_criminal_unit(group_state, objective.follow_unit)
 end
 
-local function _has_active_rescue_interaction(unit)
-    local interaction = alive(unit) and unit:interaction()
-    local active_tweak = interaction and interaction._tweak_data_at_interact_start
-
-    return active_tweak == "revive" or active_tweak == "free"
-end
-
 local function _combat_reaction()
     return AIAttentionObject.REACT_COMBAT
 end
@@ -158,6 +153,92 @@ function RescueCoordinator.target_needs_help(unit)
     end
 
     return false
+end
+
+local function _is_available_rescuer(group_state, unit)
+    if not _is_criminal_unit(group_state, unit)
+            or _is_dead(unit)
+            or RescueCoordinator.target_needs_help(unit)
+    then
+        return false
+    end
+
+    local movement = unit:movement()
+    return not (movement and movement.downed and movement:downed())
+end
+
+local function _prune_local_interaction(target_key, group_state)
+    local interaction = RescueCoordinator._local_interactions[target_key]
+    if not interaction then
+        return nil
+    end
+
+    local player = managers.player and managers.player:player_unit()
+    if interaction.rescuer ~= player
+            or not _is_criminal_unit(group_state, interaction.target)
+            or not RescueCoordinator.target_needs_help(interaction.target)
+            or not _is_available_rescuer(group_state, interaction.rescuer)
+    then
+        RescueCoordinator._local_interactions[target_key] = nil
+        return nil
+    end
+
+    return interaction
+end
+
+local function _prune_network_interaction(target_key, group_state, network_session)
+    local interaction = RescueCoordinator._network_interactions[target_key]
+    if not interaction then
+        return nil
+    end
+
+    if not _is_criminal_unit(group_state, interaction.target)
+            or not RescueCoordinator.target_needs_help(interaction.target)
+    then
+        RescueCoordinator._network_interactions[target_key] = nil
+        return nil
+    end
+
+    for peer_id, rescuer in pairs(interaction.rescuers) do
+        local peer = network_session and network_session:peer(peer_id)
+        if not (peer and peer:unit() == rescuer
+                and _is_available_rescuer(group_state, rescuer))
+        then
+            interaction.rescuers[peer_id] = nil
+        end
+    end
+
+    if not next(interaction.rescuers) then
+        RescueCoordinator._network_interactions[target_key] = nil
+        return nil
+    end
+
+    return interaction
+end
+
+local function _has_active_rescue_interaction(unit)
+    local interaction = alive(unit) and unit:interaction()
+    local active_tweak = interaction and interaction._tweak_data_at_interact_start
+    if active_tweak == "revive" or active_tweak == "free" then
+        return true
+    end
+
+    local target_key = _unit_key(unit)
+    if not target_key then
+        return false
+    end
+
+    local group_state = _get_group_state()
+    local local_interaction = _prune_local_interaction(target_key, group_state)
+    if local_interaction and local_interaction.target == unit then
+        return true
+    end
+
+    return _prune_network_interaction(
+            target_key,
+            group_state,
+            managers.network and managers.network:session()
+    ) ~= nil
 end
 
 function RescueCoordinator.get_remaining_rescue_time(unit)
@@ -213,6 +294,22 @@ function RescueCoordinator.prepare_rescue_special_objective(group_state, so_id, 
             or objective_data.interval > retry_interval
     then
         objective_data.interval = retry_interval
+    end
+
+    if not objective_data._bb_rescue_assignment then
+        local verification_clbk = objective_data.verification_clbk
+
+        objective_data.verification_clbk = function(...)
+            if _has_active_rescue_interaction(objective_data.objective.follow_unit) then
+                return false
+            end
+
+            if verification_clbk then
+                return verification_clbk(...)
+            end
+
+            return true
+        end
     end
 
     objective_data._bb_rescue_assignment = true
@@ -807,6 +904,15 @@ function RescueCoordinator.update(group_state, force)
     end
     RescueCoordinator._next_update_t = t + CONSTANTS.RESCUE_COORD_UPDATE_INTERVAL
 
+    for target_key in pairs(RescueCoordinator._local_interactions) do
+        _prune_local_interaction(target_key, group_state)
+    end
+
+    local network_session = managers.network and managers.network:session()
+    for target_key in pairs(RescueCoordinator._network_interactions) do
+        _prune_network_interaction(target_key, group_state, network_session)
+    end
+
     local uncovered_targets = _count_uncovered_help_targets(group_state)
     if uncovered_targets > 0 then
         for _, session in pairs(RescueCoordinator._sessions) do
@@ -881,6 +987,127 @@ function RescueCoordinator.update(group_state, force)
     end
 end
 
+function RescueCoordinator.on_rescue_interaction_started(revive_unit, rescuer)
+    if not (Network:is_server() and alive(revive_unit) and alive(rescuer)) then
+        return
+    end
+
+    if managers.player and rescuer == managers.player:player_unit() then
+        -- AI exit clears the shared interaction marker before its failure callback runs.
+        RescueCoordinator._local_interactions[_unit_key(revive_unit)] = {
+            target = revive_unit,
+            rescuer = rescuer,
+        }
+    end
+
+    local group_state = _get_group_state()
+    for _, ai_data in pairs(group_state and group_state:all_AI_criminals() or {}) do
+        local unit = ai_data.unit
+        local objective = _get_objective(unit)
+        if unit ~= rescuer
+                and objective
+                and objective.type == "revive"
+                and objective.follow_unit == revive_unit
+        then
+            unit:brain():set_objective(nil)
+        end
+    end
+
+    RescueCoordinator.on_rescue_interaction(revive_unit, rescuer, false)
+end
+
+function RescueCoordinator.on_rescue_interaction_interrupted(revive_unit, rescuer)
+    if not Network:is_server() then
+        return
+    end
+
+    local target_key = _unit_key(revive_unit)
+    local interaction = target_key and RescueCoordinator._local_interactions[target_key]
+    if interaction and interaction.target == revive_unit and interaction.rescuer == rescuer then
+        RescueCoordinator._local_interactions[target_key] = nil
+        -- Defer assignment so error cleanup can preserve the original exception.
+        RescueCoordinator._next_update_t = 0
+    end
+end
+
+function RescueCoordinator.on_network_rescue_interaction(target, peer, active)
+    if not (Network:is_server() and alive(target) and peer) then
+        return
+    end
+
+    local target_key = _unit_key(target)
+    local peer_id = peer:id()
+    local rescuer = peer:unit()
+    local interaction = RescueCoordinator._network_interactions[target_key]
+
+    if active then
+        local group_state = _get_group_state()
+        if target == rescuer
+                or not _is_criminal_unit(group_state, target)
+                or not RescueCoordinator.target_needs_help(target)
+                or not _is_available_rescuer(group_state, rescuer)
+        then
+            return
+        end
+
+        if not interaction or interaction.target ~= target then
+            interaction = { target = target, rescuers = {} }
+            RescueCoordinator._network_interactions[target_key] = interaction
+        end
+
+        if interaction.rescuers[peer_id] == rescuer then
+            return
+        end
+
+        -- Cancelling an AI can re-enter SO assignment through its failure callback.
+        interaction.rescuers[peer_id] = rescuer
+        RescueCoordinator.on_rescue_interaction_started(target, rescuer)
+    elseif interaction and interaction.target == target and interaction.rescuers[peer_id] then
+        interaction.rescuers[peer_id] = nil
+        if not next(interaction.rescuers) then
+            RescueCoordinator._network_interactions[target_key] = nil
+        end
+
+        RescueCoordinator.on_rescue_interaction(target, rescuer, false)
+    end
+end
+
+function RescueCoordinator.on_criminal_recovered(unit)
+    if not Network:is_server() then
+        return
+    end
+
+    local target_key = _unit_key(unit)
+    if target_key then
+        RescueCoordinator._local_interactions[target_key] = nil
+        RescueCoordinator._network_interactions[target_key] = nil
+        -- Some callers have not finished clearing their downed state yet.
+        RescueCoordinator._next_update_t = 0
+    end
+end
+
+function RescueCoordinator.on_peer_left(peer_id)
+    if not Network:is_server() then
+        return
+    end
+
+    local changed = false
+    for target_key, interaction in pairs(RescueCoordinator._network_interactions) do
+        if interaction.rescuers[peer_id] then
+            interaction.rescuers[peer_id] = nil
+            changed = true
+            if not next(interaction.rescuers) then
+                RescueCoordinator._network_interactions[target_key] = nil
+            end
+        end
+    end
+
+    local group_state = changed and _get_group_state()
+    if group_state then
+        RescueCoordinator.update(group_state, true)
+    end
+end
+
 function RescueCoordinator.on_rescue_interaction(revive_unit, rescuer, complete)
     if not Network:is_server() then
         return
@@ -888,6 +1115,8 @@ function RescueCoordinator.on_rescue_interaction(revive_unit, rescuer, complete)
 
     local target_key = _unit_key(revive_unit)
     if complete and target_key then
+        RescueCoordinator._local_interactions[target_key] = nil
+        RescueCoordinator._network_interactions[target_key] = nil
         RescueCoordinator:_finish_session(target_key, true)
     end
 
@@ -978,7 +1207,7 @@ local function _find_nearby_cloaker(data, preferred_key)
                             _unit_position(data.unit),
                             _attention_position(attention_data)
                     )
-            local active = flags.spooc_attack == true
+            local active = not not flags.spooc_attack
 
             if not best
                     or active and not best_active
@@ -1129,6 +1358,8 @@ function RescueCoordinator.reset_level_state()
     end
 
     RescueCoordinator._sessions = {}
+    RescueCoordinator._local_interactions = {}
+    RescueCoordinator._network_interactions = {}
     RescueCoordinator._next_update_t = 0
 end
 

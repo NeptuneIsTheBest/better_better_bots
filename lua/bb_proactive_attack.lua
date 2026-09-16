@@ -863,6 +863,7 @@ function ProactiveAttack:_assign_target(bot, target)
 
     state.next_assignment_id = state.next_assignment_id + 1
     local assignment_id = state.next_assignment_id
+    local bot_key = bot.key
     local manual_destroy_clbk_key
     local objective = {
         is_default = true,
@@ -877,13 +878,9 @@ function ProactiveAttack:_assign_target(bot, target)
         _bb_proactive_attack = true,
         _bb_proactive_assignment_id = assignment_id,
         _bb_proactive_target_key = target.key,
-        fail_clbk = callback(
-                self,
-                self,
-                "_on_objective_failed",
-                bot.key,
-                assignment_id
-        ),
+        fail_clbk = function(unit)
+            self:_on_objective_failed(bot_key, assignment_id, unit)
+        end,
     }
 
     if not target_damage_supports_objective_listeners(target.unit) then
