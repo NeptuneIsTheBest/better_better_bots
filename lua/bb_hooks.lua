@@ -2323,11 +2323,11 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
 
                     BB:on_intimidation_result(u_key, surrender and true or false, aggressor_key)
 
-                    BB:add_cop_to_intimidation_list(u_key)
-
                     if surrender then
                         BB:clear_cop_state(u_key)
                     end
+
+                    BB:add_cop_to_intimidation_list(u_key)
                 end
                 return surrender
             end)

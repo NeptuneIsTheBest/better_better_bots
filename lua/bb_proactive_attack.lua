@@ -2,6 +2,7 @@ local BB = _G.BB
 
 local CONSTANTS = BB.CONSTANTS
 local UnitOps = BB.UnitOps
+local CombatHelper = BB.CombatHelper
 local EnemyClassifier = BB.EnemyClassifier
 local ThreatAssessment = BB.ThreatAssessment
 local AssignmentPlanner = BB.AssignmentPlanner
@@ -27,6 +28,8 @@ BB.proactive_attack_state = state
 state.assignments = state.assignments or {}
 state.recall_holds = state.recall_holds or {}
 state.retry_until = state.retry_until or {}
+state.observations = state.observations or {}
+state.nav_cache = state.nav_cache or {}
 state.next_update_t = state.next_update_t or 0
 state.next_assignment_id = state.next_assignment_id or 0
 state.next_recall_id = state.next_recall_id or 0
@@ -146,35 +149,11 @@ local function get_live_players(group_state)
     return players, distressed
 end
 
-local function get_target_position(attention_data)
-    if attention_data.verified then
-        return attention_data.m_head_pos
-                or attention_data.verified_pos
-                or attention_data.m_pos
-    end
-
-    return attention_data.last_verified_pos
-            or attention_data.verified_pos
-            or attention_data.m_head_pos
-            or attention_data.m_pos
-end
-
-local function target_has_navigation(observer, unit)
-    local movement = alive(unit) and unit:movement()
-    local tracker = movement and movement:nav_tracker()
-    local nav_seg = tracker and tracker:nav_segment()
-    if not nav_seg then
-        return false
-    end
-
-    local nav_seg_data = managers.navigation._nav_segments[nav_seg]
-
-    return nav_seg_data ~= nil
-            and not nav_seg_data.disabled
-            and not managers.navigation._quad_field:is_nav_segment_blocked(
-                    nav_seg,
-                    observer:brain():SO_access()
-            )
+local function target_is_valid(observer, unit)
+    return alive(unit)
+            and not is_unit_dead(unit)
+            and UnitOps.are_foes(observer, unit)
+            and not UnitOps.is_surrendering(unit)
 end
 
 local function make_target_observation(observer, attention_data, t)
@@ -183,12 +162,7 @@ local function make_target_observation(observer, attention_data, t)
     end
 
     local target_unit = attention_data.unit
-    if not (alive(target_unit)
-            and not is_unit_dead(target_unit)
-            and UnitOps.are_foes(observer, target_unit)
-            and not UnitOps.is_surrendering(target_unit)
-            and target_has_navigation(observer, target_unit))
-    then
+    if not target_is_valid(observer, target_unit) then
         return nil
     end
 
@@ -201,7 +175,7 @@ local function make_target_observation(observer, attention_data, t)
     local last_seen_t
     if attention_data.verified or attention_data.nearly_visible then
         last_seen_t = t
-    elseif attention_data.verified_t
+    elseif type(attention_data.verified_t) == "number"
             and t - attention_data.verified_t <= CONSTANTS.PROACTIVE_TARGET_MEMORY
     then
         last_seen_t = attention_data.verified_t
@@ -211,15 +185,37 @@ local function make_target_observation(observer, attention_data, t)
         return nil
     end
 
-    local target_pos = get_target_position(attention_data)
+    local key = tostring(attention_data.u_key or target_unit:key())
+    local previous = state.observations[key]
+    local visible = attention_data.verified or attention_data.nearly_visible
+    local target_pos = attention_data.verified
+            and (attention_data.m_head_pos or attention_data.verified_pos)
+            or attention_data.last_verified_pos or attention_data.verified_pos
     if not target_pos then
         return nil
     end
 
+    local nav_position, nav_seg
+    if visible then
+        local movement = target_unit:movement()
+        local tracker = movement and movement:nav_tracker()
+        if alive(tracker) and not tracker:lost() then
+            nav_position = tracker:field_position()
+            nav_seg = tracker:nav_segment()
+        end
+    elseif previous and previous.unit == target_unit and previous.last_seen_t >= last_seen_t then
+        nav_position = previous.nav_position
+        nav_seg = previous.nav_seg
+        target_pos = previous.position
+        last_seen_t = previous.last_seen_t
+    end
+
     return {
-        key = tostring(attention_data.u_key or target_unit:key()),
+        key = key,
         unit = target_unit,
         position = target_pos,
+        nav_position = nav_position,
+        nav_seg = nav_seg,
         attention_data = attention_data,
         last_seen_t = last_seen_t,
         verified = attention_data.verified == true,
@@ -249,21 +245,21 @@ local function collect_known_targets(group_state, players, max_distance, t)
                 local observation = make_target_observation(observer, attention_data, t)
                 if observation then
                     local target = targets_by_key[observation.key]
-                    if not target then
-                        target = observation
-                        targets_by_key[observation.key] = target
-                    else
-                        local fresher = observation_is_fresher(observation, target)
-                        if fresher then
-                            target.unit = observation.unit
-                            target.position = observation.position
-                            target.attention_data = observation.attention_data
-                            target.last_seen_t = observation.last_seen_t
-                            target.verified = observation.verified
-                        end
+                    if not target or observation_is_fresher(observation, target) then
+                        targets_by_key[observation.key] = observation
                     end
                 end
             end
+        end
+    end
+
+    for key, previous in pairs(state.observations) do
+        if not targets_by_key[key]
+                and t - previous.last_seen_t <= CONSTANTS.PROACTIVE_TARGET_MEMORY
+                and target_is_valid(players[1].unit, previous.unit)
+        then
+            previous.verified = false
+            targets_by_key[key] = previous
         end
     end
 
@@ -271,7 +267,10 @@ local function collect_known_targets(group_state, players, max_distance, t)
     for target_key, target in pairs(targets_by_key) do
         target.player_distance = minimum_player_distance(target.position, players)
         if target.player_distance <= max_distance then
+            target.position = mvector3.copy(target.position)
+            target.nav_position = target.nav_position and mvector3.copy(target.nav_position)
             local flags = EnemyClassifier.classify(target.unit, target.attention_data)
+            target.focus = nil
             if flags.tasing or flags.spooc_attack then
                 target.urgency = 3
                 target.focus = "urgent"
@@ -294,6 +293,7 @@ local function collect_known_targets(group_state, players, max_distance, t)
         end
     end
 
+    state.observations = targets_by_key
     return targets, targets_by_key
 end
 
@@ -689,6 +689,12 @@ local function cleanup_retry_cooldowns(t)
             state.retry_until[bot_key] = nil
         end
     end
+
+    for key, entry in pairs(state.nav_cache) do
+        if t >= entry.expires_t then
+            state.nav_cache[key] = nil
+        end
+    end
 end
 
 local function target_retry_is_active(bot_key, target_key, t)
@@ -698,6 +704,7 @@ end
 
 local function select_guard(eligible, eligible_by_key)
     if #eligible < 2 then
+        state.guard_key = nil
         return nil
     end
 
@@ -720,7 +727,7 @@ local function select_guard(eligible, eligible_by_key)
     return best_guard
 end
 
-local function build_attack_plan(attackers, targets, t)
+local function build_attack_plan(attackers, targets, targets_by_key, t)
     local edges = {}
     local target_defs_by_key = {}
     local previous_by_bot = {}
@@ -734,53 +741,55 @@ local function build_attack_plan(attackers, targets, t)
             previous_by_bot[bot.key] = previous.target_key
         end
 
-        local locked_target_key = previous
-                and t < (previous.lock_until or 0)
-                and previous.target_key
+        local locked_target = previous and t < (previous.lock_until or 0)
+                and targets_by_key[previous.target_key]
+        local locked_score
+        if locked_target and not target_retry_is_active(bot.key, locked_target.key, t) then
+            locked_score = ThreatAssessment.calculate_threat_value(
+                    bot.unit, locked_target.attention_data, bot.data,
+                    mvector3.distance(bot.position, locked_target.position), locked_target.position
+            )
+        end
+        if not locked_score or locked_score <= 0 then
+            locked_target = nil
+        end
 
         for _, target in ipairs(targets) do
-            local target_allowed_by_lock = not locked_target_key
-                    or target.key == locked_target_key
-                    or target.urgency >= 3
-
-            if target_allowed_by_lock
+            if (not locked_target or target == locked_target or target.urgency >= 3)
                     and not target_retry_is_active(bot.key, target.key, t)
             then
                 local distance = mvector3.distance(bot.position, target.position)
-                local continuing = previous and previous.target_key == target.key
+                local score = target == locked_target and locked_score or ThreatAssessment.calculate_threat_value(
+                        bot.unit,
+                        target.attention_data,
+                        bot.data,
+                        distance,
+                        target.position
+                )
 
-                if continuing or distance > CONSTANTS.PROACTIVE_MIN_CHASE_DISTANCE then
-                    local score = ThreatAssessment.calculate_threat_value(
-                            bot.unit,
-                            target.attention_data,
-                            bot.data,
-                            distance,
-                            target.position
-                    )
+                if score > 0 then
+                    bot_edges[target.key] = {
+                        score = score,
+                        urgency = target.urgency,
+                    }
 
-                    if score > 0 then
-                        bot_edges[target.key] = {
-                            score = score,
+                    local target_def = target_defs_by_key[target.key]
+                    if not target_def then
+                        target_def = {
+                            key = target.key,
+                            unit = target.unit,
                             urgency = target.urgency,
+                            max_score = score,
+                            focus = target.focus,
                         }
-
-                        local target_def = target_defs_by_key[target.key]
-                        if not target_def then
-                            target_def = {
-                                key = target.key,
-                                unit = target.unit,
-                                urgency = target.urgency,
-                                max_score = score,
-                                focus = target.focus,
-                            }
-                            target_defs_by_key[target.key] = target_def
-                        else
-                            target_def.max_score = math.max(target_def.max_score, score)
-                        end
+                        target_defs_by_key[target.key] = target_def
+                    else
+                        target_def.max_score = math.max(target_def.max_score, score)
                     end
                 end
             end
         end
+
     end
 
     local target_defs = {}
@@ -798,11 +807,16 @@ local function build_attack_plan(attackers, targets, t)
     return result.by_bot
 end
 
-function ProactiveAttack:_on_objective_failed(bot_key, assignment_id, unit)
+local function delay_target_retry(bot_key, target_key, t)
+    state.retry_until[bot_key] = state.retry_until[bot_key] or {}
+    state.retry_until[bot_key][target_key] = t + CONSTANTS.PROACTIVE_RETRY_COOLDOWN
+end
+
+function ProactiveAttack:_on_objective_failed(bot_key, assignment_id, unit, failed_objective)
     bot_key = tostring(bot_key)
 
     local assignment = state.assignments[bot_key]
-    if not assignment or assignment.id ~= assignment_id then
+    if not assignment or assignment.id ~= assignment_id or assignment.unit ~= unit then
         return
     end
 
@@ -810,6 +824,12 @@ function ProactiveAttack:_on_objective_failed(bot_key, assignment_id, unit)
     local current_objective = brain and brain:objective()
     local failed_current_objective = self:is_attack_objective(current_objective)
             and current_objective._bb_proactive_assignment_id == assignment_id
+
+    if failed_current_objective
+            and failed_objective and failed_objective ~= current_objective
+    then
+        return
+    end
 
     if failed_current_objective then
         prepare_objective_for_removal(current_objective)
@@ -819,102 +839,305 @@ function ProactiveAttack:_on_objective_failed(bot_key, assignment_id, unit)
     state.next_update_t = 0
 
     if failed_current_objective then
-        state.retry_until[bot_key] = state.retry_until[bot_key] or {}
-        state.retry_until[bot_key][assignment.target_key] = game_time()
-                + CONSTANTS.PROACTIVE_RETRY_COOLDOWN
+        delay_target_retry(bot_key, assignment.target_key, game_time())
+        if assignment.nav_cache_key then
+            state.nav_cache[assignment.nav_cache_key] = nil
+        end
     end
 end
 
-function ProactiveAttack:_assign_target(bot, target)
-    local current_assignment = state.assignments[bot.key]
-    local current_objective = bot.brain:objective()
+local function valid_range(value)
+    return type(value) == "number" and value > 0 and value < math.huge
+end
 
-    if self:is_attack_objective(current_objective) then
-        prepare_objective_for_removal(current_objective)
+local function get_engage_range(bot)
+    local inventory = bot.unit:inventory()
+    local weapon = inventory and inventory:equipped_unit()
+    local weapon_base = alive(weapon) and weapon:base()
+    local weapon_tweak = weapon_base and weapon_base.weapon_tweak_data
+            and weapon_base:weapon_tweak_data()
+    local usage = weapon_tweak and weapon_tweak.usage
+    local weapons = bot.data.char_tweak and bot.data.char_tweak.weapon
+    local weapon_data = usage and weapons and weapons[usage]
+    local range = weapon_data and weapon_data.range
+            or bot.data.internal_data and bot.data.internal_data.weapon_range
+
+    if type(range) == "table" then
+        range = valid_range(range.optimal) and range.optimal
+                or valid_range(range.close) and range.close
+                or range.far
     end
 
-    local t = game_time()
-    local target_distance = bot.position
-            and target.position
-            and mvector3.distance(bot.position, target.position)
-            or math.huge
-    local needs_repath = current_assignment
-            and self:is_attack_objective(current_objective)
-            and current_objective.in_place
-            and target_distance > CONSTANTS.PROACTIVE_REPATH_DISTANCE
-            and t >= (current_assignment.next_repath_t or 0)
+    return valid_range(range) and range or CONSTANTS.PROACTIVE_DEFAULT_ENGAGE_RANGE
+end
 
-    if current_assignment
+local fire_slotmask, ap_fire_slotmask
+
+local function can_engage(bot, target, range)
+    local attention_objects = bot.data.detected_attention_objects
+    local attention = attention_objects and attention_objects[target.unit:key()]
+    if not (attention and attention.identified and attention.verified)
+            or (attention.reaction or 0) < AIAttentionObject.REACT_COMBAT
+    then
+        return false
+    end
+
+    local position = attention.m_head_pos or attention.verified_pos
+    if not position or mvector3.distance_sq(bot.position, position) > range * range then
+        return false
+    end
+
+    fire_slotmask = fire_slotmask
+            or managers.slot:get_mask("bullet_impact_targets_no_criminals")
+    local mask = fire_slotmask
+    if CombatHelper.has_ap_ammo(bot.unit) then
+        ap_fire_slotmask = ap_fire_slotmask
+                or fire_slotmask - managers.slot:get_mask("enemy_shield_check")
+        mask = ap_fire_slotmask
+    end
+
+    local ray = World:raycast(
+            "ray", bot.position, position,
+            "slot_mask", mask,
+            "ignore_unit", bot.unit
+    )
+    return not ray or ray.unit == target.unit
+end
+
+local function movement_can_change(bot)
+    local my_data = bot.data.internal_data
+    return not bot.unit:movement():chk_action_forbidden("walk")
+            and not (my_data and (my_data.acting
+            or my_data.has_old_action
+            or my_data.surprised
+            or my_data.moving_to_cover
+            or my_data.walking_to_cover_shoot_pos
+            or my_data._turning_to_intimidate))
+end
+
+local function nav_segment_is_accessible(navigation, nav_seg, access)
+    local segment = nav_seg and navigation._nav_segments[nav_seg]
+    return segment and not segment.disabled
+            and not navigation._quad_field:is_nav_segment_blocked(nav_seg, access)
+end
+
+local function resolve_remembered_navigation(target)
+    if target.nav_position then
+        return
+    end
+
+    local navigation = managers.navigation
+    local tracker = navigation:create_nav_tracker(target.position)
+    if not alive(tracker) then
+        return
+    end
+
+    local position = tracker:field_position()
+    local max_distance = CONSTANTS.PROACTIVE_NAV_PROJECTION_MAX_DISTANCE
+    if position and mvector3.distance_sq(position, target.position) <= max_distance * max_distance then
+        target.nav_position = mvector3.copy(position)
+        target.nav_seg = tracker:nav_segment()
+    end
+    navigation:destroy_nav_tracker(tracker)
+end
+
+local function target_is_reachable(bot, target, t)
+    local navigation = managers.navigation
+    local tracker = bot.unit:movement():nav_tracker()
+    if not (alive(tracker) and not tracker:lost() and target.nav_position) then
+        return false
+    end
+
+    local from_seg = tracker:nav_segment()
+    local to_seg = target.nav_seg
+    local access = bot.brain:SO_access()
+    if not nav_segment_is_accessible(navigation, from_seg, access)
+            or not nav_segment_is_accessible(navigation, to_seg, access)
+    then
+        return false
+    end
+
+    local key = tostring(from_seg) .. ":" .. tostring(to_seg) .. ":" .. tostring(access)
+    local cached = state.nav_cache[key]
+    if cached and t < cached.expires_t then
+        return cached.reachable, key
+    end
+
+    local path = navigation:search_coarse({
+        from_tracker = tracker,
+        to_seg = to_seg,
+        to_pos = target.nav_position,
+        access_pos = access,
+        id = "BB_ProactiveAttack_" .. bot.key,
+    })
+    local reachable = type(path) == "table" and #path > 0
+    state.nav_cache[key] = {
+        reachable = reachable,
+        expires_t = t + (reachable and CONSTANTS.PROACTIVE_NAV_CACHE_TTL
+                or CONSTANTS.PROACTIVE_RETRY_COOLDOWN),
+    }
+
+    return reachable, key
+end
+
+local function make_attack_objective(bot, target, assignment_id, phase)
+    local bot_key = bot.key
+    local objective = {
+        is_default = true,
+        called = false,
+        scan = true,
+        type = "free",
+        attitude = "engage",
+        stance = "hos",
+        in_place = phase == "engage" or nil,
+        _bb_proactive_attack = true,
+        _bb_proactive_assignment_id = assignment_id,
+        _bb_proactive_target_key = target.key,
+        _bb_proactive_phase = phase,
+    }
+    objective.fail_clbk = function(unit)
+        ProactiveAttack:_on_objective_failed(bot_key, assignment_id, unit, objective)
+    end
+
+    if phase == "advance" then
+        objective.haste = "run"
+        objective.nav_seg = target.nav_seg
+        objective.pos = mvector3.copy(target.nav_position)
+        objective.followup_objective = make_attack_objective(
+                bot, target, assignment_id, "engage"
+        )
+        objective.complete_clbk = function(unit)
+            local assignment = state.assignments[bot_key]
+            if assignment and assignment.id == assignment_id
+                    and alive(unit)
+                    and unit:brain():objective() == objective.followup_objective
+            then
+                assignment.next_repath_t = game_time() + CONSTANTS.PROACTIVE_REPATH_INTERVAL
+                assignment.blocked_since_t = nil
+            end
+        end
+    end
+
+    return objective
+end
+
+function ProactiveAttack:_assign_target(bot, target, t)
+    t = t or game_time()
+    local current_assignment = state.assignments[bot.key]
+    local current_objective = bot.brain:objective()
+    local continuing = current_assignment
             and current_assignment.target_key == target.key
+            and current_assignment.target_unit == target.unit
             and self:is_attack_objective(current_objective)
             and current_objective._bb_proactive_assignment_id == current_assignment.id
-            and current_objective.follow_unit == target.unit
-            and not needs_repath
+
+    if not objective_allows_attack(current_objective) then
+        return false
+    end
+
+    if not bot.brain:is_available_for_assignment() then
+        return false
+    end
+
+    local range = get_engage_range(bot)
+    local engaging = continuing and current_objective._bb_proactive_phase == "engage"
+    local engage_range = engaging and range * CONSTANTS.PROACTIVE_RESUME_RANGE_MUL or range
+    local can_shoot = can_engage(bot, target, engage_range)
+    local phase = can_shoot and "engage" or "advance"
+
+    if not can_shoot then
+        resolve_remembered_navigation(target)
+    end
+
+    if not can_shoot and (not target.nav_position
+            or not nav_segment_is_accessible(managers.navigation, target.nav_seg, bot.brain:SO_access()))
     then
+        delay_target_retry(bot.key, target.key, t)
+        self:_release_bot(bot.unit, get_group_state(), true)
+        return false
+    end
+
+    if continuing then
         current_assignment.last_seen_t = target.last_seen_t
-        return true
+        if can_shoot then
+            current_assignment.blocked_since_t = nil
+            if engaging then
+                return true
+            end
+        else
+            if engaging then
+                current_assignment.blocked_since_t = current_assignment.blocked_since_t or t
+                local out_of_range = mvector3.distance_sq(bot.position, target.position)
+                        > engage_range * engage_range
+                if not out_of_range
+                        and t - current_assignment.blocked_since_t < CONSTANTS.PROACTIVE_OBSTRUCTION_DELAY
+                then
+                    return true
+                end
+                local tolerance = CONSTANTS.PROACTIVE_DESTINATION_TOLERANCE
+                if mvector3.distance_sq(bot.unit:movement():m_pos(), target.nav_position)
+                        <= tolerance * tolerance
+                then
+                    return true
+                end
+            elseif current_objective._bb_proactive_phase == "advance"
+                    and current_objective.nav_seg == target.nav_seg
+                    and target.nav_position and current_objective.pos
+                    and mvector3.distance_sq(current_objective.pos, target.nav_position)
+                    < CONSTANTS.PROACTIVE_REPATH_DISTANCE * CONSTANTS.PROACTIVE_REPATH_DISTANCE
+            then
+                return true
+            end
+
+            if t < (current_assignment.next_repath_t or 0) then
+                return true
+            end
+        end
+    end
+
+    if not movement_can_change(bot) then
+        return false
+    end
+
+    local nav_cache_key
+    if phase == "advance" then
+        local reachable
+        reachable, nav_cache_key = target_is_reachable(bot, target, t)
+        if not reachable then
+            delay_target_retry(bot.key, target.key, t)
+            self:_release_bot(bot.unit, get_group_state(), true)
+            return false
+        end
     end
 
     if self:is_attack_objective(current_objective) then
         current_objective.fail_clbk = nil
         current_objective.complete_clbk = nil
         current_objective.followup_objective = nil
+        prepare_objective_for_removal(current_objective)
     end
 
     state.next_assignment_id = state.next_assignment_id + 1
     local assignment_id = state.next_assignment_id
-    local bot_key = bot.key
-    local manual_destroy_clbk_key
-    local objective = {
-        is_default = true,
-        called = false,
-        destroy_clbk_key = false,
-        scan = true,
-        type = "follow",
-        follow_unit = target.unit,
-        attitude = "engage",
-        stance = "hos",
-        haste = "run",
-        _bb_proactive_attack = true,
-        _bb_proactive_assignment_id = assignment_id,
-        _bb_proactive_target_key = target.key,
-        fail_clbk = function(unit)
-            self:_on_objective_failed(bot_key, assignment_id, unit)
-        end,
-    }
-
-    if not target_damage_supports_objective_listeners(target.unit) then
-        manual_destroy_clbk_key = string.format(
-                "BB_ProactiveAttack_objective_%s_%d",
-                bot.key,
-                assignment_id
-        )
-        objective.destroy_clbk_key = manual_destroy_clbk_key
-    end
-
+    local objective = make_attack_objective(bot, target, assignment_id, phase)
     state.assignments[bot.key] = {
         id = assignment_id,
         unit = bot.unit,
         target_key = target.key,
         target_unit = target.unit,
         last_seen_t = target.last_seen_t,
-        lock_until = t + CONSTANTS.PROACTIVE_TARGET_LOCK,
-        next_repath_t = t + CONSTANTS.PROACTIVE_REPATH_INTERVAL,
+        lock_until = continuing and current_assignment.lock_until or t + CONSTANTS.PROACTIVE_TARGET_LOCK,
+        next_repath_t = continuing and phase == "engage" and current_assignment.next_repath_t
+                or t + CONSTANTS.PROACTIVE_REPATH_INTERVAL,
+        nav_cache_key = nav_cache_key,
     }
 
     bot.brain:set_objective(objective)
-
-    if manual_destroy_clbk_key
-            and bot.brain:objective() == objective
-            and alive(target.unit)
-    then
-        target.unit:base():add_destroy_listener(
-                manual_destroy_clbk_key,
-                callback(bot.brain, bot.brain, "on_objective_unit_destroyed")
-        )
+    if phase == "engage" and bot.brain:objective() == objective then
+        bot.brain:action_request({ type = "idle", body_part = 2 })
     end
 
-    return true
+    return bot.brain:objective() == objective
 end
 
 local function assignment_is_current(assignment, unit)
@@ -997,6 +1220,7 @@ function ProactiveAttack:_update(group_state, t)
     self:_update_recall_holds(group_state, t, suspend_recall_release)
 
     if suspend_recall_release then
+        clear_table(state.observations)
         self:release_all(group_state, true)
         return true
     end
@@ -1012,7 +1236,7 @@ function ProactiveAttack:_update(group_state, t)
         if self:is_attack_objective(objective)
                 and (not eligible_by_key[bot_key] or not assignment_matches)
         then
-            self:_release_bot(unit, group_state, eligible_by_key[bot_key] ~= nil)
+            self:_release_bot(unit, group_state, true)
         elseif assignment and not eligible_by_key[bot_key] then
             state.assignments[bot_key] = nil
         end
@@ -1020,6 +1244,7 @@ function ProactiveAttack:_update(group_state, t)
 
     local recalled_guard = get_active_recalled_guard(all_units)
     if #eligible == 0 then
+        clear_table(state.observations)
         if not recalled_guard then
             state.guard_key = nil
         end
@@ -1043,6 +1268,10 @@ function ProactiveAttack:_update(group_state, t)
         end
     end
 
+    if #attackers == 0 then
+        return true
+    end
+
     local available_bot_count = #eligible + (recalled_guard and 1 or 0)
     local max_target_distance = available_bot_count == 1
             and CONSTANTS.PROACTIVE_SOLO_TARGET_DISTANCE
@@ -1053,14 +1282,18 @@ function ProactiveAttack:_update(group_state, t)
             max_target_distance,
             t
     )
-    local desired_by_bot = build_attack_plan(attackers, targets, t)
+    local desired_by_bot = build_attack_plan(attackers, targets, targets_by_key, t)
 
     for _, bot in ipairs(attackers) do
         local target_key = desired_by_bot[bot.key]
         local target = target_key and targets_by_key[tostring(target_key)]
 
         if target then
-            self:_assign_target(bot, target)
+            local assigned = self:_assign_target(bot, target, t)
+            local assignment = state.assignments[bot.key]
+            if not assigned and assignment and not targets_by_key[assignment.target_key] then
+                self:_release_bot(bot.unit, group_state, true)
+            end
         else
             self:_release_bot(bot.unit, group_state, true)
         end
@@ -1080,6 +1313,9 @@ function ProactiveAttack:update(group_state, force)
     end
 
     if not self:is_enabled() then
+        clear_table(state.observations)
+        clear_table(state.nav_cache)
+        clear_table(state.retry_until)
         if next(state.recall_holds) then
             self:_clear_all_recall_holds()
         end
@@ -1098,6 +1334,8 @@ function ProactiveAttack:update(group_state, force)
     cleanup_retry_cooldowns(t)
 
     if not loud_combat_is_active(group_state) then
+        clear_table(state.observations)
+        clear_table(state.nav_cache)
         self:_update_recall_holds(group_state, t, true)
         self:release_all(group_state, true)
         return true
@@ -1111,6 +1349,8 @@ function ProactiveAttack:apply_setting(group_state)
 
     if not self:is_enabled() then
         clear_table(state.retry_until)
+        clear_table(state.observations)
+        clear_table(state.nav_cache)
         self:_clear_all_recall_holds()
         return self:release_all(group_state, true)
     end
@@ -1123,6 +1363,8 @@ function ProactiveAttack:reset_level_state()
     clear_table(state.assignments)
     clear_table(state.recall_holds)
     clear_table(state.retry_until)
+    clear_table(state.observations)
+    clear_table(state.nav_cache)
     state.guard_key = nil
     state.next_update_t = 0
     state.next_assignment_id = 0

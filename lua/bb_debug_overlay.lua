@@ -157,6 +157,9 @@ local function objective_descriptor(objective)
         descriptor = "rescue_guard"
     elseif objective._bb_proactive_attack then
         descriptor = "proactive_attack"
+        if objective._bb_proactive_phase then
+            descriptor = descriptor .. "/" .. objective._bb_proactive_phase
+        end
     elseif objective._bb_proactive_recall_id then
         descriptor = "proactive_recall"
     elseif objective._bb_hold_return then
@@ -177,6 +180,8 @@ local function objective_descriptor(objective)
                 descriptor,
                 target_descriptor(objective.follow_unit)
         )
+    elseif objective._bb_proactive_target_key then
+        descriptor = descriptor .. "(target#" .. tostring(objective._bb_proactive_target_key) .. ")"
     end
 
     if objective.in_place then

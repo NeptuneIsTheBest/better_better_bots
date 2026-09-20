@@ -117,15 +117,6 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
         return false
     end
 
-    local t = data.t or game_time()
-    local brain = target_unit:brain()
-    local ldata = brain and brain._logic_data
-    local sw = ldata and ldata.surrender_window
-
-    if sw and t > sw.window_expire_t then
-        return false
-    end
-
     local intimidate_range = IntimidationSystem.get_intimidate_range()
     if distance and distance > intimidate_range then
         return false
@@ -133,6 +124,15 @@ function IntimidationSystem.is_valid_target(target_unit, data, distance, allow_n
 
     if anim.hands_back or anim.surrender then
         return true
+    end
+
+    local t = data.t or game_time()
+    local brain = target_unit:brain()
+    local ldata = brain and brain._logic_data
+    local sw = ldata and ldata.surrender_window
+
+    if sw and t > sw.window_expire_t then
+        return false
     end
 
     local gstate = managers.groupai and managers.groupai:state()
