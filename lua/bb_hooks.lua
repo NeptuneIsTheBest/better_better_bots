@@ -624,7 +624,6 @@ if RequiredScript == "lib/network/handlers/unitnetworkhandler" then
             return
         end
 
-        -- The downed/arrested RPCs address the receiving player without a unit argument.
         if gamestate ~= "any_ingame" then
             unit = managers.player and managers.player:player_unit()
         end
@@ -690,7 +689,6 @@ if RequiredScript == "lib/network/handlers/unitnetworkhandler" then
 
                 local base = unit:base()
                 local interaction = unit:interaction()
-                -- AI and the local player use the timer RPCs above.
                 if base and base.is_husk_player and interaction
                         and (not paused
                         or interaction.tweak_data == "revive"
@@ -1460,9 +1458,9 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicassault" then
                 my_data._next_conc_eval_t = my_data._next_conc_eval_t or 0
                 if t >= my_data._next_conc_eval_t then
                     my_data._next_conc_eval_t = t + CONSTANTS.CONC_EVAL_INTERVAL
-                    if (not my_data._conc_cooldown_t) or t >= my_data._conc_cooldown_t then
+                    if (not data._bb_conc_cooldown_t) or t >= data._bb_conc_cooldown_t then
                         if CombatBehavior.throw_concussion_grenade(data, unit) then
-                            my_data._conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
+                            data._bb_conc_cooldown_t = t + CONSTANTS.CONC_COOLDOWN
                         end
                     end
                 end

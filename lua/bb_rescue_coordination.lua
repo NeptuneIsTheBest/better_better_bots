@@ -993,7 +993,6 @@ function RescueCoordinator.on_rescue_interaction_started(revive_unit, rescuer)
     end
 
     if managers.player and rescuer == managers.player:player_unit() then
-        -- AI exit clears the shared interaction marker before its failure callback runs.
         RescueCoordinator._local_interactions[_unit_key(revive_unit)] = {
             target = revive_unit,
             rescuer = rescuer,
@@ -1025,7 +1024,6 @@ function RescueCoordinator.on_rescue_interaction_interrupted(revive_unit, rescue
     local interaction = target_key and RescueCoordinator._local_interactions[target_key]
     if interaction and interaction.target == revive_unit and interaction.rescuer == rescuer then
         RescueCoordinator._local_interactions[target_key] = nil
-        -- Defer assignment so error cleanup can preserve the original exception.
         RescueCoordinator._next_update_t = 0
     end
 end
@@ -1059,7 +1057,6 @@ function RescueCoordinator.on_network_rescue_interaction(target, peer, active)
             return
         end
 
-        -- Cancelling an AI can re-enter SO assignment through its failure callback.
         interaction.rescuers[peer_id] = rescuer
         RescueCoordinator.on_rescue_interaction_started(target, rescuer)
     elseif interaction and interaction.target == target and interaction.rescuers[peer_id] then
@@ -1081,7 +1078,6 @@ function RescueCoordinator.on_criminal_recovered(unit)
     if target_key then
         RescueCoordinator._local_interactions[target_key] = nil
         RescueCoordinator._network_interactions[target_key] = nil
-        -- Some callers have not finished clearing their downed state yet.
         RescueCoordinator._next_update_t = 0
     end
 end

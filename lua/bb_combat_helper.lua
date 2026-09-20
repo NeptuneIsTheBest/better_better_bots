@@ -35,9 +35,14 @@ function CombatHelper.has_ap_ammo(unit)
         return true
     end
 
-    return managers.player
-        and managers.player:has_category_upgrade("team", "crew_ai_ap_ammo")
-        or false
+    local weapon_unit = inventory and inventory.equipped_unit and inventory:equipped_unit()
+    local weapon_base = alive(weapon_unit) and weapon_unit:base()
+
+    return weapon_base
+            and weapon_base._is_team_ai
+            and weapon_base._has_ap_rounds
+            and true
+            or false
 end
 
 function CombatHelper.acquire_dyn_unit(unit_path)

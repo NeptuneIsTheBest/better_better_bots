@@ -128,12 +128,17 @@ end
 
 local function _weapon_range_factor(data, unit, distance)
     local range = _get_weapon_range(data, unit)
-    if not range then
+    local optimal, far
+    if type(range) == "number" then
+        optimal = range
+        far = range
+    elseif type(range) == "table" then
+        optimal = range.optimal or range.close or range.far
+        far = range.far or optimal
+    else
         return 1
     end
 
-    local optimal = range.optimal or range.close or range.far
-    local far = range.far or optimal
     if not (optimal and far and far > 0) or distance <= optimal then
         return 1
     end
@@ -388,7 +393,7 @@ local function _select_solo_target(data, potential_targets_map, old_target_u_key
 
     if best_local_target then
         _update_target_lock(data, best_local_target.data.u_key, old_target_u_key, t)
-        return best_local_target.data, 500 / math.max(max_score, 1), best_local_target.reaction
+        return best_local_target.data, best_local_target.priority_slot, best_local_target.reaction
     end
 
     return nil, nil, nil
@@ -579,8 +584,7 @@ function CombatBehavior.find_priority_attention(
         data._last_target_u_key = tostring(locked.data.u_key)
         data._last_target_t = t
         return locked.data,
-                coop_active and locked.priority_slot
-                        or 400 / math.max(locked.score or 1, 1),
+                locked.priority_slot,
                 locked.reaction
     end
 
@@ -944,6 +948,7 @@ function CombatBehavior.execute_melee_attack(data, criminal)
         if u_char.identified
                 and alive(u_char.unit)
                 and are_units_foes(criminal, u_char.unit)
+                and not is_surrendering(u_char.unit)
         then
             if u_char.verified
                     and u_char.verified_dis
