@@ -511,7 +511,7 @@ function ThreatAssessment.compose_threat_score(params)
     return threat * ThreatAssessment.distance_falloff(distance, flags)
 end
 
-function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data, target_distance, target_pos)
+function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data, target_distance, target_pos, context)
     if not (alive(bot_unit)
             and target_data
             and target_data.unit
@@ -540,15 +540,17 @@ function ThreatAssessment.calculate_threat_value(bot_unit, target_data, data, ta
             or (bot_head and target_data.m_head_pos and mvector3.distance(bot_head, target_data.m_head_pos))
             or 1000
 
-    local flags = EnemyClassifier.classify(target_unit, target_data)
+    local flags = context and context.flags or EnemyClassifier.classify(target_unit, target_data)
     local role_multiplier, _, captain_suppressed =
             ThreatAssessment.get_role_multiplier(target_unit, target_data, flags)
     local shield_blocked = false
     if flags.shield and not flags.turret and not captain_suppressed then
-        local ap = CombatHelper.has_ap_ammo(bot_unit)
-        local shield_pos = target_pos or target_data.m_head_pos
-        local blocked = shield_pos and CombatHelper.shield_blocks_default(bot_unit, shield_pos)
-        shield_blocked = blocked and not ap and dist > CONSTANTS.MELEE_DISTANCE or false
+        local blocked = context and context.shield_blocked
+        if not context then
+            blocked = not CombatHelper.has_ap_ammo(bot_unit)
+                    and CombatHelper.shield_blocks_default(bot_unit, target_pos or target_data.m_head_pos)
+        end
+        shield_blocked = blocked and dist > CONSTANTS.MELEE_DISTANCE or false
     end
 
     local reference_health = _get_reference_health()
@@ -595,7 +597,7 @@ function ThreatAssessment.distance_falloff(dist, flags)
     return 1
 end
 
-function ThreatAssessment.calculate_suitability(bot_unit, target_data, target_pos, target_distance)
+function ThreatAssessment.calculate_suitability(bot_unit, target_data, target_pos, target_distance, context)
     if not (alive(bot_unit) and target_data and target_data.unit and alive(target_data.unit)) then
         return 0
     end
@@ -617,7 +619,7 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data, target_po
     local bot_head = bot_mov:m_head_pos()
 
     local target_unit = target_data.unit
-    local flags = EnemyClassifier.classify(target_unit, target_data)
+    local flags = context and context.flags or EnemyClassifier.classify(target_unit, target_data)
     local tweak_name = _get_tweak_name(target_unit)
 
     if tweak_name
@@ -655,8 +657,12 @@ function ThreatAssessment.calculate_suitability(bot_unit, target_data, target_po
     score = score + (angle * 50)
 
     if flags.shield then
-        local has_ap = CombatHelper.has_ap_ammo(bot_unit)
-        if target_pos and (has_ap or not CombatHelper.shield_blocks_default(bot_unit, target_pos)) then
+        local blocked = context and context.shield_blocked
+        if not context then
+            blocked = not CombatHelper.has_ap_ammo(bot_unit)
+                    and CombatHelper.shield_blocks_default(bot_unit, target_pos)
+        end
+        if target_pos and not blocked then
             score = score + 30
         else
             score = score - 80

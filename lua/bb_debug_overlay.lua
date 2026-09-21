@@ -710,6 +710,9 @@ local function assignment_data(bot_key, logic_data, current_key, t)
                 or "-",
         descriptor = target_descriptor(assigned_unit, assigned_key),
         enabled = true,
+        effective_load = tostring(assignment.effective_target_load[current_key] or 0),
+        can_fire = format_boolean(CoopSystem.can_fire_now(logic_data.unit)),
+        reload_wait = logic_data._bb_coop_reload_wait or "-",
         load = assigned_key
                 and string.format("%d", assignment.target_load[assigned_key])
                 or "-",
@@ -819,7 +822,7 @@ local function build_debug_text(unit, bot_key, character_name, t)
 
     if assignment.enabled then
         table.insert(lines, string.format(
-                "[COOP] MODE:%s ASG:%s MATCH:%s SCORE:%s CAND:%s LOAD:%s TAG:%s AGE:%s PRESS:%s",
+                "[COOP] MODE:%s ASG:%s MATCH:%s SCORE:%s CAND:%s LOAD:%s TAG:%s AGE:%s PRESS:%s FIRE:%s EFFECTIVE:%s WAIT:%s",
                 assignment.mode,
                 assignment.descriptor,
                 assignment.match,
@@ -828,7 +831,10 @@ local function build_debug_text(unit, bot_key, character_name, t)
                 assignment.load,
                 assignment.tag,
                 assignment.age,
-                assignment.pressure
+                assignment.pressure,
+                assignment.can_fire,
+                assignment.effective_load,
+                assignment.reload_wait
         ))
     else
         table.insert(lines, "[COOP] off")

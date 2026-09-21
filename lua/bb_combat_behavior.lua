@@ -151,7 +151,7 @@ local function _weapon_range_factor(data, unit, distance)
     return clamp((far / math.max(distance, 1)) * 0.7, 0.25, 0.7)
 end
 
-local function _native_priority_slot(data, attention_data, flags, distance, reaction, t, unit)
+local function _native_priority_slot(data, attention_data, flags, distance, reaction, t, unit, context)
     local alert_dt = attention_data.alert_t and t - attention_data.alert_t or 10000
     local damage_dt = attention_data.dmg_t and t - attention_data.dmg_t or 10000
     local mark_dt = attention_data.mark_t and t - attention_data.mark_t or 10000
@@ -170,10 +170,7 @@ local function _native_priority_slot(data, attention_data, flags, distance, reac
     local near = distance < 800
     local has_alerted = alert_dt < 5
     local has_damaged = damage_dt < 2
-    local shielded = flags.shield
-            and not CombatHelper.has_ap_ammo(unit)
-            and CombatHelper.shield_blocks_default(unit, attention_data.m_head_pos)
-            or false
+    local shielded = context.shield_blocked
     local priority_slot
 
     if attention_data.verified then
@@ -232,7 +229,10 @@ local function _filter_potential_targets(
                     and _attention_is_selectable(attention_data, t)
         end
 
-        if selectable and alive(attention_data.unit) then
+        local damage = alive(attention_data.unit) and attention_data.unit:character_damage()
+        if selectable and alive(attention_data.unit)
+                and not (damage and damage.dead and damage:dead())
+        then
             local reaction
             local resolved = resolved_reactions and resolved_reactions[attention_data]
             if resolved ~= nil then
@@ -274,22 +274,26 @@ local function _filter_potential_targets(
                 local is_in_surrender_state = is_surrendering(attention_data.unit)
 
                 if not dom_active and not is_in_surrender_state then
+                    local context = CombatHelper.target_context(unit, attention_data, target_pos)
+                    local flags = context.flags
+                    coop_assignable = coop_assignable and not context.shield_blocked
+                            and CombatHelper.can_fire_at(data, attention_data)
                     local threat = ThreatAssessment.calculate_threat_value(
                             unit,
                             attention_data,
                             data,
                             dist,
-                            target_pos
+                            target_pos,
+                            context
                     )
 
-                    local flags = BB.classify_enemy(attention_data.unit, attention_data)
                     local urgency = 1
                     if flags.tasing then
-                        force_unlock = true
+                        force_unlock = force_unlock or coop_assignable or not coop_active
                         urgency = 3
                     end
                     if flags.spooc_attack then
-                        force_unlock = true
+                        force_unlock = force_unlock or coop_assignable or not coop_active
                         urgency = 3
                     end
 
@@ -309,7 +313,8 @@ local function _filter_potential_targets(
                             dist,
                             reaction,
                             t,
-                            unit
+                            unit,
+                            context
                     )
                     local dynamic_priority = 0
                     local state = "normal"
@@ -322,13 +327,15 @@ local function _filter_potential_targets(
                                 attention_data,
                                 data,
                                 target_pos,
-                                dist
+                                dist,
+                                context
                         )
                         suitability = ThreatAssessment.calculate_suitability(
                                 unit,
                                 attention_data,
                                 target_pos,
-                                dist
+                                dist,
+                                context
                         )
 
                         if urgency < 3
@@ -450,6 +457,20 @@ local function _select_coop_target(data, potential_targets_map, old_target_u_key
                 tracking_target.reaction
     end
 
+    best_target, best_key = nil, nil
+    for target_key, candidate in pairs(potential_targets_map) do
+        if candidate.coop_trackable and alive(candidate.data.unit)
+                and (not best_target or candidate.score > best_target.score
+                or candidate.score == best_target.score and target_key < best_key)
+        then
+            best_target, best_key = candidate, target_key
+        end
+    end
+    if best_target then
+        _update_target_lock(data, best_key, old_target_u_key, t)
+        return best_target.data, best_target.priority_slot, best_target.reaction
+    end
+
     return nil, nil, nil
 end
 
@@ -524,19 +545,20 @@ function CombatBehavior.find_priority_attention(
             role_candidates
     )
     local role_tracking_target
-    if coop_active and restrict_to_role and not role_target and old_target_u_key then
-        local tracking_candidate = potential_targets_map[old_target_u_key]
-        if tracking_candidate and tracking_candidate.coop_trackable then
-            role_tracking_target = RescueCoordinator.select_role_target(data, {
-                [old_target_u_key] = tracking_candidate,
-            })
+    if coop_active and restrict_to_role and not role_target then
+        local tracking = {}
+        for key, candidate in pairs(potential_targets_map) do
+            if candidate.coop_trackable then
+                tracking[key] = candidate
+            end
         end
+        role_tracking_target = RescueCoordinator.select_role_target(data, tracking)
     end
 
     if coop_requested then
         BB.CoopSystem.submit_candidates(data, potential_targets_map, {
-            restricted = restrict_to_role,
-            target_key = role_target
+            restricted = restrict_to_role or native_low_reaction,
+            target_key = not native_low_reaction and role_target
                     and tostring(role_target.data.u_key or role_target.data.unit:key())
                     or nil,
         })
@@ -804,6 +826,7 @@ end
 function CombatBehavior.check_smart_reload(data)
     local unit = data.unit
     local my_data = data.internal_data
+    data._bb_coop_reload_wait = nil
     if not alive(unit)
             or my_data.exiting
     then
@@ -871,27 +894,26 @@ function CombatBehavior.check_smart_reload(data)
         return false
     end
 
-    local reserved_intent
+    local reserved_intent = false
     if not is_empty and threats.nearby > 0 and BB:get("coop", false) then
-        local teammates_reloading = BB.CoopSystem.get_reloading_teammates_count(unit:key())
-        if teammates_reloading >= CONSTANTS.MAX_TACTICAL_RELOADING_TEAMMATES then
+        if not BB.CoopSystem.reserve_reload(data) then
             return false
         end
-
-        reserved_intent = t + CONSTANTS.RELOAD_INTENT_TTL
-        data._bb_reload_intent_t = reserved_intent
+        reserved_intent = true
     end
 
     local result = _start_reload(data, upper_action, upper_action_type, is_empty)
     if result ~= "started" then
-        if reserved_intent and data._bb_reload_intent_t == reserved_intent then
-            data._bb_reload_intent_t = nil
+        if reserved_intent then
+            BB.CoopSystem.release_reload(data)
         end
         if not is_empty and result ~= "pending" then
             data._bb_reload_retry_t = t + CONSTANTS.RELOAD_FAILED_RETRY_DELAY
         end
         return result == "native" or result == "pending"
     end
+
+    BB.CoopSystem.record_attention(data)
 
     if not is_empty then
         data._bb_reload_retry_t = t + CONSTANTS.RELOAD_TACTICAL_RETRY_DELAY

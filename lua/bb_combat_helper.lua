@@ -45,6 +45,57 @@ function CombatHelper.has_ap_ammo(unit)
             or false
 end
 
+function CombatHelper.target_context(unit, attention, position)
+    local flags = BB.classify_enemy(attention.unit, attention)
+    local shield_blocked = flags.shield
+            and not CombatHelper.has_ap_ammo(unit)
+            and CombatHelper.shield_blocks_default(unit, position)
+            or false
+
+    return { flags = flags, shield_blocked = shield_blocked }
+end
+
+function CombatHelper.can_fire_at(data, attention)
+    local internal = data.internal_data or {}
+    local cover = internal._bb_cover_tactics
+    local key = attention.u_key or attention.unit:key()
+    if cover and tostring(cover.target_key) == tostring(key) and cover.lane == "blocked" then
+        return false
+    end
+
+    local movement = data.unit:movement()
+    local walk = movement:get_action(2)
+    local advancing = internal.advancing
+    local anim = data.unit:anim_data() or {}
+    if data.char_tweak and data.char_tweak.no_move_and_shoot and (anim.move or anim.act) then
+        return false
+    end
+
+    local running
+    if walk then
+        running = walk:type() == "walk" and not walk:stopping() and walk:haste() == "run"
+    elseif advancing then
+        running = not advancing:stopping() and advancing:haste() == "run"
+    else
+        running = anim.run
+    end
+    if not running then
+        return true
+    end
+
+    local function positive(value)
+        return type(value) == "number" and value > 0 and value or nil
+    end
+    local range = internal.weapon_range
+    local limit = positive(range)
+    if type(range) == "table" then
+        limit = positive(range[BB.CONSTANTS.MOVE_SHOOT_RUNNING_RANGE])
+                or positive(range.optimal) or positive(range.close) or positive(range.far)
+    end
+    local distance = attention.verified_dis or attention.dis
+    return type(distance) == "number" and distance <= (limit or 500)
+end
+
 function CombatHelper.acquire_dyn_unit(unit_path)
     if type(unit_path) ~= "string" or unit_path == "" then
         return false

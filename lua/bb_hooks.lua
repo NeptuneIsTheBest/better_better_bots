@@ -382,9 +382,16 @@ if RequiredScript == "lib/managers/group_ai_states/groupaistatebase" then
             "BB_GroupAIStateBase_onCriminalRecovered_RescueInteraction",
             function(self, unit, ...)
                 RescueCoordinator.on_criminal_recovered(unit)
+                BB.CoopSystem.on_criminal_changed(unit)
             end)
 
     if Network:is_server() then
+        for _, method in ipairs({ "on_criminal_disabled", "on_criminal_neutralized", "unregister_criminal" }) do
+            Hooks:PostHook(GroupAIStateBase, method, "BB_Coop_" .. method, function(self, unit)
+                BB.CoopSystem.on_criminal_changed(unit)
+            end)
+        end
+
         Hooks:PostHook(GroupAIStateBase, "init", "BB_GroupAIStateBase_init_PreloadConcussion", function(self, ...)
             RuntimeSettings:apply_concussion(true)
         end)
@@ -612,6 +619,14 @@ if RequiredScript == "lib/units/player_team/teamaidamage" then
 end
 
 if RequiredScript == "lib/network/handlers/unitnetworkhandler" then
+    Hooks:PostHook(UnitNetworkHandler, "set_health", "BB_Coop_PlayerHealth", function(self, unit, percent, max_mul, sender)
+        if Network:is_server() and alive(unit)
+                and self._verify_gamestate(self._gamestate_filter.any_ingame)
+        then
+            BB.CoopSystem.on_player_health(unit, percent, self._verify_sender(sender))
+        end
+    end)
+
     local function notify_rescue_interaction(self, unit, sender, active, gamestate)
         if not Network:is_server()
                 or not self._verify_gamestate(self._gamestate_filter[gamestate])
@@ -798,6 +813,7 @@ if RequiredScript == "lib/managers/criminalsmanager" then
             "BB_CriminalsManager_onPeerLeft_RescueInteraction",
             function(self, peer_id, ...)
                 RescueCoordinator.on_peer_left(peer_id)
+                BB.CoopSystem.on_peer_left(peer_id)
             end)
 
     install_method_patch(
@@ -1521,6 +1537,7 @@ if RequiredScript == "lib/units/player_team/logics/teamailogicbase" then
                     "_set_attention_obj",
                     "BB_TeamAILogicBase_setAttentionObj_CheckIntimidation",
                     function(data, new_att_obj, new_reaction)
+                        BB.CoopSystem.record_attention(data)
                         IntimidationSystem.perform_interaction_check(data)
                     end
             )
@@ -1703,6 +1720,7 @@ end
 if RequiredScript == "lib/units/enemies/cop/copbrain" then
         if Network:is_server() then
             Hooks:PostHook(CopBrain, "convert_to_criminal", "BB_CopBrain_convertToCriminal_SetCharTweak", function(self, ...)
+                BB.CoopSystem.remove_target(self._unit:key())
                 if self._logic_data and self._logic_data.char_tweak then
                     local char_tweak = deep_clone(self._logic_data.char_tweak)
                     char_tweak.access = "teamAI1"
@@ -2325,6 +2343,7 @@ if RequiredScript == "lib/units/enemies/cop/logics/coplogicidle" then
 
                     if surrender then
                         BB:clear_cop_state(u_key)
+                        BB.CoopSystem.remove_target(u_key)
                     end
 
                     BB:add_cop_to_intimidation_list(u_key)
@@ -2351,6 +2370,7 @@ if RequiredScript == "lib/setups/gamesetup" then
             "update",
             "BB_GameSetup_update_StatusIcons",
             function(self, t, dt, ...)
+                BB.CoopSystem.update(game_time())
                 StatusIcons:update(t, dt)
                 DebugOverlay:update(t, dt)
             end
@@ -2405,14 +2425,7 @@ if RequiredScript == "lib/units/player_team/teamaibrain" then
                     "on_cop_neutralized",
                     "BB_TeamAIBrain_onCopNeutralized_RefreshDetection",
                     function(self, cop_key)
-                        if not BB:get("coop", false)
-                                or not alive(self._unit)
-                                or not BB.CoopSystem.is_teammate_combat_ready(self._unit)
-                        then
-                            return
-                        end
-
-                        request_team_ai_detection_update(self._logic_data)
+                        BB.CoopSystem.remove_target(cop_key)
                     end
             )
 
